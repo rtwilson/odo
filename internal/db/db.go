@@ -26,6 +26,13 @@ type ConfigRevision struct {
 	ConfigJSON string `json:"config_json,omitempty"`
 }
 
+type AuditEvent struct {
+	ID     int64  `json:"id"`
+	TS     string `json:"ts"`
+	Event  string `json:"event"`
+	Detail string `json:"detail"`
+}
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -119,6 +126,40 @@ func (s *Store) ListResources() ([]resources.Resource, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) GetResource(id string) (resources.Resource, bool, error) {
+	var payload string
+	err := s.db.QueryRow(`SELECT config_json FROM resources WHERE id = ?`, id).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return resources.Resource{}, false, nil
+	}
+	if err != nil {
+		return resources.Resource{}, false, err
+	}
+	resource, err := resources.Decode([]byte(payload))
+	if err != nil {
+		return resources.Resource{}, false, err
+	}
+	return resource, true, nil
+}
+
+func (s *Store) DeleteResource(id string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM resources WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	if err := s.Audit("resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) CreateConfigRevision(source, status, summary string, configJSON []byte) (int64, error) {
 	ts := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.Exec(
@@ -189,4 +230,25 @@ func (s *Store) Audit(event, detail string) error {
 		detail,
 	)
 	return err
+}
+
+func (s *Store) ListAuditEvents(limit int) ([]AuditEvent, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.db.Query(`SELECT id, ts, event, detail FROM audit_events ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AuditEvent
+	for rows.Next() {
+		var event AuditEvent
+		if err := rows.Scan(&event.ID, &event.TS, &event.Event, &event.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
 }

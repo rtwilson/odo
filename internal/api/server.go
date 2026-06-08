@@ -56,6 +56,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
 	mux.HandleFunc("POST /api/v1/resources", s.requireAdminAPIKey(s.upsertResource))
+	mux.HandleFunc("GET /api/v1/resources/{id}", s.getResource)
+	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireAdminAPIKey(s.putResource))
+	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireAdminAPIKey(s.deleteResource))
 	mux.HandleFunc("POST /api/v1/config/validate", s.requireAdminAPIKey(s.validateConfig))
 	mux.HandleFunc("POST /api/v1/config/import", s.requireAdminAPIKey(s.importConfig))
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireAdminAPIKey(s.listConfigRevisions))
@@ -117,6 +120,61 @@ func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resource)
+}
+
+func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	resource, found, err := s.store.GetResource(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, resource)
+}
+
+func (s *Server) putResource(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	id := strings.TrimSpace(r.PathValue("id"))
+	var resource resources.Resource
+	if err := json.NewDecoder(r.Body).Decode(&resource); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(resource.ID) != id {
+		writeError(w, http.StatusBadRequest, "resource id does not match URL id")
+		return
+	}
+	resource, err := resources.Validate(resource)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.store.UpsertResource(resource); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resource)
+}
+
+func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	deleted, err := s.store.DeleteResource(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"id":      id,
+	})
 }
 
 func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {

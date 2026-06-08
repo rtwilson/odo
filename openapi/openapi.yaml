@@ -61,6 +61,79 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/resources/{id}:
+    get:
+      summary: Get one resource
+      operationId: getResource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resource
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      summary: Create or update a resource at the given ID
+      operationId: putResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Resource"
+      responses:
+        "200":
+          description: Upserted resource
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    delete:
+      summary: Delete a resource
+      operationId: deleteResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resource deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResourceResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/config/validate:
     post:
       summary: Validate dropped resource config files without writing to SQLite
@@ -220,6 +293,14 @@ components:
       required: [error]
       properties:
         error:
+          type: string
+    DeleteResourceResponse:
+      type: object
+      required: [deleted, id]
+      properties:
+        deleted:
+          type: boolean
+        id:
           type: string
     Resource:
       type: object

@@ -49,6 +49,24 @@ func TestOpenAPIYAML(t *testing.T) {
 	}
 }
 
+func TestAdminContainsResourceEditorControls(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected admin to return 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected admin body to contain %q", want)
+		}
+	}
+}
+
 func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -356,6 +374,94 @@ func TestManagementEndpointAllowsValidAPIKey(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected valid API key to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetResourceReturnsExistingResource(t *testing.T) {
+	server := newTestServer(t, "secret")
+	upsertTestResource(t, server, "jstor")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources/jstor", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var resource resources.Resource
+	if err := json.Unmarshal(rec.Body.Bytes(), &resource); err != nil {
+		t.Fatalf("decode resource: %v", err)
+	}
+	if resource.ID != "jstor" {
+		t.Fatalf("expected jstor resource, got %#v", resource)
+	}
+}
+
+func TestGetResourceReturns404ForMissingResource(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources/missing", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteResourceDeletesExistingResourceAndAudits(t *testing.T) {
+	server := newTestServer(t, "secret")
+	upsertTestResource(t, server, "jstor")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/resources/jstor", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if _, found, err := server.store.GetResource("jstor"); err != nil || found {
+		t.Fatalf("expected resource deleted, found=%v err=%v", found, err)
+	}
+	events, err := server.store.ListAuditEvents(10)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	var sawDelete bool
+	for _, event := range events {
+		if event.Event == "resource.delete" && strings.Contains(event.Detail, "jstor") {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Fatalf("expected resource.delete audit event, got %#v", events)
+	}
+}
+
+func TestDeleteResourceReturns404ForMissingResource(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/resources/missing", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteResourceRequiresAPIKey(t *testing.T) {
+	server := newTestServer(t, "secret")
+	upsertTestResource(t, server, "jstor")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/resources/jstor", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -669,5 +775,20 @@ func writeAPIResourceConfig(t *testing.T, configDir, name, body string) {
 	}
 	if err := os.WriteFile(filepath.Join(resourcesDir, name), []byte(body), 0o644); err != nil {
 		t.Fatalf("write config %s: %v", name, err)
+	}
+}
+
+func upsertTestResource(t *testing.T, server *Server, id string) {
+	t.Helper()
+
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:     id,
+		Name:   strings.ToUpper(id),
+		Status: "active",
+		Domains: []resources.DomainRule{
+			{Host: id + ".example.org", Match: "exact", Role: "content", Action: "proxy"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert test resource: %v", err)
 	}
 }

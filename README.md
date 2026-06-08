@@ -52,6 +52,12 @@ The current OpenAPI 3.1 spec is served by the app:
 http://127.0.0.1:8080/openapi.yaml
 ```
 
+## Admin UI Resource Management
+
+Open `http://127.0.0.1:8080/admin`. If `APP_ADMIN_API_KEY` is configured, enter that value in the Admin API Key field. Resources can be created, edited, and deleted from the UI using a raw JSON editor.
+
+The UI uses the same `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
+
 Environment variables:
 
 - `APP_ADDR`, default `:8080`
@@ -101,6 +107,19 @@ List resources:
 
 ```sh
 curl -s http://127.0.0.1:8080/api/v1/resources
+```
+
+Get one resource:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/resources/jstor | jq
+```
+
+Delete a resource:
+
+```sh
+curl -X DELETE http://127.0.0.1:8080/api/v1/resources/jstor \
+  -H 'Authorization: Bearer devsecret' | jq
 ```
 
 Test a URL:
