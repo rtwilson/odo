@@ -25,10 +25,16 @@ The important architectural rule is that management and configuration happen thr
 
 ## Local Run
 
+Run without an API key for local dev. Management endpoints are unprotected in this mode, and the app logs a startup warning:
+
 ```sh
-export APP_ADMIN_API_KEY=dev-secret
-go mod tidy
 go run ./cmd/odo
+```
+
+Run with an API key:
+
+```sh
+APP_ADMIN_API_KEY=devsecret go run ./cmd/odo
 ```
 
 Open:
@@ -42,7 +48,7 @@ Environment variables:
 - `APP_ADDR`, default `:8080`
 - `APP_DB_PATH`, default `./data/app.db`
 - `APP_CONFIG_DIR`, default `./config`
-- `APP_ADMIN_API_KEY`, required for management `POST` endpoints
+- `APP_ADMIN_API_KEY`, optional for local dev; when set, management `POST` endpoints require `Authorization: Bearer <token>`
 
 ## API Examples
 
@@ -56,7 +62,7 @@ Import resource config files:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/api/v1/config/import \
-  -H "Authorization: Bearer $APP_ADMIN_API_KEY"
+  -H 'Authorization: Bearer devsecret' | jq
 ```
 
 List resources:
@@ -77,7 +83,7 @@ Create or update a resource:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/api/v1/resources \
-  -H "Authorization: Bearer $APP_ADMIN_API_KEY" \
+  -H 'Authorization: Bearer devsecret' \
   -H 'Content-Type: application/json' \
   -d @config/resources/jstor.json
 ```

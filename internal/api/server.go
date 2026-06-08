@@ -128,13 +128,17 @@ func (s *Server) logging(next http.Handler) http.Handler {
 
 func (s *Server) requireAdminAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.adminKey == "" {
+			next(w, r)
+			return
+		}
 		token := bearerToken(r.Header.Get("Authorization"))
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		if s.adminKey == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) != 1 {
-			writeError(w, http.StatusUnauthorized, "invalid bearer token")
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) != 1 {
+			writeError(w, http.StatusForbidden, "invalid bearer token")
 			return
 		}
 		next(w, r)

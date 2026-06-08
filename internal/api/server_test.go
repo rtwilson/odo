@@ -24,6 +24,23 @@ func TestHealthDoesNotRequireAPIKey(t *testing.T) {
 	}
 }
 
+func TestManagementEndpointWorksWithoutConfiguredAPIKey(t *testing.T) {
+	server := newTestServer(t, "")
+	body := bytes.NewBufferString(`{
+  "id": "jstor",
+  "name": "JSTOR",
+  "domains": [{"host": "www.jstor.org"}]
+}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/resources", body)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected unset API key to allow dev management request, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestManagementEndpointAllowsValidAPIKey(t *testing.T) {
 	server := newTestServer(t, "secret")
 	body := bytes.NewBufferString(`{
@@ -64,8 +81,8 @@ func TestManagementEndpointRejectsInvalidAPIKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected invalid API key to return 401, got %d with body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected invalid API key to return 403, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
 

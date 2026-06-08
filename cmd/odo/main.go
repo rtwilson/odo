@@ -16,6 +16,9 @@ func main() {
 	adminAPIKey := os.Getenv("APP_ADMIN_API_KEY")
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	if adminAPIKey == "" {
+		logger.Warn("APP_ADMIN_API_KEY is not set; management API is unprotected")
+	}
 
 	store, err := db.Open(dbPath)
 	if err != nil {
