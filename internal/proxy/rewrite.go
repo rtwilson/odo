@@ -11,16 +11,20 @@ var (
 	htmlURLAttrRE   = regexp.MustCompile(`(?i)\b(data-src|data-href|href|src|action|poster)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 	htmlSrcsetRE    = regexp.MustCompile(`(?i)\bsrcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 	htmlStyleAttrRE = regexp.MustCompile(`(?i)\bstyle\s*=\s*("[^"]*"|'[^']*')`)
+	htmlIntegrityRE = regexp.MustCompile(`(?i)\s+integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 	cssURLRE        = regexp.MustCompile(`(?i)url\(\s*("[^"]*"|'[^']*'|[^)]*)\s*\)`)
 )
 
+const PublicProxyPath = "/odo"
+
 func RewriteHTML(ctx context.Context, body string, base *url.URL, check TargetCheck) string {
+	original := body
 	body = htmlURLAttrRE.ReplaceAllStringFunc(body, func(match string) string {
 		name, rawValue, ok := splitAttr(match)
 		if !ok {
 			return match
 		}
-		rewritten := rewriteOneURL(ctx, unquoteAttr(rawValue), base, check)
+		rewritten := rewriteOneURL(ctx, unquoteAttr(rawValue), base, check, rewriteCategory(name))
 		return name + "=" + quoteLike(rawValue, rewritten)
 	})
 
@@ -42,6 +46,17 @@ func RewriteHTML(ctx context.Context, body string, base *url.URL, check TargetCh
 		return name + "=" + quoteLike(rawValue, rewritten)
 	})
 
+	if body != original {
+		removed := 0
+		body = htmlIntegrityRE.ReplaceAllStringFunc(body, func(match string) string {
+			removed++
+			return ""
+		})
+		if diagnostics := DiagnosticsFrom(ctx); diagnostics != nil {
+			diagnostics.RemovedIntegrityCount += removed
+		}
+	}
+
 	return body
 }
 
@@ -54,7 +69,7 @@ func RewriteCSS(ctx context.Context, body string, base *url.URL, check TargetChe
 		}
 		rawValue := strings.TrimSpace(match[start+1 : end])
 		value := unquoteAttr(rawValue)
-		rewritten := rewriteOneURL(ctx, value, base, check)
+		rewritten := rewriteOneURL(ctx, value, base, check, "asset")
 		if rewritten == value {
 			return match
 		}
@@ -105,7 +120,7 @@ func rewriteSrcset(ctx context.Context, value string, base *url.URL, check Targe
 		if len(fields) == 0 {
 			continue
 		}
-		fields[0] = rewriteOneURL(ctx, fields[0], base, check)
+		fields[0] = rewriteOneURL(ctx, fields[0], base, check, "asset")
 		candidates[i] = leading + strings.Join(fields, " ")
 	}
 	return strings.Join(candidates, ", ")
@@ -115,7 +130,7 @@ func leadingSpace(value string) string {
 	return value[:len(value)-len(strings.TrimLeft(value, " \t\r\n"))]
 }
 
-func rewriteOneURL(ctx context.Context, raw string, base *url.URL, check TargetCheck) string {
+func rewriteOneURL(ctx context.Context, raw string, base *url.URL, check TargetCheck, category string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.HasPrefix(raw, "#") {
 		return raw
@@ -135,8 +150,42 @@ func rewriteOneURL(ctx context.Context, raw string, base *url.URL, check TargetC
 		return raw
 	}
 	target, result := check(ctx, resolved.String())
+	diagnostics := DiagnosticsFrom(ctx)
+	if result.Blocked || result.Action == "block" {
+		if diagnostics != nil {
+			diagnostics.BlockedURLCount++
+		}
+		return raw
+	}
+	if result.Action != "" && result.Action != "proxy" && result.Action != "block" {
+		if diagnostics != nil {
+			diagnostics.NonProxyableAllowedCount++
+		}
+		return raw
+	}
 	if !result.Allowed || target == nil {
 		return raw
 	}
-	return "/p?url=" + url.QueryEscape(target.String())
+	if diagnostics != nil {
+		switch category {
+		case "form":
+			diagnostics.RewrittenFormCount++
+		case "navigation":
+			diagnostics.RewrittenNavigationCount++
+		default:
+			diagnostics.RewrittenAssetCount++
+		}
+	}
+	return PublicProxyPath + "?url=" + url.QueryEscape(target.String())
+}
+
+func rewriteCategory(attr string) string {
+	switch strings.ToLower(strings.TrimSpace(attr)) {
+	case "action":
+		return "form"
+	case "href", "data-href":
+		return "navigation"
+	default:
+		return "asset"
+	}
 }

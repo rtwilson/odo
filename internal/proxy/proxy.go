@@ -21,6 +21,7 @@ type FetchOptions struct {
 	Check        TargetCheck
 	Sessions     *SessionStore
 	DebugHeaders bool
+	Diagnostics  *DiagnosticsStore
 }
 
 func DefaultHTTPClient() *http.Client {
@@ -55,10 +56,19 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "")
 			return
 		}
+		ctx, diagnostics := WithDiagnostics(r.Context())
+		r = r.WithContext(ctx)
 		session := sessions.GetOrCreate(r, w)
 
 		rawURL := r.URL.Query().Get("url")
 		target, result := check(r.Context(), rawURL)
+		if target != nil {
+			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+		}
+		diagnostics.ResourceID = result.ResourceID
+		defer func() {
+			options.Diagnostics.Add(*diagnostics)
+		}()
 		setAccessLogMetadata(r, rawURL, result)
 		if !result.Allowed {
 			w.Header().Set("Content-Type", "application/json")
@@ -97,6 +107,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
 			metadata.UpstreamStatus = resp.StatusCode
 		}
+		diagnostics.UpstreamStatus = resp.StatusCode
 
 		if isRedirect(resp.StatusCode) {
 			handleRedirect(w, r, target, resp, check)
@@ -157,6 +168,9 @@ func copySafeRequestHeaders(dst, src http.Header) {
 }
 
 func copySafeResponseHeaders(dst, src http.Header) {
+	// MVP compatibility choice: transformed/proxied pages often fail if upstream
+	// CSP/SRI policies refer to the vendor origin. Do not forward CSP headers
+	// until Odo has fuller rewriting and policy handling.
 	for _, name := range []string{"Content-Type", "Cache-Control", "Last-Modified", "ETag", "Expires"} {
 		if values := src.Values(name); len(values) > 0 {
 			for _, value := range values {
@@ -207,7 +221,10 @@ func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, res
 		writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "redirect target is not allowed")
 		return
 	}
-	w.Header().Set("Location", "/p?url="+url.QueryEscape(nextTarget.String()))
+	if diagnostics := DiagnosticsFrom(r.Context()); diagnostics != nil {
+		diagnostics.RewrittenRedirectCount++
+	}
+	w.Header().Set("Location", PublicProxyPath+"?url="+url.QueryEscape(nextTarget.String()))
 	w.WriteHeader(resp.StatusCode)
 }
 

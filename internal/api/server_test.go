@@ -49,6 +49,24 @@ func TestOpenAPIYAML(t *testing.T) {
 	}
 }
 
+func TestDocsUseOdoProxyRoute(t *testing.T) {
+	for _, path := range []string{"../../README.md", "../../openapi/openapi.yaml"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(body)
+		if !strings.Contains(text, "/odo") {
+			t.Fatalf("expected %s to reference /odo", path)
+		}
+		for _, stale := range []string{"/p?url", "`/p", " /p:", "\n  /p:"} {
+			if strings.Contains(text, stale) {
+				t.Fatalf("expected %s not to contain stale proxy route %q", path, stale)
+			}
+		}
+	}
+}
+
 func TestAdminContainsResourceEditorControls(t *testing.T) {
 	server := newTestServer(t, "secret")
 
@@ -189,7 +207,7 @@ func TestRecentAccessLogsReturnsSafeEntries(t *testing.T) {
 	}
 	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
 
-	proxyReq := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example?token=secret", nil)
+	proxyReq := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example?token=secret", nil)
 	proxyReq.Header.Set("Authorization", "Bearer should-not-appear")
 	proxyReq.Header.Set("Cookie", "session=should-not-appear")
 	proxyRec := httptest.NewRecorder()
@@ -210,7 +228,7 @@ func TestRecentAccessLogsReturnsSafeEntries(t *testing.T) {
 			t.Fatalf("recent access logs leaked %q: %s", leaked, body)
 		}
 	}
-	for _, want := range []string{`"route":"/p"`, `"target_host":"www.jstor.org"`, `"resource_id":"jstor"`, `"decision":"allowed"`} {
+	for _, want := range []string{`"route":"/odo"`, `"target_host":"www.jstor.org"`, `"resource_id":"jstor"`, `"decision":"allowed"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected recent access logs to contain %q, got %s", want, body)
 		}
@@ -230,7 +248,7 @@ func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
 	}
 	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
 
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -241,7 +259,7 @@ func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
 	if strings.Contains(line, "https://www.jstor.org/stable/example") || strings.Contains(line, "?url=") {
 		t.Fatalf("privacy proxy log leaked full target URL: %q", line)
 	}
-	for _, want := range []string{"route=/p", "target_host=www.jstor.org", "resource_id=jstor", "decision=allowed"} {
+	for _, want := range []string{"route=/odo", "target_host=www.jstor.org", "resource_id=jstor", "decision=allowed"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("expected proxy access log to contain %q, got %q", want, line)
 		}
@@ -255,7 +273,7 @@ func TestProxyStubAllowsSafeMatchedURLWithPublicDNS(t *testing.T) {
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -277,7 +295,7 @@ func TestProxyFetchesAllowlistedUpstreamContent(t *testing.T) {
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -308,7 +326,7 @@ func TestProxyHEADWorks(t *testing.T) {
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodHead, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodHead, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -322,7 +340,7 @@ func TestProxyHEADWorks(t *testing.T) {
 
 func TestProxyPOSTReturns405(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
-	req := httptest.NewRequest(http.MethodPost, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodPost, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -333,7 +351,7 @@ func TestProxyPOSTReturns405(t *testing.T) {
 
 func TestProxyRefusesNonAllowlistedURL(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://example.org/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://example.org/", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -355,7 +373,7 @@ func TestProxyBlockActionDeniesFetch(t *testing.T) {
 		t.Fatalf("upsert blocked resource: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://blocked.example.org/pixel", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://blocked.example.org/pixel", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -380,7 +398,7 @@ func TestProxyAllowActionDoesNotFetch(t *testing.T) {
 		t.Fatalf("upsert external resource: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://external.example.org/page", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://external.example.org/page", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -394,7 +412,7 @@ func TestProxyAllowActionDoesNotFetch(t *testing.T) {
 
 func TestProxyRefusesUnsafeURL(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
-	req := httptest.NewRequest(http.MethodGet, "/p?url=http://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=http://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -410,7 +428,7 @@ func TestProxyRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -418,7 +436,7 @@ func TestProxyRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
 		t.Fatalf("expected 302, got %d with body %s", rec.Code, rec.Body.String())
 	}
 	location := rec.Header().Get("Location")
-	if !strings.HasPrefix(location, "/p?url=") || !strings.Contains(location, "www.jstor.org") {
+	if !strings.HasPrefix(location, "/odo?url=") || !strings.Contains(location, "www.jstor.org") {
 		t.Fatalf("expected local proxied redirect, got %q", location)
 	}
 }
@@ -430,7 +448,7 @@ func TestProxyRedirectToUnsafeTargetIsRejected(t *testing.T) {
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -457,7 +475,7 @@ func TestProxyDoesNotForwardUnsafeRequestHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	req.Header.Set("Accept", "text/html")
 	req.Header.Set("Accept-Language", "en-US")
 	req.Header.Set("User-Agent", "odo-test")
@@ -477,7 +495,7 @@ func TestProxyStubRejectsPrivateResolvedIP(t *testing.T) {
 		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 

@@ -17,11 +17,11 @@ func TestDefaultFormatIsPrivacy(t *testing.T) {
 		t.Fatalf("New returned error: %v", err)
 	}
 
-	req := requestWithMetadata(t, "GET", "/p?url=https://www.jstor.org/stable/example")
+	req := requestWithMetadata(t, "GET", "/odo?url=https://www.jstor.org/stable/example")
 	logger.Log(req, http.StatusOK, 123, 2*time.Millisecond)
 
 	line := out.String()
-	if !strings.Contains(line, "method=GET") || !strings.Contains(line, "route=/p") {
+	if !strings.Contains(line, "method=GET") || !strings.Contains(line, "route=/odo") {
 		t.Fatalf("expected privacy key/value line, got %q", line)
 	}
 	if strings.Contains(line, "https://www.jstor.org/stable/example") || strings.Contains(line, "?url=") {

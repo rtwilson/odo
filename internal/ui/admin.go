@@ -238,7 +238,7 @@ func AdminHTML() string {
         show({ error: 'target URL is required' });
         return;
       }
-      window.open('/p?url=' + encodeURIComponent(target), '_blank', 'noopener');
+      window.open('/odo?url=' + encodeURIComponent(target), '_blank', 'noopener');
     });
 
     document.querySelector('#fetch-proxy').addEventListener('click', async () => {

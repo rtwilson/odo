@@ -66,7 +66,7 @@ Environment variables:
 - `APP_ADMIN_API_KEY`, optional for local dev; when set, management endpoints require `Authorization: Bearer <token>`
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
-- `APP_PROXY_DEBUG`, default `false`; when `true`, `/p` adds safe cookie/session diagnostic count headers without exposing cookie values
+- `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
 
 ## API Examples
 
@@ -143,7 +143,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/resources \
 Minimal proxy fetch:
 
 ```sh
-curl -s 'http://127.0.0.1:8080/p?url=https://www.jstor.org/stable/example'
+curl -s 'http://127.0.0.1:8080/odo?url=https://www.jstor.org/stable/example'
 ```
 
 Admin proxy test fetch:
@@ -164,7 +164,7 @@ curl http://127.0.0.1:8080/api/v1/logs/access/recent \
 
 ## Admin Troubleshooting Tools
 
-The admin UI includes a Proxy Test panel that can test rule matching, open a target through `/p`, or fetch a bounded body preview through the protected `/api/v1/proxy/test-fetch` endpoint.
+The admin UI includes a Proxy Test panel that can test rule matching, open a target through `/odo`, or fetch a bounded body preview through the protected `/api/v1/proxy/test-fetch` endpoint.
 
 Recent access logs are privacy-filtered and available through the admin UI. Proxy diagnostics are also exposed from the UI for checking blocked hosts, rewrite counts, and upstream status as those diagnostics grow. These tools are intended to make the access layer easier to understand and troubleshoot without exposing full target URLs, cookies, or authorization headers.
 
@@ -197,11 +197,13 @@ APP_ACCESS_LOG_FORMAT=json go run ./cmd/odo
 
 Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs that match configured resource domains. Raw IP hosts, localhost, private networks, link-local addresses, non-global addresses, suspicious internal hostnames such as `.local` and `.internal`, URL userinfo, fragments, wildcards, and non-default ports are blocked before the proxy fetch is allowed.
 
-`/p` now performs a minimal safe outbound `GET`/`HEAD` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
+`/odo?url=...` is the preferred public proxy route. Clicked links, asset references, GET form actions, and validated upstream redirects are rewritten back through `/odo` so the patron's browser continues to talk to Odo and vendors continue to see Odo's outbound IP rather than the patron's IP.
+
+`/odo` performs a minimal safe outbound `GET`/`HEAD` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
 
 Odo keeps a server-side per-session cookie jar for proxied browsing. The browser receives only an `odo_proxy_sid` cookie; upstream/vendor cookies are stored server-side and are not exposed directly to the browser. This improves continuity across proxied requests, but it is not user authentication. In HA deployments, the in-memory session store would need Redis or another shared session store.
 
-JavaScript-heavy sites may still break. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/p?url=...`. Content-Security-Policy is not copied yet because upstream CSP often blocks proxied assets before fuller rewriting exists.
+JavaScript-heavy sites may still break. POST forms, JavaScript fetch/XHR, WebSockets, and full SPA compatibility are future work. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/odo?url=...`. Content-Security-Policy is not copied yet, and `integrity` attributes are removed when URLs are rewritten, because upstream CSP and SRI often reject proxied/transformed assets before fuller policy rewriting exists.
 
 ## Domain Rules
 

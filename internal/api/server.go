@@ -32,6 +32,7 @@ type Server struct {
 	httpClient *http.Client
 	sessions   *proxy.SessionStore
 	proxyDebug bool
+	proxyDiag  *proxy.DiagnosticsStore
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -68,6 +69,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		httpClient: client,
 		sessions:   proxy.NewSessionStore(2 * time.Hour),
 		proxyDebug: proxyDebug,
+		proxyDiag:  proxy.NewDiagnosticsStore(200),
 	}
 }
 
@@ -95,12 +97,16 @@ func (s *Server) Routes() http.Handler {
 		Check:        s.proxyTarget,
 		Sessions:     s.sessions,
 		DebugHeaders: s.proxyDebug,
+		Diagnostics:  s.proxyDiag,
 	})
-	mux.HandleFunc("GET /p", proxyHandler)
-	mux.HandleFunc("POST /p", proxyHandler)
-	mux.HandleFunc("PUT /p", proxyHandler)
-	mux.HandleFunc("PATCH /p", proxyHandler)
-	mux.HandleFunc("DELETE /p", proxyHandler)
+	mux.HandleFunc("GET /odo", proxyHandler)
+	mux.HandleFunc("HEAD /odo", proxyHandler)
+	mux.HandleFunc("POST /odo", proxyHandler)
+	mux.HandleFunc("PUT /odo", proxyHandler)
+	mux.HandleFunc("PATCH /odo", proxyHandler)
+	mux.HandleFunc("DELETE /odo", proxyHandler)
+	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
+	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
 	return s.logging(mux)
 }
 
@@ -116,6 +122,14 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml")
 	_, _ = w.Write(openapi.Spec)
+}
+
+func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
+	target := proxy.PublicProxyPath
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -371,7 +385,7 @@ func (s *Server) recentAccessLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) recentProxyDiagnostics(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": s.proxyDiag.Recent()})
 }
 
 func (s *Server) proxyRawURL(rawURL string) resources.TestResult {

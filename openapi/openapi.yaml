@@ -299,10 +299,10 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
-  /p:
+  /odo:
     get:
       summary: Minimal proxy fetch
-      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, streams the upstream response, applies minimal HTML/CSS asset URL rewriting, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. JavaScript rewriting is not implemented yet.
+      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. POST forms and JavaScript rewriting are not implemented yet.
       operationId: proxyFetch
       security: []
       parameters:

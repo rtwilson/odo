@@ -1,0 +1,22 @@
+{
+  "id": "umn",
+  "name": "umn lib",
+  "status": "active",
+  "domains": [
+    {
+      "host": "lib.umn.edu",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy"
+    },
+    {
+      "host": "www.lib.umn.edu",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy"
+    }
+  ],
+  "sample_urls": [
+    "https://lib.umn.edu"
+  ]
+}
