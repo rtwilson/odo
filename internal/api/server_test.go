@@ -13,7 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/db"
+	"example.org/odo/internal/resources"
 )
 
 func TestHealthDoesNotRequireAPIKey(t *testing.T) {
@@ -40,6 +42,42 @@ func TestOpenAPIYAML(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "openapi: 3.1.0") {
 		t.Fatalf("expected OpenAPI 3.1 marker in response, got %q", rec.Body.String())
+	}
+}
+
+func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
+	var logs bytes.Buffer
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, &logs)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	server := newTestServerWithConfigAndAccessLog(t, "", t.TempDir(), accessLogger)
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:     "jstor",
+		Name:   "JSTOR",
+		Status: "active",
+		Domains: []resources.DomainRule{
+			{Host: "www.jstor.org", Match: "exact"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proxy stub to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	line := logs.String()
+	if strings.Contains(line, "https://www.jstor.org/stable/example") || strings.Contains(line, "?url=") {
+		t.Fatalf("privacy proxy log leaked full target URL: %q", line)
+	}
+	for _, want := range []string{"route=/p", "target_host=www.jstor.org", "resource_id=jstor", "decision=allowed"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected proxy access log to contain %q, got %q", want, line)
+		}
 	}
 }
 
@@ -283,6 +321,14 @@ func newTestServer(t *testing.T, adminKey string) *Server {
 }
 
 func newTestServerWithConfig(t *testing.T, adminKey, configDir string) *Server {
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	return newTestServerWithConfigAndAccessLog(t, adminKey, configDir, accessLogger)
+}
+
+func newTestServerWithConfigAndAccessLog(t *testing.T, adminKey, configDir string, accessLogger *accesslog.Logger) *Server {
 	t.Helper()
 
 	store, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -299,7 +345,7 @@ func newTestServerWithConfig(t *testing.T, adminKey, configDir string) *Server {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(store, configDir, adminKey, logger)
+	return NewServerWithAccessLogger(store, configDir, adminKey, logger, accessLogger)
 }
 
 func writeAPIResourceConfig(t *testing.T, configDir, name, body string) {

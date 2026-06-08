@@ -3,6 +3,7 @@
 #
 # Binaries for programs and plugins
 agentfile.txt
+*.log
 *.exe
 *.exe~
 *.dll

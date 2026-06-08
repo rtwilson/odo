@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/config"
 	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
@@ -22,10 +23,16 @@ type Server struct {
 	configDir string
 	adminKey  string
 	logger    *slog.Logger
+	accessLog *accesslog.Logger
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
-	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger}
+	accessLogger, _ := accesslog.New(accesslog.FormatPrivacy, nil)
+	return NewServerWithAccessLogger(store, configDir, adminKey, logger, accessLogger)
+}
+
+func NewServerWithAccessLogger(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger) *Server {
+	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger, accessLog: accessLogger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -161,16 +168,32 @@ func (s *Server) testRawURL(rawURL string) resources.TestResult {
 
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, metadata := accesslog.WithMetadata(r.Context())
+		metadata.RequestID = accesslog.RequestID(r)
+		r = r.WithContext(ctx)
+
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		path := r.URL.Path
-		s.logger.Info("request",
-			"method", r.Method,
-			"path", path,
-			"remote_addr", r.RemoteAddr,
-			"duration_ms", time.Since(start).Milliseconds(),
-		)
+		recorder := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		s.accessLog.Log(r, recorder.status, recorder.bytes, time.Since(start))
 	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(data)
+	r.bytes += n
+	return n, err
 }
 
 func (s *Server) requireAdminAPIKey(next http.HandlerFunc) http.HandlerFunc {

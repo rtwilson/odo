@@ -21,7 +21,7 @@ The important architectural rule is that management and configuration happen thr
 - A full admin login/session system. Management APIs use a simple bearer API key for now.
 - A SAML/Shibboleth Service Provider.
 - A production HA deployment.
-- A complete audit, access-log, or OpenAPI implementation.
+- A complete audit implementation.
 
 ## Local Run
 
@@ -57,6 +57,8 @@ Environment variables:
 - `APP_DB_PATH`, default `./data/app.db`
 - `APP_CONFIG_DIR`, default `./config`
 - `APP_ADMIN_API_KEY`, optional for local dev; when set, management endpoints require `Authorization: Bearer <token>`
+- `APP_ACCESS_LOG_FORMAT`, default `privacy`
+- `APP_ACCESS_LOG_PATH`, optional path to append access logs
 
 ## API Examples
 
@@ -123,6 +125,31 @@ Proxy stub:
 curl -s 'http://127.0.0.1:8080/p?url=https://www.jstor.org/stable/example'
 ```
 
+## Access Logging
+
+Access logs default to privacy-filtered output on stdout. Privacy mode logs request metadata and safe proxy decisions without full query strings, target URLs, article URLs, search terms, or reading-history-like paths.
+
+Available formats:
+
+```sh
+APP_ACCESS_LOG_FORMAT=privacy
+APP_ACCESS_LOG_FORMAT=common
+APP_ACCESS_LOG_FORMAT=combined
+APP_ACCESS_LOG_FORMAT=json
+```
+
+Write access logs to a file by setting:
+
+```sh
+APP_ACCESS_LOG_PATH=/path/to/access.log
+```
+
+Example:
+
+```sh
+APP_ACCESS_LOG_FORMAT=json go run ./cmd/odo
+```
+
 ## Podman
 
 Build:
@@ -149,5 +176,4 @@ podman run --rm -p 8080:8080 \
 - Signed proxy links.
 - URL SSRF protections.
 - Outbound proxy fetch/rewrite.
-- Apache/nginx-style access logs plus privacy-filtered structured logs.
 - HA with PostgreSQL and Redis.

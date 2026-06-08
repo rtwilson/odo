@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 
+	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/api"
 	"example.org/odo/internal/db"
 )
@@ -14,6 +15,8 @@ func main() {
 	dbPath := env("APP_DB_PATH", "./data/app.db")
 	configDir := env("APP_CONFIG_DIR", "./config")
 	adminAPIKey := os.Getenv("APP_ADMIN_API_KEY")
+	accessLogFormat := env("APP_ACCESS_LOG_FORMAT", accesslog.FormatPrivacy)
+	accessLogPath := os.Getenv("APP_ACCESS_LOG_PATH")
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	if adminAPIKey == "" {
@@ -32,7 +35,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	server := api.NewServer(store, configDir, adminAPIKey, logger)
+	accessLogger, accessLogCloser, err := accesslog.Open(accessLogFormat, accessLogPath)
+	if err != nil {
+		logger.Error("open access log", "err", err)
+		os.Exit(1)
+	}
+	defer accessLogCloser.Close()
+
+	server := api.NewServerWithAccessLogger(store, configDir, adminAPIKey, logger, accessLogger)
 	logger.Info("odo listening", "addr", addr, "db", dbPath, "config_dir", configDir)
 	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
 		logger.Error("server stopped", "err", err)
