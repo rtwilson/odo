@@ -1,9 +1,11 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"example.org/odo/internal/config"
@@ -16,11 +18,12 @@ import (
 type Server struct {
 	store     *db.Store
 	configDir string
+	adminKey  string
 	logger    *slog.Logger
 }
 
-func NewServer(store *db.Store, configDir string, logger *slog.Logger) *Server {
-	return &Server{store: store, configDir: configDir, logger: logger}
+func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
+	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -29,8 +32,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /admin", s.admin)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
-	mux.HandleFunc("POST /api/v1/resources", s.upsertResource)
-	mux.HandleFunc("POST /api/v1/config/import", s.importConfig)
+	mux.HandleFunc("POST /api/v1/resources", s.requireAdminAPIKey(s.upsertResource))
+	mux.HandleFunc("POST /api/v1/config/import", s.requireAdminAPIKey(s.importConfig))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
 	mux.HandleFunc("GET /p", proxy.StubHandler(s.testRawURL))
 	return s.logging(mux)
@@ -121,6 +124,29 @@ func (s *Server) logging(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+func (s *Server) requireAdminAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := bearerToken(r.Header.Get("Authorization"))
+		if token == "" {
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		if s.adminKey == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "invalid bearer token")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func bearerToken(header string) string {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(header, prefix))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

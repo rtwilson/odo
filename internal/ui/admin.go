@@ -31,6 +31,7 @@ func AdminHTML() string {
     </header>
 
     <section class="toolbar">
+      <input id="api-key" type="password" placeholder="Admin API key" aria-label="Admin API key">
       <button id="load">Load resources</button>
       <button id="import">Import config files</button>
       <input id="url" value="https://www.jstor.org/stable/example" aria-label="URL to test">
@@ -48,12 +49,21 @@ func AdminHTML() string {
 
     async function api(path, options = {}) {
       const response = await fetch(path, {
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-        ...options
+        ...options,
+        headers: headers(options.headers)
       });
       const json = await response.json();
       if (!response.ok) throw json;
       return json;
+    }
+
+    function headers(extra = {}) {
+      const apiKey = document.querySelector('#api-key').value.trim();
+      return {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {}),
+        ...extra
+      };
     }
 
     document.querySelector('#load').addEventListener('click', async () => {

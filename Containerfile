@@ -16,5 +16,6 @@ USER odo
 ENV APP_ADDR=:8080
 ENV APP_DB_PATH=/data/app.db
 ENV APP_CONFIG_DIR=/config
+ENV APP_ADMIN_API_KEY=
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/odo"]

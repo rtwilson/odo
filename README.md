@@ -18,7 +18,7 @@ The important architectural rule is that management and configuration happen thr
 ## What It Is Not Yet
 
 - A full upstream proxy or HTML/link rewriter.
-- An authenticated admin surface.
+- A full admin login/session system. Management APIs use a simple bearer API key for now.
 - A SAML/Shibboleth Service Provider.
 - A production HA deployment.
 - A complete audit, access-log, or OpenAPI implementation.
@@ -26,6 +26,7 @@ The important architectural rule is that management and configuration happen thr
 ## Local Run
 
 ```sh
+export APP_ADMIN_API_KEY=dev-secret
 go mod tidy
 go run ./cmd/odo
 ```
@@ -41,6 +42,7 @@ Environment variables:
 - `APP_ADDR`, default `:8080`
 - `APP_DB_PATH`, default `./data/app.db`
 - `APP_CONFIG_DIR`, default `./config`
+- `APP_ADMIN_API_KEY`, required for management `POST` endpoints
 
 ## API Examples
 
@@ -53,7 +55,8 @@ curl -s http://127.0.0.1:8080/api/v1/health
 Import resource config files:
 
 ```sh
-curl -s -X POST http://127.0.0.1:8080/api/v1/config/import
+curl -s -X POST http://127.0.0.1:8080/api/v1/config/import \
+  -H "Authorization: Bearer $APP_ADMIN_API_KEY"
 ```
 
 List resources:
@@ -68,6 +71,15 @@ Test a URL:
 curl -s -X POST http://127.0.0.1:8080/api/v1/rules/test-url \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://www.jstor.org/stable/example"}'
+```
+
+Create or update a resource:
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/api/v1/resources \
+  -H "Authorization: Bearer $APP_ADMIN_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d @config/resources/jstor.json
 ```
 
 Proxy stub:
@@ -89,6 +101,7 @@ Run with mounted data and config directories. The `:Z` suffix lets Podman relabe
 ```sh
 mkdir -p data config/resources
 podman run --rm -p 8080:8080 \
+  -e APP_ADMIN_API_KEY=dev-secret \
   -v "$PWD/data:/data:Z" \
   -v "$PWD/config:/config:Z" \
   odo:dev
@@ -96,7 +109,7 @@ podman run --rm -p 8080:8080 \
 
 ## Next Steps
 
-- API-key auth.
+- Hardened API-key storage and rotation.
 - SAML SP support as a first-class module.
 - Signed proxy links.
 - URL SSRF protections.

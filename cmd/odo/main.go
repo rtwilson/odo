@@ -13,6 +13,7 @@ func main() {
 	addr := env("APP_ADDR", ":8080")
 	dbPath := env("APP_DB_PATH", "./data/app.db")
 	configDir := env("APP_CONFIG_DIR", "./config")
+	adminAPIKey := os.Getenv("APP_ADMIN_API_KEY")
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 
@@ -28,7 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	server := api.NewServer(store, configDir, logger)
+	server := api.NewServer(store, configDir, adminAPIKey, logger)
 	logger.Info("odo listening", "addr", addr, "db", dbPath, "config_dir", configDir)
 	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
 		logger.Error("server stopped", "err", err)
