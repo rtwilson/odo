@@ -38,9 +38,10 @@ type Logger struct {
 	format string
 	out    io.Writer
 	mu     sync.Mutex
+	recent []Entry
 }
 
-type entry struct {
+type Entry struct {
 	TS             string `json:"ts"`
 	RequestID      string `json:"request_id"`
 	RemoteIP       string `json:"remote_ip"`
@@ -146,7 +147,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		metadata.RequestID = RequestID(r)
 	}
 
-	e := entry{
+	e := Entry{
 		TS:             time.Now().UTC().Format(time.RFC3339),
 		RequestID:      metadata.RequestID,
 		RemoteIP:       remoteIP(r.RemoteAddr),
@@ -186,10 +187,33 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.recent = append(l.recent, e)
+	if overflow := len(l.recent) - 200; overflow > 0 {
+		copy(l.recent, l.recent[overflow:])
+		l.recent = l.recent[:200]
+	}
 	_, _ = fmt.Fprintln(l.out, line)
 }
 
-func privacyLine(e entry) string {
+func (l *Logger) Recent() []Entry {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entries := make([]Entry, len(l.recent))
+	copy(entries, l.recent)
+	for i := range entries {
+		entries[i].UserAgent = ""
+		entries[i].Referer = ""
+	}
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+	return entries
+}
+
+func privacyLine(e Entry) string {
 	parts := []string{
 		"ts=" + e.TS,
 		"request_id=" + e.RequestID,
@@ -222,7 +246,7 @@ func appendIf(parts []string, key, value string) []string {
 	return append(parts, key+"="+value)
 }
 
-func commonLine(e entry, r *http.Request, combined bool) string {
+func commonLine(e Entry, r *http.Request, combined bool) string {
 	line := fmt.Sprintf(
 		`%s - - [%s] "%s %s %s" %d %d`,
 		e.RemoteIP,

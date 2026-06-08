@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 )
 
 type TargetCheck func(ctx context.Context, rawURL string) (*url.URL, resources.TestResult)
+
+type FetchOptions struct {
+	Client       *http.Client
+	Check        TargetCheck
+	Sessions     *SessionStore
+	DebugHeaders bool
+}
 
 func DefaultHTTPClient() *http.Client {
 	return &http.Client{
@@ -29,14 +37,25 @@ func DefaultHTTPClient() *http.Client {
 }
 
 func FetchHandler(client *http.Client, check TargetCheck) http.HandlerFunc {
+	return FetchHandlerWithOptions(FetchOptions{Client: client, Check: check})
+}
+
+func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
+	client := options.Client
 	if client == nil {
 		client = DefaultHTTPClient()
 	}
+	sessions := options.Sessions
+	if sessions == nil {
+		sessions = NewSessionStore(2 * time.Hour)
+	}
+	check := options.Check
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "")
 			return
 		}
+		session := sessions.GetOrCreate(r, w)
 
 		rawURL := r.URL.Query().Get("url")
 		target, result := check(r.Context(), rawURL)
@@ -59,12 +78,21 @@ func FetchHandler(client *http.Client, check TargetCheck) http.HandlerFunc {
 		}
 		copySafeRequestHeaders(upstreamReq.Header, r.Header)
 
-		resp, err := client.Do(upstreamReq)
+		sessionClient := clientWithJar(client, session.Jar)
+		upstreamCookiesSent := len(session.Jar.Cookies(target))
+		resp, err := sessionClient.Do(upstreamReq)
 		if err != nil {
 			writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", safeFetchReason(err))
 			return
 		}
 		defer resp.Body.Close()
+		upstreamCookiesReceived := len(resp.Cookies())
+		if options.DebugHeaders {
+			w.Header().Set("X-Odo-Proxy-Session", "true")
+			w.Header().Set("X-Odo-Proxy-Session-Created", boolString(session.Created))
+			w.Header().Set("X-Odo-Upstream-Cookies-Sent", strconv.Itoa(upstreamCookiesSent))
+			w.Header().Set("X-Odo-Upstream-Cookies-Stored", strconv.Itoa(upstreamCookiesReceived))
+		}
 
 		if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
 			metadata.UpstreamStatus = resp.StatusCode
@@ -93,6 +121,19 @@ func FetchHandler(client *http.Client, check TargetCheck) http.HandlerFunc {
 			_, _ = io.Copy(w, resp.Body)
 		}
 	}
+}
+
+func clientWithJar(base *http.Client, jar http.CookieJar) *http.Client {
+	clone := *base
+	clone.Jar = jar
+	return &clone
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func writeProxyError(w http.ResponseWriter, status int, errText, reason string) {

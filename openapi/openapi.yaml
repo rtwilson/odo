@@ -238,10 +238,71 @@ paths:
                 $ref: "#/components/schemas/MatchResult"
         "400":
           $ref: "#/components/responses/Error"
+  /api/v1/proxy/test-fetch:
+    post:
+      summary: Fetch a bounded proxy troubleshooting preview
+      operationId: proxyTestFetch
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxyTestFetchRequest"
+      responses:
+        "200":
+          description: Proxy fetch preview or safe denial result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxyTestFetchResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+  /api/v1/logs/access/recent:
+    get:
+      summary: List recent privacy-filtered access log entries
+      operationId: recentAccessLogs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Recent in-memory access log entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentAccessLogsResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/diagnostics/proxy/recent:
+    get:
+      summary: List recent proxy diagnostics
+      operationId: recentProxyDiagnostics
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Recent proxy diagnostics, currently empty in the MVP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentProxyDiagnosticsResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /p:
     get:
       summary: Minimal proxy fetch
-      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, streams the upstream response, and applies minimal HTML/CSS asset URL rewriting. Cookies and JavaScript rewriting are not implemented yet.
+      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, streams the upstream response, applies minimal HTML/CSS asset URL rewriting, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. JavaScript rewriting is not implemented yet.
       operationId: proxyFetch
       security: []
       parameters:
@@ -431,6 +492,92 @@ components:
           type: string
           format: uri
           examples: [https://www.jstor.org/stable/example]
+    ProxyTestFetchRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          examples: [https://www.jstor.org/]
+    ProxyTestFetchResponse:
+      type: object
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+        error:
+          type: string
+        reason:
+          type: string
+        status:
+          type: integer
+        target_host:
+          type: string
+        resource_id:
+          type: string
+        content_type:
+          type: string
+        body_preview:
+          type: string
+        body_preview_truncated:
+          type: boolean
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+    RecentAccessLogsResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessLogEntry"
+    RecentProxyDiagnosticsResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AccessLogEntry:
+      type: object
+      required: [ts, request_id, remote_ip, method, route, status, bytes, duration_ms]
+      properties:
+        ts:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+        remote_ip:
+          type: string
+        method:
+          type: string
+        route:
+          type: string
+        status:
+          type: integer
+        bytes:
+          type: integer
+        duration_ms:
+          type: integer
+        target_host:
+          type: string
+        resource_id:
+          type: string
+        rule_host:
+          type: string
+        rule_match:
+          type: string
+        decision:
+          type: string
+        denial_reason:
+          type: string
+        upstream_status:
+          type: integer
     MatchResult:
       type: object
       required: [allowed, reason]

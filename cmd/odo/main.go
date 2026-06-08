@@ -8,6 +8,7 @@ import (
 	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/api"
 	"example.org/odo/internal/db"
+	"example.org/odo/internal/proxy"
 )
 
 func main() {
@@ -17,6 +18,7 @@ func main() {
 	adminAPIKey := os.Getenv("APP_ADMIN_API_KEY")
 	accessLogFormat := env("APP_ACCESS_LOG_FORMAT", accesslog.FormatPrivacy)
 	accessLogPath := os.Getenv("APP_ACCESS_LOG_PATH")
+	proxyDebug := env("APP_PROXY_DEBUG", "false") == "true"
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	if adminAPIKey == "" {
@@ -42,7 +44,7 @@ func main() {
 	}
 	defer accessLogCloser.Close()
 
-	server := api.NewServerWithAccessLogger(store, configDir, adminAPIKey, logger, accessLogger)
+	server := api.NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminAPIKey, logger, accessLogger, nil, proxy.DefaultHTTPClient(), proxyDebug)
 	logger.Info("odo listening", "addr", addr, "db", dbPath, "config_dir", configDir)
 	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
 		logger.Error("server stopped", "err", err)

@@ -66,6 +66,7 @@ Environment variables:
 - `APP_ADMIN_API_KEY`, optional for local dev; when set, management endpoints require `Authorization: Bearer <token>`
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
+- `APP_PROXY_DEBUG`, default `false`; when `true`, `/p` adds safe cookie/session diagnostic count headers without exposing cookie values
 
 ## API Examples
 
@@ -145,6 +146,28 @@ Minimal proxy fetch:
 curl -s 'http://127.0.0.1:8080/p?url=https://www.jstor.org/stable/example'
 ```
 
+Admin proxy test fetch:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/proxy/test-fetch \
+  -H 'Authorization: Bearer devsecret' \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.jstor.org/"}' | jq
+```
+
+Recent access logs:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/logs/access/recent \
+  -H 'Authorization: Bearer devsecret' | jq
+```
+
+## Admin Troubleshooting Tools
+
+The admin UI includes a Proxy Test panel that can test rule matching, open a target through `/p`, or fetch a bounded body preview through the protected `/api/v1/proxy/test-fetch` endpoint.
+
+Recent access logs are privacy-filtered and available through the admin UI. Proxy diagnostics are also exposed from the UI for checking blocked hosts, rewrite counts, and upstream status as those diagnostics grow. These tools are intended to make the access layer easier to understand and troubleshoot without exposing full target URLs, cookies, or authorization headers.
+
 ## Access Logging
 
 Access logs default to privacy-filtered output on stdout. Privacy mode logs request metadata and safe proxy decisions without full query strings, target URLs, article URLs, search terms, or reading-history-like paths.
@@ -176,7 +199,9 @@ Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs
 
 `/p` now performs a minimal safe outbound `GET`/`HEAD` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
 
-JavaScript-heavy sites may still break. Cookies/session flows are not implemented yet, and only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/p?url=...`. Content-Security-Policy is not copied yet because upstream CSP often blocks proxied assets before fuller rewriting exists.
+Odo keeps a server-side per-session cookie jar for proxied browsing. The browser receives only an `odo_proxy_sid` cookie; upstream/vendor cookies are stored server-side and are not exposed directly to the browser. This improves continuity across proxied requests, but it is not user authentication. In HA deployments, the in-memory session store would need Redis or another shared session store.
+
+JavaScript-heavy sites may still break. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/p?url=...`. Content-Security-Policy is not copied yet because upstream CSP often blocks proxied assets before fuller rewriting exists.
 
 ## Domain Rules
 

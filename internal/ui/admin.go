@@ -29,6 +29,8 @@ func AdminHTML() string {
     .list { min-height: 480px; }
     .resource-item { display: block; width: 100%; text-align: left; margin-bottom: 8px; background: #1f252b; border-color: #303841; }
     .resource-item.active { background: #2c704f; border-color: #3f946a; }
+    .sample { display: block; width: 100%; text-align: left; margin: 6px 0 10px; background: #222831; border-color: #39424d; color: #cfe4ff; }
+    .panel-title { width: 100%; margin: 0 0 4px; font-size: 18px; }
     .muted { color: #a8b0ba; }
     @media (max-width: 820px) { .workspace { grid-template-columns: 1fr; } }
   </style>
@@ -61,8 +63,20 @@ func AdminHTML() string {
       <button id="validate">Validate Config</button>
       <button id="import">Import config files</button>
       <button id="revisions">Load Config Revisions</button>
-      <input id="url" value="https://www.jstor.org/stable/example" aria-label="URL to test">
-      <button id="test">Test URL</button>
+    </section>
+
+    <section class="toolbar">
+      <h2 class="panel-title">Proxy Test</h2>
+      <input id="url" value="https://www.jstor.org/stable/example" aria-label="Target URL">
+      <button id="test">Test Rule</button>
+      <button id="open-proxy">Open Through Proxy</button>
+      <button id="fetch-proxy">Fetch Through Proxy</button>
+    </section>
+
+    <section class="toolbar">
+      <h2 class="panel-title">Logs and Diagnostics</h2>
+      <button id="access-logs">Load Access Logs</button>
+      <button id="proxy-diagnostics">Load Proxy Diagnostics</button>
     </section>
 
     <section>
@@ -136,6 +150,17 @@ func AdminHTML() string {
         button.textContent = resource.id + ' - ' + resource.name;
         button.addEventListener('click', () => setEditor(resource));
         list.appendChild(button);
+        for (const sampleURL of resource.sample_urls || []) {
+          const sample = document.createElement('button');
+          sample.className = 'sample';
+          sample.textContent = sampleURL;
+          sample.addEventListener('click', () => {
+            document.querySelector('#url').value = sampleURL;
+            setEditor(resource);
+            show({ selected_sample_url: sampleURL });
+          });
+          list.appendChild(sample);
+        }
       }
     }
 
@@ -205,6 +230,32 @@ func AdminHTML() string {
           body: JSON.stringify({ url: document.querySelector('#url').value })
         }));
       } catch (err) { show(err); }
+    });
+
+    document.querySelector('#open-proxy').addEventListener('click', () => {
+      const target = document.querySelector('#url').value.trim();
+      if (!target) {
+        show({ error: 'target URL is required' });
+        return;
+      }
+      window.open('/p?url=' + encodeURIComponent(target), '_blank', 'noopener');
+    });
+
+    document.querySelector('#fetch-proxy').addEventListener('click', async () => {
+      try {
+        show(await api('/api/v1/proxy/test-fetch', {
+          method: 'POST',
+          body: JSON.stringify({ url: document.querySelector('#url').value })
+        }));
+      } catch (err) { show(err); }
+    });
+
+    document.querySelector('#access-logs').addEventListener('click', async () => {
+      try { show(await api('/api/v1/logs/access/recent')); } catch (err) { show(err); }
+    });
+
+    document.querySelector('#proxy-diagnostics').addEventListener('click', async () => {
+      try { show(await api('/api/v1/diagnostics/proxy/recent')); } catch (err) { show(err); }
     });
   </script>
 </body>

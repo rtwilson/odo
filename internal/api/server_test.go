@@ -60,9 +60,159 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key"} {
+	for _, want := range []string{"Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Proxy Test", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
+		}
+	}
+}
+
+func TestProxyTestFetchRequiresAPIKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://www.jstor.org/"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing API key to return 401, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyTestFetchDeniedForNonAllowlistedURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://bad.example/"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected denied response to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["allowed"] != false || body["reason"] == "" || body["target_host"] != "bad.example" {
+		t.Fatalf("expected denied response with safe target host, got %#v", body)
+	}
+}
+
+func TestProxyTestFetchReturnsPreviewForAllowlistedUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Set-Cookie", "vendor=secret")
+		_, _ = w.Write([]byte("<!doctype html><title>JSTOR</title>"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://www.jstor.org/"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proxy test fetch to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["allowed"] != true || body["status"].(float64) != 200 || !strings.Contains(body["body_preview"].(string), "<!doctype html>") {
+		t.Fatalf("expected allowed preview response, got %#v", body)
+	}
+	headers := body["headers"].(map[string]any)
+	if headers["content-type"] != "text/html; charset=utf-8" || headers["cache-control"] != "max-age=60" {
+		t.Fatalf("expected safe headers, got %#v", headers)
+	}
+	if _, ok := headers["set-cookie"]; ok {
+		t.Fatalf("Set-Cookie should not be returned in header summary: %#v", headers)
+	}
+}
+
+func TestProxyTestFetchTruncatesLargePreview(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("a"), 20*1024))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://www.jstor.org/"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["body_preview_truncated"] != true {
+		t.Fatalf("expected truncated preview, got %#v", body)
+	}
+	if len(body["body_preview"].(string)) != 16*1024 {
+		t.Fatalf("expected 16 KiB preview, got %d", len(body["body_preview"].(string)))
+	}
+}
+
+func TestRecentAccessLogsRequiresAPIKey(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/access/recent", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected recent access logs without API key to return 401, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRecentAccessLogsReturnsSafeEntries(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
+
+	proxyReq := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example?token=secret", nil)
+	proxyReq.Header.Set("Authorization", "Bearer should-not-appear")
+	proxyReq.Header.Set("Cookie", "session=should-not-appear")
+	proxyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusOK {
+		t.Fatalf("expected proxy request to return 200, got %d with body %s", proxyRec.Code, proxyRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/access/recent", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected recent logs to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, leaked := range []string{"https://www.jstor.org/stable/example", "?url=", "token=secret", "should-not-appear"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("recent access logs leaked %q: %s", leaked, body)
+		}
+	}
+	for _, want := range []string{`"route":"/p"`, `"target_host":"www.jstor.org"`, `"resource_id":"jstor"`, `"decision":"allowed"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected recent access logs to contain %q, got %s", want, body)
 		}
 	}
 }
@@ -143,8 +293,8 @@ func TestProxyFetchesAllowlistedUpstreamContent(t *testing.T) {
 	if rec.Header().Get("Cache-Control") != "max-age=60" {
 		t.Fatalf("expected Cache-Control copied, got %q", rec.Header().Get("Cache-Control"))
 	}
-	if rec.Header().Get("Set-Cookie") != "" {
-		t.Fatalf("expected Set-Cookie not copied, got %q", rec.Header().Get("Set-Cookie"))
+	if strings.Contains(rec.Header().Get("Set-Cookie"), "secret=value") {
+		t.Fatalf("expected upstream Set-Cookie not copied, got %q", rec.Header().Get("Set-Cookie"))
 	}
 }
 
@@ -723,10 +873,24 @@ func newProxyFetchTestServer(t *testing.T, upstreamURL string) *Server {
 	if err != nil {
 		t.Fatalf("create access logger: %v", err)
 	}
-	return newProxyFetchTestServerWithAccessLog(t, upstreamURL, accessLogger)
+	return newProxyFetchTestServerWithAccessLogAndAdmin(t, upstreamURL, accessLogger, "")
+}
+
+func newProxyFetchTestServerWithAdmin(t *testing.T, upstreamURL, adminKey string) *Server {
+	t.Helper()
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	return newProxyFetchTestServerWithAccessLogAndAdmin(t, upstreamURL, accessLogger, adminKey)
 }
 
 func newProxyFetchTestServerWithAccessLog(t *testing.T, upstreamURL string, accessLogger *accesslog.Logger) *Server {
+	t.Helper()
+	return newProxyFetchTestServerWithAccessLogAndAdmin(t, upstreamURL, accessLogger, "")
+}
+
+func newProxyFetchTestServerWithAccessLogAndAdmin(t *testing.T, upstreamURL string, accessLogger *accesslog.Logger, adminKey string) *Server {
 	t.Helper()
 	client := &http.Client{
 		Transport: rewriteTransport(t, upstreamURL),
@@ -734,7 +898,7 @@ func newProxyFetchTestServerWithAccessLog(t *testing.T, upstreamURL string, acce
 			return http.ErrUseLastResponse
 		},
 	}
-	server := newTestServerWithConfigAccessLogResolverAndClient(t, "", t.TempDir(), accessLogger, publicTestResolver, client)
+	server := newTestServerWithConfigAccessLogResolverAndClient(t, adminKey, t.TempDir(), accessLogger, publicTestResolver, client)
 	if err := server.store.UpsertResource(resources.Resource{
 		ID:      "jstor",
 		Name:    "JSTOR",

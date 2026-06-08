@@ -76,8 +76,143 @@ func TestFetchHandlerFetchesAllowedURL(t *testing.T) {
 	if rec.Header().Get("Content-Type") != "text/plain" {
 		t.Fatalf("expected safe response header to be copied, got %q", rec.Header().Get("Content-Type"))
 	}
-	if rec.Header().Get("Set-Cookie") != "" {
-		t.Fatalf("expected Set-Cookie not to be copied, got %q", rec.Header().Get("Set-Cookie"))
+	if strings.Contains(rec.Header().Get("Set-Cookie"), "session=secret") {
+		t.Fatalf("expected upstream Set-Cookie not to be copied, got %q", rec.Header().Get("Set-Cookie"))
+	}
+}
+
+func TestFetchHandlerCreatesProxySessionCookie(t *testing.T) {
+	handler := FetchHandler(roundTripFunc(okResponse).client(), allowedTargetCheck)
+
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	cookie := findCookie(rec.Result().Cookies(), ProxySessionCookieName)
+	if cookie == nil {
+		t.Fatalf("expected %s cookie, got %#v", ProxySessionCookieName, rec.Result().Cookies())
+	}
+	if !cookie.HttpOnly {
+		t.Fatal("expected proxy session cookie to be HttpOnly")
+	}
+	if cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("expected SameSite=Lax, got %#v", cookie.SameSite)
+	}
+}
+
+func TestFetchHandlerReusesExistingProxySessionCookie(t *testing.T) {
+	handler := FetchHandler(roundTripFunc(okResponse).client(), allowedTargetCheck)
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/one", nil))
+	cookie := findCookie(first.Result().Cookies(), ProxySessionCookieName)
+	if cookie == nil {
+		t.Fatal("expected first request to create proxy session cookie")
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/two", nil)
+	secondReq.AddCookie(cookie)
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, secondReq)
+
+	if findCookie(second.Result().Cookies(), ProxySessionCookieName) != nil {
+		t.Fatalf("expected existing proxy session to be reused without setting a new cookie, got %#v", second.Result().Cookies())
+	}
+}
+
+func TestFetchHandlerStoresAndSendsUpstreamCookiesPerSession(t *testing.T) {
+	var seen []string
+	handler := FetchHandler(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Header.Get("Cookie"))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Set-Cookie": []string{"vendor=abc; Path=/"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}).client(), allowedTargetCheck)
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/one", nil))
+	sessionCookie := findCookie(first.Result().Cookies(), ProxySessionCookieName)
+	if sessionCookie == nil {
+		t.Fatal("expected proxy session cookie")
+	}
+	if strings.Contains(first.Header().Get("Set-Cookie"), "vendor=abc") {
+		t.Fatalf("vendor cookie leaked to browser: %q", first.Header().Get("Set-Cookie"))
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/two", nil)
+	secondReq.AddCookie(sessionCookie)
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, secondReq)
+
+	if len(seen) != 2 {
+		t.Fatalf("expected two upstream requests, got %d", len(seen))
+	}
+	if seen[0] != "" {
+		t.Fatalf("first upstream request should not have vendor cookie, got %q", seen[0])
+	}
+	if !strings.Contains(seen[1], "vendor=abc") {
+		t.Fatalf("second upstream request should include stored vendor cookie, got %q", seen[1])
+	}
+}
+
+func TestFetchHandlerDoesNotShareUpstreamCookiesAcrossProxySessions(t *testing.T) {
+	var seen []string
+	handler := FetchHandler(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Header.Get("Cookie"))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Set-Cookie": []string{"vendor=abc; Path=/"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}).client(), allowedTargetCheck)
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/one", nil))
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/two", nil))
+
+	if len(seen) != 2 {
+		t.Fatalf("expected two upstream requests, got %d", len(seen))
+	}
+	if seen[0] != "" || seen[1] != "" {
+		t.Fatalf("different proxy sessions should not share vendor cookies, got %#v", seen)
+	}
+}
+
+func TestFetchHandlerDebugHeadersExposeCountsNotCookieValues(t *testing.T) {
+	handler := FetchHandlerWithOptions(FetchOptions{
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Set-Cookie": []string{"vendor=supersecret; Path=/"}},
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Request:    req,
+			}, nil
+		}).client(),
+		Check:        allowedTargetCheck,
+		DebugHeaders: true,
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/one", nil))
+
+	if rec.Header().Get("X-Odo-Proxy-Session") != "true" {
+		t.Fatalf("expected proxy session debug header, got %#v", rec.Header())
+	}
+	if rec.Header().Get("X-Odo-Upstream-Cookies-Stored") != "1" {
+		t.Fatalf("expected stored cookie count, got %#v", rec.Header())
+	}
+	for name, values := range rec.Header() {
+		for _, value := range values {
+			if strings.Contains(value, "supersecret") || strings.Contains(value, "vendor=") {
+				t.Fatalf("debug header %s exposed cookie value/name: %q", name, value)
+			}
+		}
 	}
 }
 
@@ -246,6 +381,23 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func okResponse(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("ok")),
+		Request:    req,
+	}, nil
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
 }
 
 func (f roundTripFunc) client() *http.Client {

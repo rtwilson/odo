@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -29,6 +30,8 @@ type Server struct {
 	accessLog  *accesslog.Logger
 	ipLookup   proxy.IPLookupFunc
 	httpClient *http.Client
+	sessions   *proxy.SessionStore
+	proxyDebug bool
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -45,7 +48,27 @@ func NewServerWithAccessLoggerAndResolver(store *db.Store, configDir, adminKey s
 }
 
 func NewServerWithAccessLoggerResolverAndHTTPClient(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client) *Server {
-	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger, accessLog: accessLogger, ipLookup: lookup, httpClient: client}
+	return NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminKey, logger, accessLogger, lookup, client, false)
+}
+
+func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client, proxyDebug bool) *Server {
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
+	if client == nil {
+		client = proxy.DefaultHTTPClient()
+	}
+	return &Server{
+		store:      store,
+		configDir:  configDir,
+		adminKey:   adminKey,
+		logger:     logger,
+		accessLog:  accessLogger,
+		ipLookup:   lookup,
+		httpClient: client,
+		sessions:   proxy.NewSessionStore(2 * time.Hour),
+		proxyDebug: proxyDebug,
+	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -64,7 +87,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireAdminAPIKey(s.listConfigRevisions))
 	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireAdminAPIKey(s.getConfigRevision))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
-	proxyHandler := proxy.FetchHandler(s.httpClient, s.proxyTarget)
+	mux.HandleFunc("POST /api/v1/proxy/test-fetch", s.requireAdminAPIKey(s.proxyTestFetch))
+	mux.HandleFunc("GET /api/v1/logs/access/recent", s.requireAdminAPIKey(s.recentAccessLogs))
+	mux.HandleFunc("GET /api/v1/diagnostics/proxy/recent", s.requireAdminAPIKey(s.recentProxyDiagnostics))
+	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
+		Client:       s.httpClient,
+		Check:        s.proxyTarget,
+		Sessions:     s.sessions,
+		DebugHeaders: s.proxyDebug,
+	})
 	mux.HandleFunc("GET /p", proxyHandler)
 	mux.HandleFunc("POST /p", proxyHandler)
 	mux.HandleFunc("PUT /p", proxyHandler)
@@ -245,9 +276,139 @@ func (s *Server) testRawURL(rawURL string) resources.TestResult {
 	return resources.TestURL(rawURL, items)
 }
 
+func (s *Server) proxyTestFetch(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	target, result := s.proxyTestTarget(r.Context(), req.URL)
+	if !result.Allowed {
+		response := map[string]any{
+			"allowed": false,
+			"error":   "target URL is not allowed",
+			"reason":  result.Reason,
+		}
+		if result.Host != "" {
+			response["target_host"] = result.Host
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		return
+	}
+	client := noRedirectClient(s.httpClient)
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error":  "upstream fetch failed",
+			"reason": proxySafeFetchReason(err),
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	const previewLimit = 16 * 1024
+	previewBytes, err := io.ReadAll(io.LimitReader(resp.Body, previewLimit+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error":  "upstream fetch failed",
+			"reason": "response read failed",
+		})
+		return
+	}
+	truncated := len(previewBytes) > previewLimit
+	if truncated {
+		previewBytes = previewBytes[:previewLimit]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"allowed":                true,
+		"status":                 resp.StatusCode,
+		"target_host":            result.Host,
+		"resource_id":            result.ResourceID,
+		"content_type":           resp.Header.Get("Content-Type"),
+		"body_preview":           string(previewBytes),
+		"body_preview_truncated": truncated,
+		"headers":                safeHeaderSummary(resp.Header),
+	})
+}
+
+func (s *Server) proxyTestTarget(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
+	target, err := proxy.ValidateTargetURL(ctx, rawURL, s.ipLookup)
+	if err != nil {
+		return nil, resources.TestResult{Allowed: false, Reason: err.Error()}
+	}
+	items, err := s.store.ListResources()
+	if err != nil {
+		return nil, resources.TestResult{Allowed: false, Host: target.Hostname(), Reason: "resource lookup failed"}
+	}
+	result := resources.TestURL(target.String(), items)
+	if result.Host == "" {
+		result.Host = target.Hostname()
+	}
+	if !result.Allowed {
+		return nil, result
+	}
+	if result.Action != "proxy" {
+		result.Allowed = false
+		result.Reason = "not_proxyable"
+		return nil, result
+	}
+	return target, result
+}
+
+func (s *Server) recentAccessLogs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"entries": s.accessLog.Recent()})
+}
+
+func (s *Server) recentProxyDiagnostics(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
+}
+
 func (s *Server) proxyRawURL(rawURL string) resources.TestResult {
 	_, result := s.proxyTarget(context.Background(), rawURL)
 	return result
+}
+
+func noRedirectClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = proxy.DefaultHTTPClient()
+	}
+	clone := *base
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clone
+}
+
+func safeHeaderSummary(headers http.Header) map[string]string {
+	allowed := []string{"Cache-Control", "Content-Type", "ETag", "Expires", "Last-Modified"}
+	summary := map[string]string{}
+	for _, name := range allowed {
+		if value := headers.Get(name); value != "" {
+			summary[strings.ToLower(name)] = value
+		}
+	}
+	return summary
+}
+
+func proxySafeFetchReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		return "timeout"
+	}
+	return "request failed"
 }
 
 func (s *Server) proxyTarget(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
