@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -21,12 +22,13 @@ import (
 )
 
 type Server struct {
-	store     *db.Store
-	configDir string
-	adminKey  string
-	logger    *slog.Logger
-	accessLog *accesslog.Logger
-	ipLookup  proxy.IPLookupFunc
+	store      *db.Store
+	configDir  string
+	adminKey   string
+	logger     *slog.Logger
+	accessLog  *accesslog.Logger
+	ipLookup   proxy.IPLookupFunc
+	httpClient *http.Client
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -39,7 +41,11 @@ func NewServerWithAccessLogger(store *db.Store, configDir, adminKey string, logg
 }
 
 func NewServerWithAccessLoggerAndResolver(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc) *Server {
-	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger, accessLog: accessLogger, ipLookup: lookup}
+	return NewServerWithAccessLoggerResolverAndHTTPClient(store, configDir, adminKey, logger, accessLogger, lookup, proxy.DefaultHTTPClient())
+}
+
+func NewServerWithAccessLoggerResolverAndHTTPClient(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client) *Server {
+	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger, accessLog: accessLogger, ipLookup: lookup, httpClient: client}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -55,7 +61,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireAdminAPIKey(s.listConfigRevisions))
 	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireAdminAPIKey(s.getConfigRevision))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
-	mux.HandleFunc("GET /p", proxy.StubHandler(s.proxyRawURL))
+	proxyHandler := proxy.FetchHandler(s.httpClient, s.proxyTarget)
+	mux.HandleFunc("GET /p", proxyHandler)
+	mux.HandleFunc("POST /p", proxyHandler)
+	mux.HandleFunc("PUT /p", proxyHandler)
+	mux.HandleFunc("PATCH /p", proxyHandler)
+	mux.HandleFunc("DELETE /p", proxyHandler)
 	return s.logging(mux)
 }
 
@@ -177,10 +188,24 @@ func (s *Server) testRawURL(rawURL string) resources.TestResult {
 }
 
 func (s *Server) proxyRawURL(rawURL string) resources.TestResult {
-	if _, err := proxy.ValidateTargetURL(context.Background(), rawURL, s.ipLookup); err != nil {
-		return resources.TestResult{Allowed: false, Reason: err.Error()}
+	_, result := s.proxyTarget(context.Background(), rawURL)
+	return result
+}
+
+func (s *Server) proxyTarget(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
+	target, err := proxy.ValidateTargetURL(ctx, rawURL, s.ipLookup)
+	if err != nil {
+		return nil, resources.TestResult{Allowed: false, Reason: err.Error()}
 	}
-	return s.testRawURL(rawURL)
+	items, err := s.store.ListResources()
+	if err != nil {
+		return nil, resources.TestResult{Allowed: false, Reason: "resource lookup failed"}
+	}
+	result := resources.TestURL(target.String(), items)
+	if !result.Allowed {
+		return nil, result
+	}
+	return target, result
 }
 
 func (s *Server) logging(next http.Handler) http.Handler {

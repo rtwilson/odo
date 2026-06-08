@@ -167,9 +167,9 @@ paths:
           $ref: "#/components/responses/Error"
   /p:
     get:
-      summary: Proxy stub
-      description: Checks whether the target URL is configured and allowed. Full upstream proxy fetch/rewrite is future work.
-      operationId: proxyStub
+      summary: Minimal proxy fetch
+      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, and streams the upstream response. HTML rewriting and cookies are not implemented yet.
+      operationId: proxyFetch
       security: []
       parameters:
         - name: url
@@ -180,27 +180,17 @@ paths:
             format: uri
       responses:
         "200":
-          description: URL is allowed, but proxying is not implemented yet
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [allowed, resource_id, message]
-                properties:
-                  allowed:
-                    type: boolean
-                  resource_id:
-                    type: string
-                  matched_rule:
-                    $ref: "#/components/schemas/DomainRule"
-                  message:
-                    type: string
+          description: Upstream response body and safe response headers
         "403":
           description: URL is not allowed
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MatchResult"
+        "405":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:

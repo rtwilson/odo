@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,22 +50,17 @@ func TestOpenAPIYAML(t *testing.T) {
 }
 
 func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
 	var logs bytes.Buffer
 	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, &logs)
 	if err != nil {
 		t.Fatalf("create access logger: %v", err)
 	}
-	server := newTestServerWithConfigAndAccessLog(t, "", t.TempDir(), accessLogger)
-	if err := server.store.UpsertResource(resources.Resource{
-		ID:     "jstor",
-		Name:   "JSTOR",
-		Status: "active",
-		Domains: []resources.DomainRule{
-			{Host: "www.jstor.org", Match: "exact"},
-		},
-	}); err != nil {
-		t.Fatalf("upsert resource: %v", err)
-	}
+	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
 
 	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
@@ -85,24 +81,176 @@ func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
 }
 
 func TestProxyStubAllowsSafeMatchedURLWithPublicDNS(t *testing.T) {
-	server := newTestServerWithResolver(t, "", t.TempDir(), func(ctx context.Context, host string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
-	})
-	if err := server.store.UpsertResource(resources.Resource{
-		ID:      "jstor",
-		Name:    "JSTOR",
-		Status:  "active",
-		Domains: []resources.DomainRule{{Host: "www.jstor.org", Match: "exact"}},
-	}); err != nil {
-		t.Fatalf("upsert resource: %v", err)
-	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
 
+	server := newProxyFetchTestServer(t, upstream.URL)
 	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected safe matched proxy URL to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyFetchesAllowlistedUpstreamContent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET upstream, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Set-Cookie", "secret=value")
+		_, _ = w.Write([]byte("upstream body"))
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "upstream body" {
+		t.Fatalf("expected upstream body, got %q", rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "text/plain" {
+		t.Fatalf("expected Content-Type copied, got %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Cache-Control") != "max-age=60" {
+		t.Fatalf("expected Cache-Control copied, got %q", rec.Header().Get("Cache-Control"))
+	}
+	if rec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("expected Set-Cookie not copied, got %q", rec.Header().Get("Set-Cookie"))
+	}
+}
+
+func TestProxyHEADWorks(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Fatalf("expected HEAD upstream, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodHead, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected empty HEAD body, got %q", rec.Body.String())
+	}
+}
+
+func TestProxyPOSTReturns405(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	req := httptest.NewRequest(http.MethodPost, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyRefusesNonAllowlistedURL(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://example.org/", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyRefusesUnsafeURL(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	req := httptest.NewRequest(http.MethodGet, "/p?url=http://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://www.jstor.org/stable/next", http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.HasPrefix(location, "/p?url=") || !strings.Contains(location, "www.jstor.org") {
+		t.Fatalf("expected local proxied redirect, got %q", location)
+	}
+}
+
+func TestProxyRedirectToUnsafeTargetIsRejected(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://www.jstor.org/unsafe", http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyDoesNotForwardUnsafeRequestHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range []string{"Cookie", "Authorization", "Proxy-Authorization", "X-Forwarded-For", "X-Real-IP", "Forwarded", "Connection", "Upgrade", "Host", "Referer"} {
+			if name == "Host" {
+				continue
+			}
+			if r.Header.Get(name) != "" {
+				t.Fatalf("unsafe header %s was forwarded as %q", name, r.Header.Get(name))
+			}
+		}
+		if r.Header.Get("Accept") != "text/html" || r.Header.Get("Accept-Language") != "en-US" || r.Header.Get("User-Agent") != "odo-test" {
+			t.Fatalf("safe headers were not forwarded as expected: %#v", r.Header)
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept-Language", "en-US")
+	req.Header.Set("User-Agent", "odo-test")
+	req.Header.Set("Cookie", "secret=value")
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Referer", "https://private.example/search?q=secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -386,6 +534,10 @@ func newTestServerWithResolver(t *testing.T, adminKey, configDir string, lookup 
 }
 
 func newTestServerWithConfigAccessLogAndResolver(t *testing.T, adminKey, configDir string, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc) *Server {
+	return newTestServerWithConfigAccessLogResolverAndClient(t, adminKey, configDir, accessLogger, lookup, proxy.DefaultHTTPClient())
+}
+
+func newTestServerWithConfigAccessLogResolverAndClient(t *testing.T, adminKey, configDir string, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client) *Server {
 	t.Helper()
 
 	store, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -402,11 +554,60 @@ func newTestServerWithConfigAccessLogAndResolver(t *testing.T, adminKey, configD
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServerWithAccessLoggerAndResolver(store, configDir, adminKey, logger, accessLogger, lookup)
+	return NewServerWithAccessLoggerResolverAndHTTPClient(store, configDir, adminKey, logger, accessLogger, lookup, client)
 }
 
 func publicTestResolver(ctx context.Context, host string) ([]net.IPAddr, error) {
 	return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+}
+
+func newProxyFetchTestServer(t *testing.T, upstreamURL string) *Server {
+	t.Helper()
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	return newProxyFetchTestServerWithAccessLog(t, upstreamURL, accessLogger)
+}
+
+func newProxyFetchTestServerWithAccessLog(t *testing.T, upstreamURL string, accessLogger *accesslog.Logger) *Server {
+	t.Helper()
+	client := &http.Client{
+		Transport: rewriteTransport(t, upstreamURL),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	server := newTestServerWithConfigAccessLogResolverAndClient(t, "", t.TempDir(), accessLogger, publicTestResolver, client)
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:      "jstor",
+		Name:    "JSTOR",
+		Status:  "active",
+		Domains: []resources.DomainRule{{Host: "www.jstor.org", Match: "exact"}},
+	}); err != nil {
+		t.Fatalf("upsert resource: %v", err)
+	}
+	return server
+}
+
+func rewriteTransport(t *testing.T, upstreamURL string) http.RoundTripper {
+	t.Helper()
+	upstream, err := url.Parse(upstreamURL)
+	if err != nil {
+		t.Fatalf("parse upstream url: %v", err)
+	}
+	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		req.URL.Scheme = upstream.Scheme
+		req.URL.Host = upstream.Host
+		req.Host = upstream.Host
+		return http.DefaultTransport.RoundTrip(req)
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func writeAPIResourceConfig(t *testing.T, configDir, name, body string) {

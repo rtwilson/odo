@@ -12,12 +12,12 @@ The important architectural rule is that management and configuration happen thr
 - Embedded SQLite persistence using `modernc.org/sqlite`.
 - Resource registry import from dropped JSON config files.
 - URL/domain rule testing.
-- A proxy stub that checks whether a target URL is configured and allowed.
+- A minimal safe outbound `GET`/`HEAD` proxy for configured and allowed targets.
 - Privacy-conscious first-pass request logging that avoids logging full query strings.
 
 ## What It Is Not Yet
 
-- A full upstream proxy or HTML/link rewriter.
+- A full HTML/link rewriter.
 - A full admin login/session system. Management APIs use a simple bearer API key for now.
 - A SAML/Shibboleth Service Provider.
 - A production HA deployment.
@@ -119,7 +119,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/resources \
   -d @config/resources/jstor.json
 ```
 
-Proxy stub:
+Minimal proxy fetch:
 
 ```sh
 curl -s 'http://127.0.0.1:8080/p?url=https://www.jstor.org/stable/example'
@@ -152,9 +152,9 @@ APP_ACCESS_LOG_FORMAT=json go run ./cmd/odo
 
 ## Proxy Safety
 
-Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs that match configured resource domains. Raw IP hosts, localhost, private networks, link-local addresses, non-global addresses, suspicious internal hostnames such as `.local` and `.internal`, URL userinfo, fragments, wildcards, and non-default ports are blocked before the proxy stub allows a request.
+Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs that match configured resource domains. Raw IP hosts, localhost, private networks, link-local addresses, non-global addresses, suspicious internal hostnames such as `.local` and `.internal`, URL userinfo, fragments, wildcards, and non-default ports are blocked before the proxy fetch is allowed.
 
-Redirect validation will be added before full upstream fetch/rewrite support.
+`/p` now performs a minimal safe outbound `GET`/`HEAD` proxy. HTML rewriting is not implemented yet, cookies are not passed through yet, and only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/p?url=...`.
 
 ## Podman
 
