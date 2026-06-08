@@ -58,6 +58,13 @@ Health:
 curl -s http://127.0.0.1:8080/api/v1/health
 ```
 
+Validate resource config files without writing to the database:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/config/validate \
+  -H 'Authorization: Bearer devsecret' | jq
+```
+
 Import resource config files:
 
 ```sh

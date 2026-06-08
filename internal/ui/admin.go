@@ -33,6 +33,7 @@ func AdminHTML() string {
     <section class="toolbar">
       <input id="api-key" type="password" placeholder="Admin API key" aria-label="Admin API key">
       <button id="load">Load resources</button>
+      <button id="validate">Validate Config</button>
       <button id="import">Import config files</button>
       <input id="url" value="https://www.jstor.org/stable/example" aria-label="URL to test">
       <button id="test">Test URL</button>
@@ -68,6 +69,10 @@ func AdminHTML() string {
 
     document.querySelector('#load').addEventListener('click', async () => {
       try { show(await api('/api/v1/resources')); } catch (err) { show(err); }
+    });
+
+    document.querySelector('#validate').addEventListener('click', async () => {
+      try { show(await api('/api/v1/config/validate', { method: 'POST' })); } catch (err) { show(err); }
     });
 
     document.querySelector('#import').addEventListener('click', async () => {

@@ -33,6 +33,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
 	mux.HandleFunc("POST /api/v1/resources", s.requireAdminAPIKey(s.upsertResource))
+	mux.HandleFunc("POST /api/v1/config/validate", s.requireAdminAPIKey(s.validateConfig))
 	mux.HandleFunc("POST /api/v1/config/import", s.requireAdminAPIKey(s.importConfig))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
 	mux.HandleFunc("GET /p", proxy.StubHandler(s.testRawURL))
@@ -90,6 +91,15 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
+	result, err := config.ValidateResources(s.configDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) testURL(w http.ResponseWriter, r *http.Request) {

@@ -16,9 +16,21 @@ type ImportResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
+type ValidationResponse struct {
+	Valid     bool               `json:"valid"`
+	ConfigDir string             `json:"config_dir"`
+	Results   []ValidationResult `json:"results"`
+}
+
+type ValidationResult struct {
+	File       string   `json:"file"`
+	Valid      bool     `json:"valid"`
+	ResourceID string   `json:"resource_id"`
+	Errors     []string `json:"errors"`
+}
+
 func ImportResources(store *db.Store, configDir string) ([]ImportResult, error) {
-	pattern := filepath.Join(configDir, "resources", "*.json")
-	files, err := filepath.Glob(pattern)
+	files, err := resourceFiles(configDir)
 	if err != nil {
 		return nil, err
 	}
@@ -51,4 +63,41 @@ func ImportResources(store *db.Store, configDir string) ([]ImportResult, error) 
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func ValidateResources(configDir string) (ValidationResponse, error) {
+	files, err := resourceFiles(configDir)
+	if err != nil {
+		return ValidationResponse{}, err
+	}
+
+	response := ValidationResponse{
+		Valid:     true,
+		ConfigDir: configDir,
+		Results:   make([]ValidationResult, 0, len(files)),
+	}
+	for _, file := range files {
+		result := ValidationResult{File: file, Valid: true, Errors: []string{}}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			result.Valid = false
+			result.Errors = []string{err.Error()}
+		} else {
+			resource, errs := resources.DecodeAll(data)
+			result.ResourceID = resource.ID
+			if len(errs) > 0 {
+				result.Valid = false
+				result.Errors = errs
+			}
+		}
+		if !result.Valid {
+			response.Valid = false
+		}
+		response.Results = append(response.Results, result)
+	}
+	return response, nil
+}
+
+func resourceFiles(configDir string) ([]string, error) {
+	return filepath.Glob(filepath.Join(configDir, "resources", "*.json"))
 }
