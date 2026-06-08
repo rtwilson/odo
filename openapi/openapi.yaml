@@ -1,0 +1,365 @@
+openapi: 3.1.0
+info:
+  title: odo API
+  version: 0.1.0
+  summary: API-first library access middleware/proxy MVP
+  description: Management and configuration for odo happen through documented JSON APIs. The admin UI uses these same APIs.
+servers:
+  - url: http://127.0.0.1:8080
+security: []
+paths:
+  /api/v1/health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /api/v1/resources:
+    get:
+      summary: List resources
+      operationId: listResources
+      responses:
+        "200":
+          description: Resource list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resources]
+                properties:
+                  resources:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Resource"
+    post:
+      summary: Create or update a resource
+      operationId: upsertResource
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Resource"
+      responses:
+        "200":
+          description: Upserted resource
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/config/validate:
+    post:
+      summary: Validate dropped resource config files without writing to SQLite
+      operationId: validateConfig
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Config validation results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigValidationResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/config/import:
+    post:
+      summary: Import dropped resource config files
+      operationId: importConfig
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Config import results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigImportResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/config/revisions:
+    get:
+      summary: List recent config revisions
+      operationId: listConfigRevisions
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Recent config revisions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions]
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConfigRevisionSummary"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/config/revisions/{id}:
+    get:
+      summary: Get config revision detail
+      operationId: getConfigRevision
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Config revision detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigRevisionDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/rules/test-url:
+    post:
+      summary: Test whether a URL matches an active resource rule
+      operationId: testURL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestURLRequest"
+      responses:
+        "200":
+          description: URL match result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchResult"
+        "400":
+          $ref: "#/components/responses/Error"
+  /p:
+    get:
+      summary: Proxy stub
+      description: Checks whether the target URL is configured and allowed. Full upstream proxy fetch/rewrite is future work.
+      operationId: proxyStub
+      security: []
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+      responses:
+        "200":
+          description: URL is allowed, but proxying is not implemented yet
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [allowed, resource_id, message]
+                properties:
+                  allowed:
+                    type: boolean
+                  resource_id:
+                    type: string
+                  matched_rule:
+                    $ref: "#/components/schemas/DomainRule"
+                  message:
+                    type: string
+        "403":
+          description: URL is not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchResult"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, time]
+      properties:
+        status:
+          type: string
+          examples: [ok]
+        time:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Resource:
+      type: object
+      required: [id, name, status, domains]
+      properties:
+        id:
+          type: string
+          examples: [jstor]
+        name:
+          type: string
+          examples: [JSTOR]
+        status:
+          type: string
+          default: active
+          examples: [active]
+        description:
+          type: string
+        domains:
+          type: array
+          items:
+            $ref: "#/components/schemas/DomainRule"
+        sample_urls:
+          type: array
+          items:
+            type: string
+            format: uri
+    DomainRule:
+      type: object
+      required: [host, match]
+      properties:
+        host:
+          type: string
+          examples: [www.jstor.org]
+        match:
+          type: string
+          enum: [exact, subdomain]
+          default: exact
+        role:
+          type: string
+          examples: [content]
+    ConfigValidationResponse:
+      type: object
+      required: [valid, config_dir, results]
+      properties:
+        valid:
+          type: boolean
+        config_dir:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigValidationResult"
+    ConfigValidationResult:
+      type: object
+      required: [file, valid, resource_id, errors]
+      properties:
+        file:
+          type: string
+        valid:
+          type: boolean
+        resource_id:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+    ConfigImportResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigImportResult"
+    ConfigImportResult:
+      type: object
+      required: [file, imported]
+      properties:
+        file:
+          type: string
+        resource_id:
+          type: string
+        imported:
+          type: boolean
+        error:
+          type: string
+    ConfigRevisionSummary:
+      type: object
+      required: [id, ts, source, status, summary]
+      properties:
+        id:
+          type: integer
+        ts:
+          type: string
+          format: date-time
+        source:
+          type: string
+          examples: [file-import]
+        status:
+          type: string
+          examples: [applied]
+        summary:
+          type: string
+          examples: [imported=1 errors=0]
+    ConfigRevisionDetail:
+      allOf:
+        - $ref: "#/components/schemas/ConfigRevisionSummary"
+        - type: object
+          required: [config_json]
+          properties:
+            config_json:
+              type: string
+              description: JSON string containing normalized imported resource configs.
+    TestURLRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          examples: [https://www.jstor.org/stable/example]
+    MatchResult:
+      type: object
+      required: [allowed, reason]
+      properties:
+        allowed:
+          type: boolean
+        resource_id:
+          type: string
+        matched_rule:
+          $ref: "#/components/schemas/DomainRule"
+        reason:
+          type: string

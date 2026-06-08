@@ -12,6 +12,8 @@ func AdminHTML() string {
     body { margin: 0; }
     main { max-width: 980px; margin: 0 auto; padding: 32px 20px; }
     header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 1px solid #2a2f36; padding-bottom: 18px; }
+    a { color: #8cc7ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
     h1 { margin: 0; font-size: 28px; letter-spacing: 0; }
     section { margin-top: 24px; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
@@ -27,7 +29,7 @@ func AdminHTML() string {
   <main>
     <header>
       <h1>odo admin</h1>
-      <span class="muted">API-first library access middleware</span>
+      <span class="muted"><a href="/openapi.yaml">OpenAPI spec</a></span>
     </header>
 
     <section class="toolbar">

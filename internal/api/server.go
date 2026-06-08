@@ -14,6 +14,7 @@ import (
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 	"example.org/odo/internal/ui"
+	"example.org/odo/openapi"
 )
 
 type Server struct {
@@ -31,6 +32,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.root)
 	mux.HandleFunc("GET /admin", s.admin)
+	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
 	mux.HandleFunc("POST /api/v1/resources", s.requireAdminAPIKey(s.upsertResource))
@@ -50,6 +52,11 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(ui.AdminHTML()))
+}
+
+func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = w.Write(openapi.Spec)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

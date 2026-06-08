@@ -43,6 +43,14 @@ Open:
 http://127.0.0.1:8080/admin
 ```
 
+## API Documentation
+
+The current OpenAPI 3.1 spec is served by the app:
+
+```text
+http://127.0.0.1:8080/openapi.yaml
+```
+
 Environment variables:
 
 - `APP_ADDR`, default `:8080`
@@ -141,6 +149,5 @@ podman run --rm -p 8080:8080 \
 - Signed proxy links.
 - URL SSRF protections.
 - Outbound proxy fetch/rewrite.
-- OpenAPI spec.
 - Apache/nginx-style access logs plus privacy-filtered structured logs.
 - HA with PostgreSQL and Redis.

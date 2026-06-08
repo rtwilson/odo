@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"example.org/odo/internal/db"
@@ -24,6 +25,21 @@ func TestHealthDoesNotRequireAPIKey(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected public health endpoint to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOpenAPIYAML(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected openapi.yaml to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "openapi: 3.1.0") {
+		t.Fatalf("expected OpenAPI 3.1 marker in response, got %q", rec.Body.String())
 	}
 }
 
