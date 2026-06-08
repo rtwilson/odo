@@ -76,6 +76,18 @@ func FetchHandler(client *http.Client, check TargetCheck) http.HandlerFunc {
 		}
 
 		copySafeResponseHeaders(w.Header(), resp.Header)
+		if r.Method == http.MethodGet && isTransformable(resp.Header.Get("Content-Type")) {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "response read failed")
+				return
+			}
+			transformed := transformBody(r.Context(), string(body), resp.Header.Get("Content-Type"), target, check)
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.WriteString(w, transformed)
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
 		if r.Method != http.MethodHead {
 			_, _ = io.Copy(w, resp.Body)
@@ -111,6 +123,22 @@ func copySafeResponseHeaders(dst, src http.Header) {
 			}
 		}
 	}
+}
+
+func isTransformable(contentType string) bool {
+	contentType = strings.ToLower(contentType)
+	return strings.Contains(contentType, "text/html") || strings.Contains(contentType, "text/css")
+}
+
+func transformBody(ctx context.Context, body, contentType string, base *url.URL, check TargetCheck) string {
+	contentType = strings.ToLower(contentType)
+	if strings.Contains(contentType, "text/css") {
+		return RewriteCSS(ctx, body, base, check)
+	}
+	if strings.Contains(contentType, "text/html") {
+		return RewriteHTML(ctx, body, base, check)
+	}
+	return body
 }
 
 func isRedirect(status int) bool {

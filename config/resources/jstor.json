@@ -7,12 +7,28 @@
     {
       "host": "www.jstor.org",
       "match": "exact",
-      "role": "content"
+      "role": "content",
+      "action": "proxy"
     },
     {
       "host": "jstor.org",
       "match": "subdomain",
-      "role": "content"
+      "role": "content",
+      "action": "proxy"
+    },
+    {
+      "host": "analytics.example.com",
+      "match": "exact",
+      "role": "blocked",
+      "action": "block",
+      "reason": "tracking"
+    },
+    {
+      "host": "example.org",
+      "match": "exact",
+      "role": "external",
+      "action": "allow",
+      "reason": "external documentation"
     }
   ],
   "sample_urls": [

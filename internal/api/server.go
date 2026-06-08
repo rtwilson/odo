@@ -205,6 +205,11 @@ func (s *Server) proxyTarget(ctx context.Context, rawURL string) (*url.URL, reso
 	if !result.Allowed {
 		return nil, result
 	}
+	if result.Action != "proxy" {
+		result.Allowed = false
+		result.Reason = "not_proxyable"
+		return nil, result
+	}
 	return target, result
 }
 

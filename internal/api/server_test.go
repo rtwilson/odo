@@ -174,6 +174,56 @@ func TestProxyRefusesNonAllowlistedURL(t *testing.T) {
 	}
 }
 
+func TestProxyBlockActionDeniesFetch(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:     "blocked",
+		Name:   "Blocked",
+		Status: "active",
+		Domains: []resources.DomainRule{
+			{Host: "blocked.example.org", Match: "exact", Role: "blocked", Action: "block"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert blocked resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://blocked.example.org/pixel", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "explicitly_blocked") {
+		t.Fatalf("expected explicit block reason, got %s", rec.Body.String())
+	}
+}
+
+func TestProxyAllowActionDoesNotFetch(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:     "external",
+		Name:   "External",
+		Status: "active",
+		Domains: []resources.DomainRule{
+			{Host: "external.example.org", Match: "exact", Role: "external", Action: "allow"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert external resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://external.example.org/page", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not_proxyable") {
+		t.Fatalf("expected non-proxyable reason, got %s", rec.Body.String())
+	}
+}
+
 func TestProxyRefusesUnsafeURL(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
 	req := httptest.NewRequest(http.MethodGet, "/p?url=http://www.jstor.org/stable/example", nil)

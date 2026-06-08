@@ -34,6 +34,34 @@ func TestValidateDefaultsAndNormalizesResource(t *testing.T) {
 	if resource.Domains[1].Match != "subdomain" {
 		t.Fatalf("expected normalized subdomain match, got %q", resource.Domains[1].Match)
 	}
+	if resource.Domains[0].Role != "content" || resource.Domains[0].Action != "proxy" {
+		t.Fatalf("expected default content/proxy rule, got %#v", resource.Domains[0])
+	}
+}
+
+func TestValidateDefaultsActionBasedOnRole(t *testing.T) {
+	resource, err := Validate(Resource{
+		ID:   "roles",
+		Name: "Roles",
+		Domains: []DomainRule{
+			{Host: "content.example.org"},
+			{Host: "external.example.org", Role: "external"},
+			{Host: "blocked.example.org", Role: "blocked"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+
+	if resource.Domains[0].Action != "proxy" {
+		t.Fatalf("expected content default action proxy, got %#v", resource.Domains[0])
+	}
+	if resource.Domains[1].Action != "allow" {
+		t.Fatalf("expected external default action allow, got %#v", resource.Domains[1])
+	}
+	if resource.Domains[2].Action != "block" {
+		t.Fatalf("expected blocked default action block, got %#v", resource.Domains[2])
+	}
 }
 
 func TestValidateRejectsInvalidResources(t *testing.T) {
@@ -73,6 +101,22 @@ func TestValidateRejectsInvalidResources(t *testing.T) {
 				SampleURLs: []string{"http://www.jstor.org/stable/example"},
 			},
 		},
+		{
+			name: "unknown role",
+			resource: Resource{
+				ID:      "jstor",
+				Name:    "JSTOR",
+				Domains: []DomainRule{{Host: "www.jstor.org", Role: "marketing"}},
+			},
+		},
+		{
+			name: "unknown action",
+			resource: Resource{
+				ID:      "jstor",
+				Name:    "JSTOR",
+				Domains: []DomainRule{{Host: "www.jstor.org", Action: "mirror"}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -107,6 +151,9 @@ func TestTestURLMatchesExactAndSubdomainRules(t *testing.T) {
 	if exact.Matched == nil || exact.Matched.Match != "exact" {
 		t.Fatalf("expected exact matched rule, got %#v", exact.Matched)
 	}
+	if exact.Role != "content" || exact.Action != "proxy" || exact.RuleHost != "www.jstor.org" || exact.RuleMatch != "exact" {
+		t.Fatalf("expected match result role/action/rule fields, got %#v", exact)
+	}
 
 	subdomain := TestURL("https://about.jstor.org/", resources)
 	if !subdomain.Allowed {
@@ -114,6 +161,44 @@ func TestTestURLMatchesExactAndSubdomainRules(t *testing.T) {
 	}
 	if subdomain.Matched == nil || subdomain.Matched.Match != "subdomain" {
 		t.Fatalf("expected subdomain matched rule, got %#v", subdomain.Matched)
+	}
+}
+
+func TestTestURLExactBeatsSubdomain(t *testing.T) {
+	resources := []Resource{
+		{
+			ID:     "jstor",
+			Name:   "JSTOR",
+			Status: "active",
+			Domains: []DomainRule{
+				{Host: "jstor.org", Match: "subdomain", Role: "content", Action: "proxy"},
+				{Host: "static.jstor.org", Match: "exact", Role: "asset", Action: "proxy"},
+			},
+		},
+	}
+
+	result := TestURL("https://static.jstor.org/app.css", resources)
+	if !result.Allowed || result.RuleHost != "static.jstor.org" || result.Role != "asset" {
+		t.Fatalf("expected exact asset rule to win, got %#v", result)
+	}
+}
+
+func TestTestURLExplicitBlockBeatsBroaderSubdomainProxy(t *testing.T) {
+	resources := []Resource{
+		{
+			ID:     "jstor",
+			Name:   "JSTOR",
+			Status: "active",
+			Domains: []DomainRule{
+				{Host: "jstor.org", Match: "subdomain", Role: "content", Action: "proxy"},
+				{Host: "tracking.jstor.org", Match: "exact", Role: "blocked", Action: "block"},
+			},
+		},
+	}
+
+	result := TestURL("https://tracking.jstor.org/pixel", resources)
+	if result.Allowed || !result.Blocked || result.Action != "block" || result.Reason != "explicitly_blocked" {
+		t.Fatalf("expected explicit block to win, got %#v", result)
 	}
 }
 

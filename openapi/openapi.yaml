@@ -168,7 +168,7 @@ paths:
   /p:
     get:
       summary: Minimal proxy fetch
-      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, and streams the upstream response. HTML rewriting and cookies are not implemented yet.
+      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, streams the upstream response, and applies minimal HTML/CSS asset URL rewriting. Cookies and JavaScript rewriting are not implemented yet.
       operationId: proxyFetch
       security: []
       parameters:
@@ -248,7 +248,7 @@ components:
             format: uri
     DomainRule:
       type: object
-      required: [host, match]
+      required: [host, match, role, action]
       properties:
         host:
           type: string
@@ -259,7 +259,16 @@ components:
           default: exact
         role:
           type: string
+          enum: [content, asset, api, auth, redirect, external, blocked]
+          default: content
           examples: [content]
+        action:
+          type: string
+          enum: [proxy, allow, block]
+          default: proxy
+          examples: [proxy]
+        reason:
+          type: string
     ConfigValidationResponse:
       type: object
       required: [valid, config_dir, results]
@@ -347,8 +356,23 @@ components:
       properties:
         allowed:
           type: boolean
+        blocked:
+          type: boolean
+        host:
+          type: string
         resource_id:
           type: string
+        rule_host:
+          type: string
+        rule_match:
+          type: string
+          enum: [exact, subdomain]
+        role:
+          type: string
+          enum: [content, asset, api, auth, redirect, external, blocked]
+        action:
+          type: string
+          enum: [proxy, allow, block]
         matched_rule:
           $ref: "#/components/schemas/DomainRule"
         reason:

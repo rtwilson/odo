@@ -13,11 +13,12 @@ The important architectural rule is that management and configuration happen thr
 - Resource registry import from dropped JSON config files.
 - URL/domain rule testing.
 - A minimal safe outbound `GET`/`HEAD` proxy for configured and allowed targets.
+- Partial HTML/CSS asset URL rewriting for basic proxied page rendering.
 - Privacy-conscious first-pass request logging that avoids logging full query strings.
 
 ## What It Is Not Yet
 
-- A full HTML/link rewriter.
+- A full JavaScript-aware browser compatibility proxy.
 - A full admin login/session system. Management APIs use a simple bearer API key for now.
 - A SAML/Shibboleth Service Provider.
 - A production HA deployment.
@@ -154,7 +155,25 @@ APP_ACCESS_LOG_FORMAT=json go run ./cmd/odo
 
 Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs that match configured resource domains. Raw IP hosts, localhost, private networks, link-local addresses, non-global addresses, suspicious internal hostnames such as `.local` and `.internal`, URL userinfo, fragments, wildcards, and non-default ports are blocked before the proxy fetch is allowed.
 
-`/p` now performs a minimal safe outbound `GET`/`HEAD` proxy. HTML rewriting is not implemented yet, cookies are not passed through yet, and only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/p?url=...`.
+`/p` now performs a minimal safe outbound `GET`/`HEAD` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
+
+JavaScript-heavy sites may still break. Cookies/session flows are not implemented yet, and only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/p?url=...`. Content-Security-Policy is not copied yet because upstream CSP often blocks proxied assets before fuller rewriting exists.
+
+## Domain Rules
+
+Resource domain rules support roles and actions. Existing configs without `action` still work: `blocked` defaults to `block`, `external` defaults to `allow`, and all other roles default to `proxy`.
+
+Common combinations:
+
+- `content` / `proxy`
+- `asset` / `proxy`
+- `api` / `proxy`
+- `auth` / `proxy`
+- `redirect` / `allow`
+- `external` / `allow`
+- `blocked` / `block`
+
+Broad subdomain proxy rules are useful for library resources, but explicit block rules should be added for analytics, tracking, ads, or unrelated third-party domains discovered during diagnostics. More specific exact rules take precedence over broader subdomain rules, and explicit blocks win when specificity is equal or greater.
 
 ## Podman
 
@@ -180,6 +199,5 @@ podman run --rm -p 8080:8080 \
 - Hardened API-key storage and rotation.
 - SAML SP support as a first-class module.
 - Signed proxy links.
-- URL SSRF protections.
-- Outbound proxy fetch/rewrite.
+- Deeper JavaScript-aware proxy rewriting.
 - HA with PostgreSQL and Redis.
