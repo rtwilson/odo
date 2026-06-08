@@ -19,6 +19,7 @@ func StubHandler(test func(string) resources.TestResult) http.HandlerFunc {
 		if !result.Allowed {
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":   "target URL is not allowed",
 				"allowed": result.Allowed,
 				"reason":  result.Reason,
 			})

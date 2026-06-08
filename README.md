@@ -150,6 +150,12 @@ Example:
 APP_ACCESS_LOG_FORMAT=json go run ./cmd/odo
 ```
 
+## Proxy Safety
+
+Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs that match configured resource domains. Raw IP hosts, localhost, private networks, link-local addresses, non-global addresses, suspicious internal hostnames such as `.local` and `.internal`, URL userinfo, fragments, wildcards, and non-default ports are blocked before the proxy stub allows a request.
+
+Redirect validation will be added before full upstream fetch/rewrite support.
+
 ## Podman
 
 Build:

@@ -2,9 +2,11 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 
 	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/db"
+	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 )
 
@@ -78,6 +81,48 @@ func TestPrivacyAccessLogForProxyStubUsesSafeMetadata(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("expected proxy access log to contain %q, got %q", want, line)
 		}
+	}
+}
+
+func TestProxyStubAllowsSafeMatchedURLWithPublicDNS(t *testing.T) {
+	server := newTestServerWithResolver(t, "", t.TempDir(), func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	})
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:      "jstor",
+		Name:    "JSTOR",
+		Status:  "active",
+		Domains: []resources.DomainRule{{Host: "www.jstor.org", Match: "exact"}},
+	}); err != nil {
+		t.Fatalf("upsert resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected safe matched proxy URL to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyStubRejectsPrivateResolvedIP(t *testing.T) {
+	server := newTestServerWithResolver(t, "", t.TempDir(), func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/p?url=https://www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected private resolved proxy URL to return 403, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "target URL is not allowed") || !strings.Contains(rec.Body.String(), "hostname resolves to private IP") {
+		t.Fatalf("expected safe denial response, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "https://www.jstor.org/stable/example") {
+		t.Fatalf("denial response leaked full target URL: %s", rec.Body.String())
 	}
 }
 
@@ -329,6 +374,18 @@ func newTestServerWithConfig(t *testing.T, adminKey, configDir string) *Server {
 }
 
 func newTestServerWithConfigAndAccessLog(t *testing.T, adminKey, configDir string, accessLogger *accesslog.Logger) *Server {
+	return newTestServerWithConfigAccessLogAndResolver(t, adminKey, configDir, accessLogger, publicTestResolver)
+}
+
+func newTestServerWithResolver(t *testing.T, adminKey, configDir string, lookup proxy.IPLookupFunc) *Server {
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	return newTestServerWithConfigAccessLogAndResolver(t, adminKey, configDir, accessLogger, lookup)
+}
+
+func newTestServerWithConfigAccessLogAndResolver(t *testing.T, adminKey, configDir string, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc) *Server {
 	t.Helper()
 
 	store, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -345,7 +402,11 @@ func newTestServerWithConfigAndAccessLog(t *testing.T, adminKey, configDir strin
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServerWithAccessLogger(store, configDir, adminKey, logger, accessLogger)
+	return NewServerWithAccessLoggerAndResolver(store, configDir, adminKey, logger, accessLogger, lookup)
+}
+
+func publicTestResolver(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
 }
 
 func writeAPIResourceConfig(t *testing.T, configDir, name, body string) {

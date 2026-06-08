@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +26,7 @@ type Server struct {
 	adminKey  string
 	logger    *slog.Logger
 	accessLog *accesslog.Logger
+	ipLookup  proxy.IPLookupFunc
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -32,7 +35,11 @@ func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger)
 }
 
 func NewServerWithAccessLogger(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger) *Server {
-	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger, accessLog: accessLogger}
+	return NewServerWithAccessLoggerAndResolver(store, configDir, adminKey, logger, accessLogger, net.DefaultResolver.LookupIPAddr)
+}
+
+func NewServerWithAccessLoggerAndResolver(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc) *Server {
+	return &Server{store: store, configDir: configDir, adminKey: adminKey, logger: logger, accessLog: accessLogger, ipLookup: lookup}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -48,7 +55,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireAdminAPIKey(s.listConfigRevisions))
 	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireAdminAPIKey(s.getConfigRevision))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
-	mux.HandleFunc("GET /p", proxy.StubHandler(s.testRawURL))
+	mux.HandleFunc("GET /p", proxy.StubHandler(s.proxyRawURL))
 	return s.logging(mux)
 }
 
@@ -159,11 +166,21 @@ func (s *Server) testURL(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) testRawURL(rawURL string) resources.TestResult {
+	if _, err := proxy.NormalizeAndValidateTargetURL(rawURL); err != nil {
+		return resources.TestResult{Allowed: false, Reason: err.Error()}
+	}
 	items, err := s.store.ListResources()
 	if err != nil {
 		return resources.TestResult{Allowed: false, Reason: "resource lookup failed"}
 	}
 	return resources.TestURL(rawURL, items)
+}
+
+func (s *Server) proxyRawURL(rawURL string) resources.TestResult {
+	if _, err := proxy.ValidateTargetURL(context.Background(), rawURL, s.ipLookup); err != nil {
+		return resources.TestResult{Allowed: false, Reason: err.Error()}
+	}
+	return s.testRawURL(rawURL)
 }
 
 func (s *Server) logging(next http.Handler) http.Handler {
