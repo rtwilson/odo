@@ -1,0 +1,148 @@
+package resources
+
+import "testing"
+
+func TestValidateDefaultsAndNormalizesResource(t *testing.T) {
+	resource, err := Validate(Resource{
+		ID:   " jstor ",
+		Name: " JSTOR ",
+		Domains: []DomainRule{
+			{Host: "WWW.JSTOR.ORG.", Role: "content"},
+			{Host: "JSTOR.ORG", Match: " SUBDOMAIN "},
+		},
+		SampleURLs: []string{"https://www.jstor.org/stable/example"},
+	})
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+
+	if resource.ID != "jstor" {
+		t.Fatalf("expected trimmed id, got %q", resource.ID)
+	}
+	if resource.Name != "JSTOR" {
+		t.Fatalf("expected trimmed name, got %q", resource.Name)
+	}
+	if resource.Status != "active" {
+		t.Fatalf("expected default active status, got %q", resource.Status)
+	}
+	if resource.Domains[0].Host != "www.jstor.org" {
+		t.Fatalf("expected normalized exact host, got %q", resource.Domains[0].Host)
+	}
+	if resource.Domains[0].Match != "exact" {
+		t.Fatalf("expected default exact match, got %q", resource.Domains[0].Match)
+	}
+	if resource.Domains[1].Match != "subdomain" {
+		t.Fatalf("expected normalized subdomain match, got %q", resource.Domains[1].Match)
+	}
+}
+
+func TestValidateRejectsInvalidResources(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource Resource
+	}{
+		{
+			name:     "missing id",
+			resource: Resource{Name: "JSTOR"},
+		},
+		{
+			name:     "missing name",
+			resource: Resource{ID: "jstor"},
+		},
+		{
+			name: "missing domain host",
+			resource: Resource{
+				ID:      "jstor",
+				Name:    "JSTOR",
+				Domains: []DomainRule{{Match: "exact"}},
+			},
+		},
+		{
+			name: "invalid match type",
+			resource: Resource{
+				ID:      "jstor",
+				Name:    "JSTOR",
+				Domains: []DomainRule{{Host: "www.jstor.org", Match: "contains"}},
+			},
+		},
+		{
+			name: "non-HTTPS sample URL",
+			resource: Resource{
+				ID:         "jstor",
+				Name:       "JSTOR",
+				SampleURLs: []string{"http://www.jstor.org/stable/example"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Validate(tt.resource); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestTestURLMatchesExactAndSubdomainRules(t *testing.T) {
+	resources := []Resource{
+		{
+			ID:     "jstor",
+			Name:   "JSTOR",
+			Status: "active",
+			Domains: []DomainRule{
+				{Host: "www.jstor.org", Match: "exact"},
+				{Host: "jstor.org", Match: "subdomain"},
+			},
+		},
+	}
+
+	exact := TestURL("https://www.jstor.org/stable/example", resources)
+	if !exact.Allowed {
+		t.Fatalf("expected exact URL to be allowed: %#v", exact)
+	}
+	if exact.ResourceID != "jstor" {
+		t.Fatalf("expected jstor resource, got %q", exact.ResourceID)
+	}
+	if exact.Matched == nil || exact.Matched.Match != "exact" {
+		t.Fatalf("expected exact matched rule, got %#v", exact.Matched)
+	}
+
+	subdomain := TestURL("https://about.jstor.org/", resources)
+	if !subdomain.Allowed {
+		t.Fatalf("expected subdomain URL to be allowed: %#v", subdomain)
+	}
+	if subdomain.Matched == nil || subdomain.Matched.Match != "subdomain" {
+		t.Fatalf("expected subdomain matched rule, got %#v", subdomain.Matched)
+	}
+}
+
+func TestTestURLDeniesInactiveHTTPAndUnknownHosts(t *testing.T) {
+	active := []Resource{
+		{
+			ID:      "jstor",
+			Name:    "JSTOR",
+			Status:  "active",
+			Domains: []DomainRule{{Host: "jstor.org", Match: "subdomain"}},
+		},
+	}
+
+	if result := TestURL("http://www.jstor.org/stable/example", active); result.Allowed {
+		t.Fatalf("expected HTTP URL to be denied: %#v", result)
+	}
+	if result := TestURL("https://example.org/", active); result.Allowed {
+		t.Fatalf("expected unknown host to be denied: %#v", result)
+	}
+
+	inactive := []Resource{
+		{
+			ID:      "jstor",
+			Name:    "JSTOR",
+			Status:  "inactive",
+			Domains: []DomainRule{{Host: "jstor.org", Match: "subdomain"}},
+		},
+	}
+	if result := TestURL("https://www.jstor.org/stable/example", inactive); result.Allowed {
+		t.Fatalf("expected inactive resource to be denied: %#v", result)
+	}
+}
