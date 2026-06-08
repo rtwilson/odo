@@ -1,0 +1,21 @@
+{
+  "id": "jstor",
+  "name": "JSTOR",
+  "status": "active",
+  "description": "Test resource for MVP development",
+  "domains": [
+    {
+      "host": "www.jstor.org",
+      "match": "exact",
+      "role": "content"
+    },
+    {
+      "host": "jstor.org",
+      "match": "subdomain",
+      "role": "content"
+    }
+  ],
+  "sample_urls": [
+    "https://www.jstor.org/stable/example"
+  ]
+}
