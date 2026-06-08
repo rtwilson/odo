@@ -35,6 +35,7 @@ func AdminHTML() string {
       <button id="load">Load resources</button>
       <button id="validate">Validate Config</button>
       <button id="import">Import config files</button>
+      <button id="revisions">Load Config Revisions</button>
       <input id="url" value="https://www.jstor.org/stable/example" aria-label="URL to test">
       <button id="test">Test URL</button>
     </section>
@@ -77,6 +78,10 @@ func AdminHTML() string {
 
     document.querySelector('#import').addEventListener('click', async () => {
       try { show(await api('/api/v1/config/import', { method: 'POST' })); } catch (err) { show(err); }
+    });
+
+    document.querySelector('#revisions').addEventListener('click', async () => {
+      try { show(await api('/api/v1/config/revisions')); } catch (err) { show(err); }
     });
 
     document.querySelector('#test').addEventListener('click', async () => {

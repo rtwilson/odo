@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,28 +40,44 @@ func ImportResources(store *db.Store, configDir string) ([]ImportResult, error) 
 	}
 
 	results := make([]ImportResult, 0, len(files))
+	importedResources := []resources.Resource{}
+	errorCount := 0
 	for _, file := range files {
 		result := ImportResult{File: file}
 		data, err := os.ReadFile(file)
 		if err != nil {
 			result.Error = err.Error()
+			errorCount++
 			results = append(results, result)
 			continue
 		}
 		resource, err := resources.Decode(data)
 		if err != nil {
 			result.Error = err.Error()
+			errorCount++
 			results = append(results, result)
 			continue
 		}
 		if err := store.UpsertResource(resource); err != nil {
 			result.Error = fmt.Sprintf("database import failed: %v", err)
+			errorCount++
 			results = append(results, result)
 			continue
 		}
 		result.ResourceID = resource.ID
 		result.Imported = true
+		importedResources = append(importedResources, resource)
 		results = append(results, result)
+	}
+	if len(importedResources) > 0 {
+		payload, err := json.Marshal(importedResources)
+		if err != nil {
+			return nil, err
+		}
+		summary := fmt.Sprintf("imported=%d errors=%d", len(importedResources), errorCount)
+		if _, err := store.CreateConfigRevision("file-import", "applied", summary, payload); err != nil {
+			return nil, err
+		}
 	}
 	return results, nil
 }

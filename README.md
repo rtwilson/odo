@@ -48,7 +48,7 @@ Environment variables:
 - `APP_ADDR`, default `:8080`
 - `APP_DB_PATH`, default `./data/app.db`
 - `APP_CONFIG_DIR`, default `./config`
-- `APP_ADMIN_API_KEY`, optional for local dev; when set, management `POST` endpoints require `Authorization: Bearer <token>`
+- `APP_ADMIN_API_KEY`, optional for local dev; when set, management endpoints require `Authorization: Bearer <token>`
 
 ## API Examples
 
@@ -69,6 +69,20 @@ Import resource config files:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/api/v1/config/import \
+  -H 'Authorization: Bearer devsecret' | jq
+```
+
+List config revisions:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/config/revisions \
+  -H 'Authorization: Bearer devsecret' | jq
+```
+
+Get a config revision:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/config/revisions/1 \
   -H 'Authorization: Bearer devsecret' | jq
 ```
 
@@ -128,6 +142,5 @@ podman run --rm -p 8080:8080 \
 - URL SSRF protections.
 - Outbound proxy fetch/rewrite.
 - OpenAPI spec.
-- Config revisions.
 - Apache/nginx-style access logs plus privacy-filtered structured logs.
 - HA with PostgreSQL and Redis.

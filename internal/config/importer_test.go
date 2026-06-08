@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,6 +234,118 @@ func TestImportResourcesStillWorksAfterValidationChanges(t *testing.T) {
 	}
 	if len(resources) != 1 || resources[0].ID != "jstor" {
 		t.Fatalf("expected imported jstor resource, got %#v", resources)
+	}
+}
+
+func TestImportResourcesCreatesConfigRevision(t *testing.T) {
+	configDir := t.TempDir()
+	writeResourceConfig(t, configDir, "jstor.json", `{
+  "id": "jstor",
+  "name": "JSTOR",
+  "domains": [{"host": "WWW.JSTOR.ORG."}]
+}`)
+
+	store := openTempStore(t)
+	defer store.Close()
+
+	results, err := ImportResources(store, configDir)
+	if err != nil {
+		t.Fatalf("ImportResources returned error: %v", err)
+	}
+	if len(results) != 1 || !results[0].Imported {
+		t.Fatalf("expected import to succeed, got %#v", results)
+	}
+
+	revisions, err := store.ListConfigRevisions(10)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	if len(revisions) != 1 {
+		t.Fatalf("expected one revision, got %#v", revisions)
+	}
+	if revisions[0].Source != "file-import" || revisions[0].Status != "applied" || revisions[0].Summary != "imported=1 errors=0" {
+		t.Fatalf("unexpected revision metadata: %#v", revisions[0])
+	}
+
+	detail, found, err := store.GetConfigRevision(revisions[0].ID)
+	if err != nil {
+		t.Fatalf("get revision: %v", err)
+	}
+	if !found {
+		t.Fatal("expected revision detail to exist")
+	}
+	var resources []map[string]any
+	if err := json.Unmarshal([]byte(detail.ConfigJSON), &resources); err != nil {
+		t.Fatalf("decode revision config_json: %v", err)
+	}
+	if len(resources) != 1 || resources[0]["id"] != "jstor" {
+		t.Fatalf("unexpected revision config_json: %#v", resources)
+	}
+	domains, ok := resources[0]["domains"].([]any)
+	if !ok || len(domains) != 1 {
+		t.Fatalf("expected one revision domain, got %#v", resources[0]["domains"])
+	}
+	domain, ok := domains[0].(map[string]any)
+	if !ok || domain["host"] != "www.jstor.org" {
+		t.Fatalf("expected normalized revision domain, got %#v", domains[0])
+	}
+}
+
+func TestListConfigRevisionsReturnsNewestFirst(t *testing.T) {
+	configDir := t.TempDir()
+	writeResourceConfig(t, configDir, "jstor.json", `{
+  "id": "jstor",
+  "name": "JSTOR",
+  "domains": [{"host": "www.jstor.org"}]
+}`)
+
+	store := openTempStore(t)
+	defer store.Close()
+
+	if _, err := ImportResources(store, configDir); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	writeResourceConfig(t, configDir, "projectmuse.json", `{
+  "id": "projectmuse",
+  "name": "Project MUSE",
+  "domains": [{"host": "muse.jhu.edu"}]
+}`)
+	if _, err := ImportResources(store, configDir); err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+
+	revisions, err := store.ListConfigRevisions(10)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	if len(revisions) != 2 {
+		t.Fatalf("expected two revisions, got %#v", revisions)
+	}
+	if revisions[0].ID <= revisions[1].ID {
+		t.Fatalf("expected newest revision first, got %#v", revisions)
+	}
+}
+
+func TestValidateResourcesDoesNotCreateConfigRevision(t *testing.T) {
+	configDir := t.TempDir()
+	writeResourceConfig(t, configDir, "jstor.json", `{
+  "id": "jstor",
+  "name": "JSTOR",
+  "domains": [{"host": "www.jstor.org"}]
+}`)
+
+	store := openTempStore(t)
+	defer store.Close()
+
+	if response, err := ValidateResources(configDir); err != nil || !response.Valid {
+		t.Fatalf("expected validation to succeed without revision, response=%#v err=%v", response, err)
+	}
+	revisions, err := store.ListConfigRevisions(10)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	if len(revisions) != 0 {
+		t.Fatalf("expected no revisions from validation, got %#v", revisions)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/resources", s.requireAdminAPIKey(s.upsertResource))
 	mux.HandleFunc("POST /api/v1/config/validate", s.requireAdminAPIKey(s.validateConfig))
 	mux.HandleFunc("POST /api/v1/config/import", s.requireAdminAPIKey(s.importConfig))
+	mux.HandleFunc("GET /api/v1/config/revisions", s.requireAdminAPIKey(s.listConfigRevisions))
+	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireAdminAPIKey(s.getConfigRevision))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
 	mux.HandleFunc("GET /p", proxy.StubHandler(s.testRawURL))
 	return s.logging(mux)
@@ -100,6 +103,33 @@ func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) listConfigRevisions(w http.ResponseWriter, r *http.Request) {
+	revisions, err := s.store.ListConfigRevisions(25)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revisions": revisions})
+}
+
+func (s *Server) getConfigRevision(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid revision id")
+		return
+	}
+	revision, found, err := s.store.GetConfigRevision(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "revision not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, revision)
 }
 
 func (s *Server) testURL(w http.ResponseWriter, r *http.Request) {
