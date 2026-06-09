@@ -19,7 +19,7 @@ The important architectural rule is that management and configuration happen thr
 ## What It Is Not Yet
 
 - A full JavaScript-aware browser compatibility proxy.
-- A full admin login/session system. Management APIs use a simple bearer API key for now.
+- A full admin login/session system. Management APIs use bearer API keys with hashed database storage and bootstrap/dev fallback support.
 - A SAML/Shibboleth Service Provider.
 - A production HA deployment.
 - A complete audit implementation.
@@ -38,6 +38,12 @@ Run with an API key:
 APP_ADMIN_API_KEY=devsecret go run ./cmd/odo
 ```
 
+For stored API keys, set a hash secret:
+
+```sh
+APP_ADMIN_API_KEY=devsecret APP_KEY_HASH_SECRET='change-me-long-random-secret' go run ./cmd/odo
+```
+
 Open:
 
 ```text
@@ -52,18 +58,21 @@ The current OpenAPI 3.1 spec is served by the app:
 http://127.0.0.1:8080/openapi.yaml
 ```
 
-## Admin UI Resource Management
+## Admin UI
 
-Open `http://127.0.0.1:8080/admin`. If `APP_ADMIN_API_KEY` is configured, enter that value in the Admin API Key field. Resources can be created, edited, and deleted from the UI using a raw JSON editor.
+Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Proxy Test, Diagnostics / Logs, API Keys, Auth / SAML, and Settings / System.
 
-The UI uses the same `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
+Enter an `APP_ADMIN_API_KEY` bootstrap token or stored API key in the global Admin API Key field for protected actions. The key is kept only in the page runtime and is not stored in browser storage. Resources can still be created, edited, and deleted using a raw JSON editor.
+
+API key management is available in the API Keys section. Newly created or rotated tokens are shown once with a copy warning and are not persisted by the UI. The UI uses the same documented `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
 
 Environment variables:
 
 - `APP_ADDR`, default `:8080`
 - `APP_DB_PATH`, default `./data/app.db`
 - `APP_CONFIG_DIR`, default `./config`
-- `APP_ADMIN_API_KEY`, optional for local dev; when set, management endpoints require `Authorization: Bearer <token>`
+- `APP_ADMIN_API_KEY`, optional bootstrap/dev fallback for creating and managing stored API keys
+- `APP_KEY_HASH_SECRET`, recommended secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
@@ -165,6 +174,38 @@ Recent access logs:
 curl http://127.0.0.1:8080/api/v1/logs/access/recent \
   -H 'Authorization: Bearer devsecret' | jq
 ```
+
+## API Key Management
+
+`APP_ADMIN_API_KEY` remains a bootstrap/dev fallback. For ongoing use, create database-backed API keys and send them as `Authorization: Bearer <token>`. Odo stores only a hash and short prefix, never the full token after creation. The full token is shown only when a key is created or rotated.
+
+Create a stored key:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/api-keys \
+  -H 'Authorization: Bearer devsecret' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Local admin","scopes":["admin"]}' | jq
+```
+
+Use the returned token:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/config/revisions \
+  -H 'Authorization: Bearer odo_live_...' | jq
+```
+
+Rotate or revoke a key:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/rotate \
+  -H 'Authorization: Bearer odo_live_...' | jq
+
+curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/revoke \
+  -H 'Authorization: Bearer odo_live_...' | jq
+```
+
+Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, and `auth:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
 
 ## Admin Troubleshooting Tools
 

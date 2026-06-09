@@ -22,9 +22,6 @@ func main() {
 	proxyURLMode := proxy.ProxyURLMode()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
-	if adminAPIKey == "" {
-		logger.Warn("APP_ADMIN_API_KEY is not set; management API is unprotected")
-	}
 
 	store, err := db.Open(dbPath)
 	if err != nil {
@@ -36,6 +33,17 @@ func main() {
 	if err := store.Migrate(); err != nil {
 		logger.Error("migrate database", "err", err)
 		os.Exit(1)
+	}
+	apiKeyCount, err := store.CountAPIKeys()
+	if err != nil {
+		logger.Error("count api keys", "err", err)
+		os.Exit(1)
+	}
+	if adminAPIKey == "" && apiKeyCount == 0 {
+		logger.Warn("APP_ADMIN_API_KEY is not set; management API is unprotected")
+	}
+	if os.Getenv("APP_KEY_HASH_SECRET") == "" {
+		logger.Warn("APP_KEY_HASH_SECRET is not set; API keys use local-dev SHA-256 hashing")
 	}
 
 	accessLogger, accessLogCloser, err := accesslog.Open(accessLogFormat, accessLogPath)

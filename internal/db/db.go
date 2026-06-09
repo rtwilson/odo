@@ -33,6 +33,20 @@ type AuditEvent struct {
 	Detail string `json:"detail"`
 }
 
+type APIKey struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	KeyHash    string   `json:"-"`
+	KeyPrefix  string   `json:"key_prefix"`
+	Scopes     []string `json:"scopes"`
+	Status     string   `json:"status"`
+	ExpiresAt  string   `json:"expires_at,omitempty"`
+	CreatedAt  string   `json:"created_at"`
+	UpdatedAt  string   `json:"updated_at"`
+	LastUsedAt string   `json:"last_used_at,omitempty"`
+	RevokedAt  string   `json:"revoked_at,omitempty"`
+}
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -72,6 +86,20 @@ CREATE TABLE IF NOT EXISTS config_revisions (
 	status TEXT NOT NULL,
 	summary TEXT NOT NULL,
 	config_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	key_hash TEXT NOT NULL,
+	key_prefix TEXT NOT NULL,
+	scopes_json TEXT NOT NULL,
+	status TEXT NOT NULL,
+	expires_at TEXT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	last_used_at TEXT NULL,
+	revoked_at TEXT NULL
 );
 `)
 	return err
@@ -251,4 +279,156 @@ func (s *Store) ListAuditEvents(limit int) ([]AuditEvent, error) {
 		out = append(out, event)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) CountAPIKeys() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM api_keys`).Scan(&count)
+	return count, err
+}
+
+func (s *Store) CreateAPIKey(key APIKey) error {
+	if key.CreatedAt == "" {
+		key.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if key.UpdatedAt == "" {
+		key.UpdatedAt = key.CreatedAt
+	}
+	scopes, err := json.Marshal(key.Scopes)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes_json, status, expires_at, created_at, updated_at, last_used_at, revoked_at)
+VALUES (?, ?, ?, ?, ?, ?, nullif(?, ''), ?, ?, nullif(?, ''), nullif(?, ''))
+`, key.ID, key.Name, key.KeyHash, key.KeyPrefix, string(scopes), key.Status, key.ExpiresAt, key.CreatedAt, key.UpdatedAt, key.LastUsedAt, key.RevokedAt)
+	if err != nil {
+		return err
+	}
+	return s.Audit("api_key_created", fmt.Sprintf(`{"id":%q,"name":%q,"key_prefix":%q}`, key.ID, key.Name, key.KeyPrefix))
+}
+
+func (s *Store) ListAPIKeys() ([]APIKey, error) {
+	rows, err := s.db.Query(`
+SELECT id, name, key_hash, key_prefix, scopes_json, status, coalesce(expires_at, ''), created_at, updated_at, coalesce(last_used_at, ''), coalesce(revoked_at, '')
+FROM api_keys ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []APIKey
+	for rows.Next() {
+		key, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetAPIKey(id string) (APIKey, bool, error) {
+	row := s.db.QueryRow(`
+SELECT id, name, key_hash, key_prefix, scopes_json, status, coalesce(expires_at, ''), created_at, updated_at, coalesce(last_used_at, ''), coalesce(revoked_at, '')
+FROM api_keys WHERE id = ?
+`, id)
+	key, err := scanAPIKey(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return APIKey{}, false, nil
+	}
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	return key, true, nil
+}
+
+func (s *Store) GetAPIKeyByHash(hash string) (APIKey, bool, error) {
+	row := s.db.QueryRow(`
+SELECT id, name, key_hash, key_prefix, scopes_json, status, coalesce(expires_at, ''), created_at, updated_at, coalesce(last_used_at, ''), coalesce(revoked_at, '')
+FROM api_keys WHERE key_hash = ?
+`, hash)
+	key, err := scanAPIKey(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return APIKey{}, false, nil
+	}
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	return key, true, nil
+}
+
+func (s *Store) RotateAPIKey(id, keyHash, keyPrefix string) (APIKey, bool, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`
+UPDATE api_keys SET key_hash = ?, key_prefix = ?, status = 'active', updated_at = ?, revoked_at = NULL
+WHERE id = ?
+`, keyHash, keyPrefix, now, id)
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	if rows == 0 {
+		return APIKey{}, false, nil
+	}
+	if err := s.Audit("api_key_rotated", fmt.Sprintf(`{"id":%q,"key_prefix":%q}`, id, keyPrefix)); err != nil {
+		return APIKey{}, false, err
+	}
+	key, found, err := s.GetAPIKey(id)
+	return key, found, err
+}
+
+func (s *Store) RevokeAPIKey(id string) (APIKey, bool, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`UPDATE api_keys SET status = 'revoked', revoked_at = ?, updated_at = ? WHERE id = ?`, now, now, id)
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	if rows == 0 {
+		return APIKey{}, false, nil
+	}
+	if err := s.Audit("api_key_revoked", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+		return APIKey{}, false, err
+	}
+	key, found, err := s.GetAPIKey(id)
+	return key, found, err
+}
+
+func (s *Store) DeleteAPIKey(id string) (APIKey, bool, error) {
+	key, found, err := s.RevokeAPIKey(id)
+	if err != nil || !found {
+		return key, found, err
+	}
+	if err := s.Audit("api_key_deleted", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+		return APIKey{}, false, err
+	}
+	return key, true, nil
+}
+
+func (s *Store) MarkAPIKeyUsed(id string) error {
+	_, err := s.db.Exec(`UPDATE api_keys SET last_used_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+type apiKeyScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAPIKey(row apiKeyScanner) (APIKey, error) {
+	var key APIKey
+	var scopesJSON string
+	if err := row.Scan(&key.ID, &key.Name, &key.KeyHash, &key.KeyPrefix, &scopesJSON, &key.Status, &key.ExpiresAt, &key.CreatedAt, &key.UpdatedAt, &key.LastUsedAt, &key.RevokedAt); err != nil {
+		return APIKey{}, err
+	}
+	if err := json.Unmarshal([]byte(scopesJSON), &key.Scopes); err != nil {
+		return APIKey{}, err
+	}
+	return key, nil
 }

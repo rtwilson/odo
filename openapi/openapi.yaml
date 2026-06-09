@@ -219,6 +219,114 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/api-keys:
+    get:
+      summary: List API keys
+      operationId: listAPIKeys
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: API key list without token secrets or hashes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyListResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create API key
+      operationId: createAPIKey
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/APIKeyCreateRequest"
+      responses:
+        "201":
+          description: Created API key. The token is returned only once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyCreateResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/api-keys/{id}:
+    get:
+      summary: Get API key metadata
+      operationId: getAPIKey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/APIKeyID"
+      responses:
+        "200":
+          description: API key metadata without token secret or hash
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyDetail"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      summary: Delete API key by revoking it
+      operationId: deleteAPIKey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/APIKeyID"
+      responses:
+        "200":
+          description: Deleted/revoked key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyRevokeResponse"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/api-keys/{id}/rotate:
+    post:
+      summary: Rotate API key token
+      operationId: rotateAPIKey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/APIKeyID"
+      responses:
+        "200":
+          description: Rotated API key. The new token is returned only once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyRotateResponse"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/api-keys/{id}/revoke:
+    post:
+      summary: Revoke API key
+      operationId: revokeAPIKey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/APIKeyID"
+      responses:
+        "200":
+          description: Revoked key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyRevokeResponse"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/rules/test-url:
     post:
       summary: Test whether a URL matches an active resource rule
@@ -457,6 +565,14 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+  parameters:
+    APIKeyID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: key_abc123
   schemas:
     HealthResponse:
       type: object
@@ -603,6 +719,90 @@ components:
             config_json:
               type: string
               description: JSON string containing normalized imported resource configs.
+    APIKeyCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          examples: [GitHub Actions deploy key]
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [admin, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, auth:write]
+          examples:
+            - [config:write, config:read]
+        expires_at:
+          type: string
+          format: date-time
+    APIKeySummary:
+      type: object
+      required: [id, name, key_prefix, scopes, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: Non-secret token prefix for identification.
+          examples: [odo_live_abcd1234]
+        scopes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+    APIKeyDetail:
+      allOf:
+        - $ref: "#/components/schemas/APIKeySummary"
+    APIKeyCreateResponse:
+      allOf:
+        - $ref: "#/components/schemas/APIKeySummary"
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: Full bearer token. Returned only once.
+              examples: [odo_live_abc123]
+    APIKeyRotateResponse:
+      allOf:
+        - $ref: "#/components/schemas/APIKeyCreateResponse"
+    APIKeyRevokeResponse:
+      type: object
+      properties:
+        revoked:
+          type: boolean
+        deleted:
+          type: boolean
+        api_key:
+          $ref: "#/components/schemas/APIKeySummary"
+    APIKeyListResponse:
+      type: object
+      required: [api_keys]
+      properties:
+        api_keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/APIKeySummary"
     TestURLRequest:
       type: object
       required: [url]

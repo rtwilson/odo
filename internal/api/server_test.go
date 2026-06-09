@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/db"
@@ -102,10 +103,13 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Proxy Test", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
+	}
+	if !strings.Contains(body, "/api/v1/api-keys") {
+		t.Fatalf("expected admin JS to reference /api/v1/api-keys")
 	}
 	if strings.Contains(body, `data-odo-js-shim="true"`) {
 		t.Fatalf("admin UI should not include proxy JS shim")
@@ -1232,6 +1236,184 @@ func TestManagementEndpointRejectsInvalidAPIKey(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyReturnsTokenOnceAndStoresHash(t *testing.T) {
+	server := newTestServer(t, "secret")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/api-keys", bytes.NewBufferString(`{"name":"Local admin","scopes":["admin"]}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected create API key to return 201, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID        string   `json:"id"`
+		KeyPrefix string   `json:"key_prefix"`
+		Token     string   `json:"token"`
+		Scopes    []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created key: %v", err)
+	}
+	if created.ID == "" || !strings.HasPrefix(created.Token, "odo_live_") || created.KeyPrefix == "" {
+		t.Fatalf("expected created key id/prefix/token, got %#v", created)
+	}
+	stored, found, err := server.store.GetAPIKey(created.ID)
+	if err != nil || !found {
+		t.Fatalf("get stored API key found=%v err=%v", found, err)
+	}
+	if stored.KeyHash == "" || strings.Contains(stored.KeyHash, created.Token) {
+		t.Fatalf("expected non-plaintext key hash, got %#v", stored)
+	}
+	if stored.KeyPrefix != created.KeyPrefix {
+		t.Fatalf("expected stored prefix %q, got %q", created.KeyPrefix, stored.KeyPrefix)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/api-keys", nil)
+	listReq.Header.Set("Authorization", "Bearer secret")
+	listRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list API keys to return 200, got %d with body %s", listRec.Code, listRec.Body.String())
+	}
+	if strings.Contains(listRec.Body.String(), created.Token) || strings.Contains(listRec.Body.String(), "key_hash") {
+		t.Fatalf("list leaked token or key_hash: %s", listRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/api-keys/"+created.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer secret")
+	getRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected get API key to return 200, got %d with body %s", getRec.Code, getRec.Body.String())
+	}
+	if strings.Contains(getRec.Body.String(), created.Token) || strings.Contains(getRec.Body.String(), "key_hash") {
+		t.Fatalf("get leaked token or key_hash: %s", getRec.Body.String())
+	}
+}
+
+func TestStoredAPIKeyAuthenticatesAndUpdatesLastUsed(t *testing.T) {
+	server := newTestServer(t, "secret")
+	token, id := createTestAPIKey(t, server, "secret", []string{"config:read"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config/revisions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected stored API key to authenticate, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	key, found, err := server.store.GetAPIKey(id)
+	if err != nil || !found {
+		t.Fatalf("get API key found=%v err=%v", found, err)
+	}
+	if key.LastUsedAt == "" {
+		t.Fatalf("expected last_used_at to be updated, got %#v", key)
+	}
+}
+
+func TestStoredAPIKeyRejectsInsufficientScope(t *testing.T) {
+	server := newTestServer(t, "secret")
+	token, _ := createTestAPIKey(t, server, "secret", []string{"config:read"})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "insufficient scope") {
+		t.Fatalf("expected insufficient scope 403, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStoredAPIKeyRevokedAndExpiredRejected(t *testing.T) {
+	server := newTestServer(t, "secret")
+	revokedToken, revokedID := createTestAPIKey(t, server, "secret", []string{"admin"})
+	if _, found, err := server.store.RevokeAPIKey(revokedID); err != nil || !found {
+		t.Fatalf("revoke API key found=%v err=%v", found, err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config/revisions", nil)
+	req.Header.Set("Authorization", "Bearer "+revokedToken)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected revoked key to be rejected, got %d with body %s", rec.Code, rec.Body.String())
+	}
+
+	expiredKey, expiredToken, err := server.newStoredAPIKey(apiKeyCreateRequest{
+		Name:      "Expired",
+		Scopes:    []string{"admin"},
+		ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("create expired key: %v", err)
+	}
+	if err := server.store.CreateAPIKey(expiredKey); err != nil {
+		t.Fatalf("store expired key: %v", err)
+	}
+	expiredReq := httptest.NewRequest(http.MethodGet, "/api/v1/config/revisions", nil)
+	expiredReq.Header.Set("Authorization", "Bearer "+expiredToken)
+	expiredRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(expiredRec, expiredReq)
+	if expiredRec.Code != http.StatusForbidden {
+		t.Fatalf("expected expired key to be rejected, got %d with body %s", expiredRec.Code, expiredRec.Body.String())
+	}
+}
+
+func TestAPIKeyRotateInvalidatesOldTokenAndRevokeDisablesNewToken(t *testing.T) {
+	server := newTestServer(t, "secret")
+	oldToken, id := createTestAPIKey(t, server, "secret", []string{"admin"})
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/api/v1/api-keys/"+id+"/rotate", nil)
+	rotateReq.Header.Set("Authorization", "Bearer "+oldToken)
+	rotateRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rotateRec, rotateReq)
+	if rotateRec.Code != http.StatusOK {
+		t.Fatalf("expected rotate to return 200, got %d with body %s", rotateRec.Code, rotateRec.Body.String())
+	}
+	var rotated struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rotateRec.Body.Bytes(), &rotated); err != nil {
+		t.Fatalf("decode rotate response: %v", err)
+	}
+	if rotated.Token == "" || rotated.Token == oldToken {
+		t.Fatalf("expected new one-time token, got %#v", rotated)
+	}
+
+	oldReq := httptest.NewRequest(http.MethodGet, "/api/v1/api-keys", nil)
+	oldReq.Header.Set("Authorization", "Bearer "+oldToken)
+	oldRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(oldRec, oldReq)
+	if oldRec.Code != http.StatusForbidden {
+		t.Fatalf("expected old rotated token to fail, got %d with body %s", oldRec.Code, oldRec.Body.String())
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/api/v1/api-keys", nil)
+	newReq.Header.Set("Authorization", "Bearer "+rotated.Token)
+	newRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(newRec, newReq)
+	if newRec.Code != http.StatusOK {
+		t.Fatalf("expected rotated token to work, got %d with body %s", newRec.Code, newRec.Body.String())
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodPost, "/api/v1/api-keys/"+id+"/revoke", nil)
+	revokeReq.Header.Set("Authorization", "Bearer "+rotated.Token)
+	revokeRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("expected revoke to return 200, got %d with body %s", revokeRec.Code, revokeRec.Body.String())
+	}
+	revokedReq := httptest.NewRequest(http.MethodGet, "/api/v1/api-keys", nil)
+	revokedReq.Header.Set("Authorization", "Bearer "+rotated.Token)
+	revokedRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(revokedRec, revokedReq)
+	if revokedRec.Code != http.StatusForbidden {
+		t.Fatalf("expected revoked rotated token to fail, got %d with body %s", revokedRec.Code, revokedRec.Body.String())
+	}
+}
+
 func TestConfigImportRequiresAPIKey(t *testing.T) {
 	server := newTestServer(t, "secret")
 
@@ -1498,6 +1680,35 @@ func newProxyFetchTestServerWithAccessLogAndAdmin(t *testing.T, upstreamURL stri
 		t.Fatalf("upsert resource: %v", err)
 	}
 	return server
+}
+
+func createTestAPIKey(t *testing.T, server *Server, bootstrapToken string, scopes []string) (string, string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"name":   "Test key",
+		"scopes": scopes,
+	})
+	if err != nil {
+		t.Fatalf("marshal API key payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/api-keys", bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+bootstrapToken)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create API key got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode API key response: %v", err)
+	}
+	if body.ID == "" || body.Token == "" {
+		t.Fatalf("expected API key id/token, got %#v", body)
+	}
+	return body.Token, body.ID
 }
 
 func newProxyFetchTestServerWithDebug(t *testing.T, upstreamURL string) *Server {

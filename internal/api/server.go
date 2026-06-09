@@ -2,13 +2,20 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -84,19 +91,25 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
-	mux.HandleFunc("POST /api/v1/resources", s.requireAdminAPIKey(s.upsertResource))
+	mux.HandleFunc("POST /api/v1/resources", s.requireScopes(s.upsertResource, "resources:write"))
 	mux.HandleFunc("GET /api/v1/resources/{id}", s.getResource)
-	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireAdminAPIKey(s.putResource))
-	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireAdminAPIKey(s.deleteResource))
-	mux.HandleFunc("POST /api/v1/config/validate", s.requireAdminAPIKey(s.validateConfig))
-	mux.HandleFunc("POST /api/v1/config/import", s.requireAdminAPIKey(s.importConfig))
-	mux.HandleFunc("GET /api/v1/config/revisions", s.requireAdminAPIKey(s.listConfigRevisions))
-	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireAdminAPIKey(s.getConfigRevision))
+	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireScopes(s.putResource, "resources:write"))
+	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireScopes(s.deleteResource, "resources:write"))
+	mux.HandleFunc("POST /api/v1/config/validate", s.requireScopes(s.validateConfig, "config:write"))
+	mux.HandleFunc("POST /api/v1/config/import", s.requireScopes(s.importConfig, "config:write"))
+	mux.HandleFunc("GET /api/v1/config/revisions", s.requireScopes(s.listConfigRevisions, "config:read"))
+	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireScopes(s.getConfigRevision, "config:read"))
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
-	mux.HandleFunc("POST /api/v1/proxy/test-fetch", s.requireAdminAPIKey(s.proxyTestFetch))
-	mux.HandleFunc("GET /api/v1/logs/access/recent", s.requireAdminAPIKey(s.recentAccessLogs))
-	mux.HandleFunc("GET /api/v1/diagnostics/proxy/recent", s.requireAdminAPIKey(s.recentProxyDiagnostics))
-	mux.HandleFunc("GET /api/v1/diagnostics/missed-rewrites/recent", s.requireAdminAPIKey(s.recentMissedRewrites))
+	mux.HandleFunc("POST /api/v1/proxy/test-fetch", s.requireScopes(s.proxyTestFetch, "diagnostics:read"))
+	mux.HandleFunc("GET /api/v1/logs/access/recent", s.requireScopes(s.recentAccessLogs, "logs:read"))
+	mux.HandleFunc("GET /api/v1/diagnostics/proxy/recent", s.requireScopes(s.recentProxyDiagnostics, "diagnostics:read"))
+	mux.HandleFunc("GET /api/v1/diagnostics/missed-rewrites/recent", s.requireScopes(s.recentMissedRewrites, "diagnostics:read"))
+	mux.HandleFunc("POST /api/v1/api-keys", s.requireScopes(s.createAPIKey, "auth:write"))
+	mux.HandleFunc("GET /api/v1/api-keys", s.requireScopes(s.listAPIKeys, "auth:write"))
+	mux.HandleFunc("GET /api/v1/api-keys/{id}", s.requireScopes(s.getAPIKey, "auth:write"))
+	mux.HandleFunc("POST /api/v1/api-keys/{id}/rotate", s.requireScopes(s.rotateAPIKey, "auth:write"))
+	mux.HandleFunc("POST /api/v1/api-keys/{id}/revoke", s.requireScopes(s.revokeAPIKey, "auth:write"))
+	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", s.requireScopes(s.deleteAPIKey, "auth:write"))
 	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
@@ -490,6 +503,138 @@ func (s *Server) proxyTestTarget(ctx context.Context, rawURL string) (*url.URL, 
 	return target, result
 }
 
+type apiKeyCreateRequest struct {
+	Name      string   `json:"name"`
+	Scopes    []string `json:"scopes"`
+	ExpiresAt string   `json:"expires_at"`
+}
+
+type apiKeyResponse struct {
+	db.APIKey
+	Token string `json:"token,omitempty"`
+}
+
+func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req apiKeyCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	key, token, err := s.newStoredAPIKey(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.store.CreateAPIKey(key); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, apiKeyResponse{APIKey: key, Token: token})
+}
+
+func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := s.store.ListAPIKeys()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"api_keys": keys})
+}
+
+func (s *Server) getAPIKey(w http.ResponseWriter, r *http.Request) {
+	key, found, err := s.store.GetAPIKey(strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, key)
+}
+
+func (s *Server) rotateAPIKey(w http.ResponseWriter, r *http.Request) {
+	token, err := generateAPIToken("odo_live_")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "token generation failed")
+		return
+	}
+	key, found, err := s.store.RotateAPIKey(strings.TrimSpace(r.PathValue("id")), s.hashAPIToken(token), keyPrefix(token))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, apiKeyResponse{APIKey: key, Token: token})
+}
+
+func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	key, found, err := s.store.RevokeAPIKey(strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "api_key": key})
+}
+
+func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	key, found, err := s.store.DeleteAPIKey(strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "api_key": key})
+}
+
+func (s *Server) newStoredAPIKey(req apiKeyCreateRequest) (db.APIKey, string, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return db.APIKey{}, "", fmt.Errorf("api key name is required")
+	}
+	scopes, err := validateAPIKeyScopes(req.Scopes)
+	if err != nil {
+		return db.APIKey{}, "", err
+	}
+	if req.ExpiresAt != "" {
+		if _, err := time.Parse(time.RFC3339, req.ExpiresAt); err != nil {
+			return db.APIKey{}, "", fmt.Errorf("expires_at must be RFC3339")
+		}
+	}
+	token, err := generateAPIToken("odo_live_")
+	if err != nil {
+		return db.APIKey{}, "", err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	id, err := randomID("key_", 12)
+	if err != nil {
+		return db.APIKey{}, "", err
+	}
+	return db.APIKey{
+		ID:        id,
+		Name:      name,
+		KeyHash:   s.hashAPIToken(token),
+		KeyPrefix: keyPrefix(token),
+		Scopes:    scopes,
+		Status:    "active",
+		ExpiresAt: strings.TrimSpace(req.ExpiresAt),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, token, nil
+}
+
 func (s *Server) recentAccessLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": s.accessLog.Recent()})
 }
@@ -608,22 +753,62 @@ func (r *responseRecorder) Write(data []byte) (int, error) {
 }
 
 func (s *Server) requireAdminAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireScopes(next)
+}
+
+func (s *Server) requireScopes(next http.HandlerFunc, scopes ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.adminKey == "" {
+		auth, status, message := s.authenticateBearer(r, scopes...)
+		if status != 0 {
+			writeError(w, status, message)
+			return
+		}
+		if !auth {
 			next(w, r)
-			return
-		}
-		token := bearerToken(r.Header.Get("Authorization"))
-		if token == "" {
-			writeError(w, http.StatusUnauthorized, "missing bearer token")
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) != 1 {
-			writeError(w, http.StatusForbidden, "invalid bearer token")
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) authenticateBearer(r *http.Request, requiredScopes ...string) (bool, int, string) {
+	storedCount, err := s.store.CountAPIKeys()
+	if err != nil {
+		return false, http.StatusInternalServerError, err.Error()
+	}
+	if storedCount == 0 && s.adminKey == "" {
+		return false, 0, ""
+	}
+	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		return false, http.StatusUnauthorized, "missing bearer token"
+	}
+	if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
+		return true, 0, ""
+	}
+	key, found, err := s.store.GetAPIKeyByHash(s.hashAPIToken(token))
+	if err != nil {
+		return false, http.StatusInternalServerError, err.Error()
+	}
+	if !found {
+		return false, http.StatusForbidden, "invalid bearer token"
+	}
+	if key.Status != "active" || key.RevokedAt != "" {
+		return false, http.StatusForbidden, "invalid bearer token"
+	}
+	if key.ExpiresAt != "" {
+		expiresAt, err := time.Parse(time.RFC3339, key.ExpiresAt)
+		if err != nil || time.Now().UTC().After(expiresAt) {
+			return false, http.StatusForbidden, "invalid bearer token"
+		}
+	}
+	if !hasRequiredScope(key.Scopes, requiredScopes) {
+		return false, http.StatusForbidden, "insufficient scope"
+	}
+	if err := s.store.MarkAPIKeyUsed(key.ID); err != nil {
+		return false, http.StatusInternalServerError, err.Error()
+	}
+	return true, 0, ""
 }
 
 func bearerToken(header string) string {
@@ -632,6 +817,91 @@ func bearerToken(header string) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(header, prefix))
+}
+
+func (s *Server) hashAPIToken(token string) string {
+	secret := os.Getenv("APP_KEY_HASH_SECRET")
+	if secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write([]byte(token))
+		return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+	}
+	sum := sha256.Sum256([]byte(token))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func generateAPIToken(prefix string) (string, error) {
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(random), nil
+}
+
+func randomID(prefix string, n int) (string, error) {
+	random := make([]byte, n)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(random), nil
+}
+
+func keyPrefix(token string) string {
+	if len(token) <= len("odo_live_")+8 {
+		return token
+	}
+	return token[:len("odo_live_")+8]
+}
+
+var validAPIKeyScopes = map[string]bool{
+	"admin":            true,
+	"resources:read":   true,
+	"resources:write":  true,
+	"config:read":      true,
+	"config:write":     true,
+	"diagnostics:read": true,
+	"logs:read":        true,
+	"auth:write":       true,
+}
+
+func validateAPIKeyScopes(scopes []string) ([]string, error) {
+	if len(scopes) == 0 {
+		return []string{"admin"}, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if !validAPIKeyScopes[scope] {
+			return nil, fmt.Errorf("unknown scope %q", scope)
+		}
+		if !seen[scope] {
+			out = append(out, scope)
+			seen[scope] = true
+		}
+	}
+	return out, nil
+}
+
+func hasRequiredScope(granted, required []string) bool {
+	for _, scope := range granted {
+		if scope == "admin" {
+			return true
+		}
+	}
+	if len(required) == 0 {
+		return true
+	}
+	grantedSet := map[string]bool{}
+	for _, scope := range granted {
+		grantedSet[scope] = true
+	}
+	for _, scope := range required {
+		if grantedSet[scope] {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
