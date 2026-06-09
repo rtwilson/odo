@@ -79,6 +79,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.root)
+	mux.HandleFunc("POST /", s.root)
 	mux.HandleFunc("GET /admin", s.admin)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /api/v1/health", s.health)
@@ -123,8 +124,13 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 	event := proxy.MissedRewriteEvent{
-		Method: r.Method,
-		Path:   r.URL.Path,
+		Method:              r.Method,
+		Path:                r.URL.Path,
+		RequestKind:         proxy.MissedRewriteRequestKind(r),
+		RecoveryAction:      proxy.RecoveryActionNotRecovered,
+		AcceptHeaderSummary: proxy.AcceptHeaderSummary(r.Header.Get("Accept")),
+		SecFetchDest:        strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")),
+		SecFetchMode:        strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")),
 	}
 	if proxy.ProtectedAppPath(r.URL.Path) {
 		event.Reason = "protected app path"
@@ -146,8 +152,55 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	event.RecoveredTargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	event.RecoveredPathPrefix = proxy.SafePathPrefix(target.EscapedPath())
+	event.CanonicalProxyPath = proxy.CanonicalProxyPathWithoutQuery(target)
+
+	if event.RequestKind == proxy.RequestKindDocument {
+		validatedTarget, result := s.proxyTarget(r.Context(), target.String())
+		if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
+			metadata.Route = "/odo-recovered"
+			metadata.Recovered = true
+			metadata.TargetHost = event.RecoveredTargetHost
+			metadata.ResourceID = result.ResourceID
+			metadata.RuleHost = result.RuleHost
+			metadata.RuleMatch = result.RuleMatch
+			metadata.Decision = "denied"
+			if result.Allowed {
+				metadata.Decision = "allowed"
+			}
+			metadata.DenialReason = result.Reason
+		}
+		if !result.Allowed || validatedTarget == nil {
+			event.RecoveryAction = proxy.RecoveryActionDenied
+			event.Reason = "recovery target denied"
+			if result.Reason != "" {
+				event.Reason = result.Reason
+			}
+			s.missedDiag.Add(event)
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":   "target URL is not allowed",
+				"allowed": false,
+				"reason":  event.Reason,
+			})
+			return
+		}
+		event.Recovered = true
+		event.RecoveryAction = proxy.RecoveryActionRedirectedToCanonical
+		event.Reason = "redirected to canonical proxy URL"
+		s.missedDiag.Add(event)
+		if s.proxyDebug {
+			w.Header().Set("X-Odo-Recovered-From-Referer", "true")
+			w.Header().Set("X-Odo-Recovery-Action", proxy.RecoveryActionHeader(event.RecoveryAction))
+			w.Header().Set("X-Odo-Target-Host", event.RecoveredTargetHost)
+		}
+		http.Redirect(w, r, proxy.BuildProxyURL(validatedTarget), http.StatusFound)
+		return
+	}
+
 	recoveredReq := r.Clone(r.Context())
 	recoveredReq = proxy.WithRecoveredFromReferer(recoveredReq)
+	recoveredReq = proxy.WithRecoveryAction(recoveredReq, proxy.RecoveryActionSilentlyProxied)
 	recoveredReq.URL = &url.URL{Path: proxy.PublicProxyPath, RawQuery: "url=" + url.QueryEscape(target.String())}
 	recoveredReq.RequestURI = recoveredReq.URL.RequestURI()
 	if metadata := accesslog.MetadataFrom(recoveredReq.Context()); metadata != nil {
@@ -157,12 +210,14 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 
 	recorder := &recoveryRecorder{ResponseWriter: w}
 	s.proxyH.ServeHTTP(recorder, recoveredReq)
+	event.UpstreamStatus = recorder.status
+	event.ContentType = recorder.Header().Get("Content-Type")
 	if recorder.status >= http.StatusOK && recorder.status < http.StatusBadRequest {
 		event.Recovered = true
-		event.RecoveredTargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+		event.RecoveryAction = proxy.RecoveryActionSilentlyProxied
 		event.Reason = "recovered from proxied referer"
 	} else {
-		event.RecoveredTargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+		event.RecoveryAction = proxy.RecoveryActionDenied
 		event.Reason = "recovery target denied"
 	}
 	s.missedDiag.Add(event)

@@ -27,7 +27,10 @@ type FetchOptions struct {
 	MaxBodyBytes int64
 }
 
-const recoveredContextKey = "odo_recovered_from_referer"
+const (
+	recoveredContextKey      = "odo_recovered_from_referer"
+	recoveryActionContextKey = "odo_recovery_action"
+)
 
 const DefaultProxyMaxBodyBytes int64 = 10 * 1024 * 1024
 
@@ -135,6 +138,9 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			w.Header().Set("X-Odo-Upstream-Cookies-Stored", strconv.Itoa(upstreamCookiesReceived))
 			if recoveredFromReferer(r) {
 				w.Header().Set("X-Odo-Recovered-From-Referer", "true")
+				if action := recoveryAction(r); action != "" {
+					w.Header().Set("X-Odo-Recovery-Action", RecoveryActionHeader(action))
+				}
 				if target != nil {
 					w.Header().Set("X-Odo-Target-Host", strings.ToLower(strings.TrimSuffix(target.Hostname(), ".")))
 				}
@@ -176,9 +182,22 @@ func WithRecoveredFromReferer(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), recoveredContextKey, true))
 }
 
+func WithRecoveryAction(r *http.Request, action string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), recoveryActionContextKey, action))
+}
+
 func recoveredFromReferer(r *http.Request) bool {
 	value, _ := r.Context().Value(recoveredContextKey).(bool)
 	return value
+}
+
+func recoveryAction(r *http.Request) string {
+	value, _ := r.Context().Value(recoveryActionContextKey).(string)
+	return value
+}
+
+func RecoveryActionHeader(action string) string {
+	return strings.ReplaceAll(action, "_", "-")
 }
 
 func ProxyMaxBodyBytes() int64 {
@@ -278,6 +297,8 @@ func applyContentTypeFallback(headers http.Header, target *url.URL) {
 	switch {
 	case strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs"):
 		headers.Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(path, ".json") || strings.Contains(path, "/manifest"):
+		headers.Set("Content-Type", "application/json; charset=utf-8")
 	case strings.HasSuffix(path, ".css"):
 		headers.Set("Content-Type", "text/css; charset=utf-8")
 	}

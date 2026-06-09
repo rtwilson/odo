@@ -176,13 +176,17 @@ Recent access logs are privacy-filtered and available through the admin UI. Prox
 
 Modern sites may generate paths dynamically in JavaScript. These can appear as local paths outside `/odo`, such as `/assets/app.js` or `/mfe-copper-roof/.../remoteEntry.js`, when they should have been proxied.
 
-By default, Odo can infer the upstream host from a proxied `Referer` and recover the request through the normal proxy path. Recovery is still subject to URL safety checks, DNS/IP safety validation, resource allowlists, and domain rule actions. Disable recovery with:
+By default, Odo can infer the upstream host from a proxied `Referer` and recover the request through the normal proxy path. Recovery is still subject to URL safety checks, DNS/IP safety validation, resource allowlists, and domain rule actions.
+
+Missed asset, script, CSS, image, and API-like URLs may be silently recovered from the proxied `Referer`. Missed top-level document navigations, such as a clicked link that lands on `/action/doAdvancedSearch`, redirect to the canonical `/odo/https/{host}/{path}` URL instead. This keeps the browser address bar and future relative URL resolution inside the proxy. Query strings are preserved in the redirect, but privacy logs and missed-rewrite diagnostics avoid recording full query strings.
+
+Disable referer recovery with:
 
 ```sh
 APP_PROXY_REFERER_RECOVERY=false
 ```
 
-Use **Load Missed Rewrites** in the admin UI to inspect recovered and unrecovered missed rewrite events.
+Use browser DevTools plus **Load Missed Rewrites** in the admin UI to inspect recovered, redirected, denied, and unrecovered missed rewrite events.
 
 ## Access Logging
 
@@ -227,7 +231,7 @@ Query compatibility mode can be selected with:
 APP_PROXY_URL_MODE=query
 ```
 
-Unknown local paths now return `404` instead of redirecting to `/admin`, which makes missed rewrites easier to spot during testing. Virtual-host mode may be added later for EZproxy-style URLs such as `www-economist-com.access.library.edu`.
+Unknown local paths now return `404` instead of redirecting to `/admin` unless referer-based recovery applies, which makes missed rewrites easier to spot during testing. Missed document navigations redirect to canonical `/odo/https/{host}/{path}` URLs, while missed assets can be silently proxied. Virtual-host mode may be added later for EZproxy-style URLs such as `www-economist-com.access.library.edu`.
 
 `/odo` performs a minimal safe outbound `GET`/`HEAD`/`POST` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
 
