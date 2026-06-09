@@ -69,6 +69,7 @@ Environment variables:
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
 - `APP_PROXY_URL_MODE`, default `path`; use `query` to generate `/odo?url=...` compatibility links
 - `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
+- `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
 
 ## API Examples
 
@@ -219,7 +220,13 @@ Unknown local paths now return `404` instead of redirecting to `/admin`, which m
 
 Odo keeps a server-side per-session cookie jar for proxied browsing. The browser receives only an `odo_proxy_sid` cookie; upstream/vendor cookies are stored server-side and are not exposed directly to the browser. This improves continuity across proxied requests and POST form submissions, but it is not user authentication. In HA deployments, the in-memory session store would need Redis or another shared session store.
 
-POST form submissions are forwarded upstream when the target is safe and proxyable. Request bodies are size-limited by `APP_PROXY_MAX_BODY_BYTES`, and request bodies/form values are not logged. JavaScript fetch/XHR interception, WebSockets, and full SPA compatibility are future work. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect, which defaults to `/odo/https/{host}/{path}`. Content-Security-Policy is not copied yet, and `integrity` attributes are removed when URLs are rewritten, because upstream CSP and SRI often reject proxied/transformed assets before fuller policy rewriting exists.
+POST form submissions are forwarded upstream when the target is safe and proxyable. Request bodies are size-limited by `APP_PROXY_MAX_BODY_BYTES`, and request bodies/form values are not logged. Full JavaScript rewriting, WebSockets, and full SPA compatibility are future work. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect, which defaults to `/odo/https/{host}/{path}`. Content-Security-Policy is not copied yet, and `integrity` attributes are removed when URLs are rewritten, because upstream CSP and SRI often reject proxied/transformed assets before fuller policy rewriting exists.
+
+Odo injects a small JavaScript shim into proxied HTML pages by default. The shim rewrites same-origin `fetch()` and `XMLHttpRequest` calls back through `/odo`, which helps modern sites that render headers, search boxes, menus, and consent UI through JavaScript. This is not full JavaScript rewriting, and server-side URL validation remains authoritative. Disable it with:
+
+```sh
+APP_PROXY_INJECT_JS_SHIM=false
+```
 
 ## Domain Rules
 

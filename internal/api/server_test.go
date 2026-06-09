@@ -107,6 +107,9 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
 	}
+	if strings.Contains(body, `data-odo-js-shim="true"`) {
+		t.Fatalf("admin UI should not include proxy JS shim")
+	}
 }
 
 func TestProxyTestFetchRequiresAPIKey(t *testing.T) {

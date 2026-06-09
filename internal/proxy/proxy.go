@@ -263,7 +263,18 @@ func transformBody(ctx context.Context, body, contentType string, base *url.URL,
 		return RewriteCSS(ctx, body, base, check)
 	}
 	if strings.Contains(contentType, "text/html") {
-		return RewriteHTML(ctx, body, base, check)
+		transformed := RewriteHTML(ctx, body, base, check)
+		if InjectJSShimEnabled() {
+			targetOrigin := base.Scheme + "://" + base.Host
+			var injected bool
+			transformed, injected = InjectJSShim(transformed, targetOrigin, base.String())
+			if diagnostics := DiagnosticsFrom(ctx); diagnostics != nil {
+				diagnostics.JSShimInjected = injected
+				diagnostics.JSFetchShimEnabled = injected
+				diagnostics.JSXHRShimEnabled = injected
+			}
+		}
+		return transformed
 	}
 	return body
 }

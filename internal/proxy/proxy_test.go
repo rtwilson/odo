@@ -352,6 +352,62 @@ func TestFetchHandlerRewritesHTMLAssetAttributes(t *testing.T) {
 	}
 }
 
+func TestFetchHandlerInjectsJSShimIntoHTMLHeadByDefault(t *testing.T) {
+	body, _ := fetchBody(t, "text/html", `<html><head><title>x</title></head><body></body></html>`, allowedHostTargetCheck)
+
+	if !strings.Contains(body, jsShimMarker) {
+		t.Fatalf("expected JS shim injected, got %s", body)
+	}
+	if !strings.Contains(body, `"https://www.jstor.org"`) || !strings.Contains(body, `"https://www.jstor.org/path/page.html"`) {
+		t.Fatalf("expected safely escaped target origin/base in shim, got %s", body)
+	}
+	if !strings.Contains(body, "window.fetch") || !strings.Contains(body, "XMLHttpRequest.prototype.open") {
+		t.Fatalf("expected fetch and XHR wrappers, got %s", body)
+	}
+	if strings.Index(body, jsShimMarker) > strings.Index(body, "<title>") {
+		t.Fatalf("expected shim inserted near start of head, got %s", body)
+	}
+}
+
+func TestFetchHandlerDoesNotInjectJSShimWhenDisabled(t *testing.T) {
+	t.Setenv("APP_PROXY_INJECT_JS_SHIM", "false")
+	body, _ := fetchBody(t, "text/html", `<html><head></head><body></body></html>`, allowedHostTargetCheck)
+
+	if strings.Contains(body, jsShimMarker) {
+		t.Fatalf("expected JS shim disabled, got %s", body)
+	}
+}
+
+func TestFetchHandlerDoesNotInjectJSShimIntoCSS(t *testing.T) {
+	body, _ := fetchBody(t, "text/css", `body{color:red}`, allowedHostTargetCheck)
+
+	if strings.Contains(body, jsShimMarker) {
+		t.Fatalf("expected no JS shim in CSS, got %s", body)
+	}
+}
+
+func TestInjectJSShimFallsBackToBodyOrDocumentStart(t *testing.T) {
+	withBody, injected := InjectJSShim(`<body><main></main></body>`, "https://www.jstor.org", "https://www.jstor.org/")
+	if !injected || !strings.Contains(withBody, `<body><script `+jsShimMarker) {
+		t.Fatalf("expected body insertion, got injected=%v body=%s", injected, withBody)
+	}
+	withoutHeadOrBody, injected := InjectJSShim(`<main></main>`, "https://www.jstor.org", "https://www.jstor.org/")
+	if !injected || !strings.HasPrefix(withoutHeadOrBody, `<script `+jsShimMarker) {
+		t.Fatalf("expected document-start insertion, got injected=%v body=%s", injected, withoutHeadOrBody)
+	}
+}
+
+func TestBuildJSShimSafelyEscapesTargetStrings(t *testing.T) {
+	shim := BuildJSShim(`https://www.example.com`, `https://www.example.com/a"</script><script>alert(1)</script>`)
+
+	if strings.Contains(shim, `a"</script><script>`) {
+		t.Fatalf("expected target base safely escaped, got %s", shim)
+	}
+	if !strings.Contains(shim, `window.fetch`) || !strings.Contains(shim, `XMLHttpRequest.prototype.open`) {
+		t.Fatalf("expected fetch and XHR wrappers in shim, got %s", shim)
+	}
+}
+
 func TestFetchHandlerRewritesRelativeAnchorURL(t *testing.T) {
 	html := `<a href="../journal/article">Article</a>`
 	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
@@ -588,6 +644,18 @@ func TestFetchHandlerRecordsRewriteDiagnostics(t *testing.T) {
 	}
 	if entry.BlockedURLCount == 0 || entry.NonProxyableAllowedCount == 0 || entry.RemovedIntegrityCount == 0 {
 		t.Fatalf("expected blocked/non-proxyable/integrity counts, got %#v", entry)
+	}
+}
+
+func TestFetchHandlerDiagnosticsShowJSShimInjected(t *testing.T) {
+	store := NewDiagnosticsStore(10)
+	_, _ = fetchBodyWithDiagnostics(t, "text/html", `<html><head></head><body></body></html>`, allowedHostTargetCheck, store)
+	entries := store.Recent()
+	if len(entries) != 1 {
+		t.Fatalf("expected one diagnostics entry, got %#v", entries)
+	}
+	if !entries[0].JSShimInjected || !entries[0].JSFetchShimEnabled || !entries[0].JSXHRShimEnabled {
+		t.Fatalf("expected JS shim diagnostics, got %#v", entries[0])
 	}
 }
 

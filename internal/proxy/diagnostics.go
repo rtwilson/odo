@@ -16,6 +16,9 @@ type Diagnostics struct {
 	RequestBodyLimited       bool   `json:"request_body_limited,omitempty"`
 	ProxiedPostCount         int    `json:"proxied_post_count,omitempty"`
 	RedirectedAfterPost      bool   `json:"redirected_after_post,omitempty"`
+	JSShimInjected           bool   `json:"js_shim_injected"`
+	JSFetchShimEnabled       bool   `json:"js_fetch_shim_enabled"`
+	JSXHRShimEnabled         bool   `json:"js_xhr_shim_enabled"`
 	RewrittenNavigationCount int    `json:"rewritten_navigation_count"`
 	RewrittenAssetCount      int    `json:"rewritten_asset_count"`
 	RewrittenFormCount       int    `json:"rewritten_form_count"`

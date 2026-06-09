@@ -302,7 +302,7 @@ paths:
   /odo/https/{host}/{path}:
     get:
       summary: Minimal proxy fetch, preferred path form
-      description: Preferred local/MVP proxy URL form. Builds a target URL from /odo/https/{host}/{path}, validates and allowlist-checks it, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. JavaScript rewriting is not implemented yet.
+      description: Preferred local/MVP proxy URL form. Builds a target URL from /odo/https/{host}/{path}, validates and allowlist-checks it, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, injects a conservative same-origin fetch/XHR shim into proxied HTML when enabled, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. Full JavaScript rewriting is not implemented yet.
       operationId: proxyFetch
       security: []
       parameters:
