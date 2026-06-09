@@ -105,6 +105,20 @@ func AdminHTML() string {
 
     const show = value => output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 
+    function summarizeMissedRewrites(data) {
+      const summary = {};
+      for (const event of data.events || []) {
+        const key = [
+          event.recovered_target_host || 'unknown-host',
+          event.request_kind || 'unknown',
+          event.recovery_action || 'not_recovered',
+          event.upstream_status || 0
+        ].join(' | ');
+        summary[key] = (summary[key] || 0) + 1;
+      }
+      return { summary, events: data.events || [] };
+    }
+
     async function api(path, options = {}) {
       const response = await fetch(path, {
         ...options,
@@ -269,7 +283,7 @@ func AdminHTML() string {
     });
 
     document.querySelector('#missed-rewrites').addEventListener('click', async () => {
-      try { show(await api('/api/v1/diagnostics/missed-rewrites/recent')); } catch (err) { show(err); }
+      try { show(summarizeMissedRewrites(await api('/api/v1/diagnostics/missed-rewrites/recent'))); } catch (err) { show(err); }
     });
   </script>
 </body>

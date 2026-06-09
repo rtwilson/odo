@@ -683,10 +683,17 @@ components:
           type: string
         request_kind:
           type: string
-          enum: [document, asset, api, unknown]
+          enum: [document, asset, api, app_data, unknown]
         recovery_action:
           type: string
           enum: [redirected_to_canonical, silently_proxied, denied, not_recovered]
+        accept_header_summary:
+          type: string
+          description: First Accept header media token, truncated for safe diagnostics.
+        sec_fetch_dest:
+          type: string
+        sec_fetch_mode:
+          type: string
         canonical_proxy_path:
           type: string
           description: Canonical local proxy path without query string.
@@ -701,6 +708,10 @@ components:
         recovered_path_prefix:
           type: string
           description: Safe recovered target path prefix without query string.
+        content_type:
+          type: string
+        upstream_status:
+          type: integer
         reason:
           type: string
     AccessLogEntry:

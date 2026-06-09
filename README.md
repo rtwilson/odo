@@ -188,6 +188,12 @@ APP_PROXY_REFERER_RECOVERY=false
 
 Use browser DevTools plus **Load Missed Rewrites** in the admin UI to inspect recovered, redirected, denied, and unrecovered missed rewrite events.
 
+### Modern app-shell pages
+
+Section, search, and landing pages may depend on JavaScript chunks, route manifests, JSON data routes, and API calls before the full header or navigation appears. Article pages may work earlier because they are often more server-rendered.
+
+Odo classifies and recovers common app/data paths from a proxied `Referer`, including `_next` data routes, manifests, `mfe-` module chunks, `remoteEntry.js`, `/static/`, `/assets/`, `/api/`, and `/graphql` requests. These requests are silently proxied when they are safe and proxyable; document navigations still redirect to canonical `/odo/https/{host}/{path}` URLs. Use browser DevTools Network together with **Load Missed Rewrites** and **Load Proxy Diagnostics** to inspect section-page failures.
+
 ## Access Logging
 
 Access logs default to privacy-filtered output on stdout. Privacy mode logs request metadata and safe proxy decisions without full query strings, target URLs, article URLs, search terms, or reading-history-like paths.

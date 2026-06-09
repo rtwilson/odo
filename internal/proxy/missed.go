@@ -117,11 +117,14 @@ func MissedRewriteRequestKind(r *http.Request) string {
 	if IsAPIRequest(r) {
 		return RequestKindAPI
 	}
+	if LooksLikeStaticAssetPath(r.URL.Path) {
+		return RequestKindAsset
+	}
 	if IsAppDataRequest(r) {
 		return RequestKindAppData
 	}
-	if LooksLikeStaticAssetPath(r.URL.Path) {
-		return RequestKindAsset
+	if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/json") {
+		return RequestKindAPI
 	}
 	return RequestKindUnknown
 }
@@ -156,7 +159,7 @@ func IsAPIRequest(r *http.Request) bool {
 	if strings.HasPrefix(p, "/api/") || strings.Contains(p, "/api/") || strings.Contains(p, "/graphql") {
 		return true
 	}
-	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/json")
+	return false
 }
 
 func IsAppDataRequest(r *http.Request) bool {
