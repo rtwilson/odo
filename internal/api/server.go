@@ -33,6 +33,8 @@ type Server struct {
 	sessions   *proxy.SessionStore
 	proxyDebug bool
 	proxyDiag  *proxy.DiagnosticsStore
+	missedDiag *proxy.MissedRewriteStore
+	proxyH     http.Handler
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -70,6 +72,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		sessions:   proxy.NewSessionStore(2 * time.Hour),
 		proxyDebug: proxyDebug,
 		proxyDiag:  proxy.NewDiagnosticsStore(200),
+		missedDiag: proxy.NewMissedRewriteStore(200),
 	}
 }
 
@@ -92,6 +95,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy/test-fetch", s.requireAdminAPIKey(s.proxyTestFetch))
 	mux.HandleFunc("GET /api/v1/logs/access/recent", s.requireAdminAPIKey(s.recentAccessLogs))
 	mux.HandleFunc("GET /api/v1/diagnostics/proxy/recent", s.requireAdminAPIKey(s.recentProxyDiagnostics))
+	mux.HandleFunc("GET /api/v1/diagnostics/missed-rewrites/recent", s.requireAdminAPIKey(s.recentMissedRewrites))
 	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
@@ -99,6 +103,7 @@ func (s *Server) Routes() http.Handler {
 		DebugHeaders: s.proxyDebug,
 		Diagnostics:  s.proxyDiag,
 	})
+	s.proxyH = proxyHandler
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /odo", proxyHandler)
 		mux.HandleFunc(method+" /odo/", proxyHandler)
@@ -110,10 +115,57 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+		s.handleUnknownPath(w, r)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
+	event := proxy.MissedRewriteEvent{
+		Method: r.Method,
+		Path:   r.URL.Path,
+	}
+	if proxy.ProtectedAppPath(r.URL.Path) {
+		event.Reason = "protected app path"
+		s.missedDiag.Add(event)
+		http.NotFound(w, r)
+		return
+	}
+	if !proxy.RefererRecoveryEnabled() {
+		event.Reason = "referer recovery disabled"
+		s.missedDiag.Add(event)
+		http.NotFound(w, r)
+		return
+	}
+	target, refererRoute, err := proxy.RecoverTargetFromReferer(r)
+	event.RefererRoute = refererRoute
+	if err != nil {
+		event.Reason = err.Error()
+		s.missedDiag.Add(event)
+		http.NotFound(w, r)
+		return
+	}
+	recoveredReq := r.Clone(r.Context())
+	recoveredReq = proxy.WithRecoveredFromReferer(recoveredReq)
+	recoveredReq.URL = &url.URL{Path: proxy.PublicProxyPath, RawQuery: "url=" + url.QueryEscape(target.String())}
+	recoveredReq.RequestURI = recoveredReq.URL.RequestURI()
+	if metadata := accesslog.MetadataFrom(recoveredReq.Context()); metadata != nil {
+		metadata.Route = "/odo-recovered"
+		metadata.Recovered = true
+	}
+
+	recorder := &recoveryRecorder{ResponseWriter: w}
+	s.proxyH.ServeHTTP(recorder, recoveredReq)
+	if recorder.status >= http.StatusOK && recorder.status < http.StatusBadRequest {
+		event.Recovered = true
+		event.RecoveredTargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+		event.Reason = "recovered from proxied referer"
+	} else {
+		event.RecoveredTargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+		event.Reason = "recovery target denied"
+	}
+	s.missedDiag.Add(event)
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +441,27 @@ func (s *Server) recentAccessLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) recentProxyDiagnostics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": s.proxyDiag.Recent()})
+}
+
+func (s *Server) recentMissedRewrites(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"events": s.missedDiag.Recent()})
+}
+
+type recoveryRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *recoveryRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *recoveryRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(data)
 }
 
 func (s *Server) proxyRawURL(rawURL string) resources.TestResult {

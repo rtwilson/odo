@@ -102,7 +102,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Proxy Test", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics"} {
+	for _, want := range []string{"Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Proxy Test", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -322,6 +322,229 @@ func TestProxyPathModeRouteAllowsSafeMatchedURL(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected path-mode proxy URL to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUnknownLocalPathWithProxiedRefererIsRecovered(t *testing.T) {
+	var upstreamPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		_, _ = w.Write([]byte("remote entry"))
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodGet, "/mfe-copper-roof/status-banner/5e83f48a/remoteEntry.js", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected recovered request to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "remote entry" {
+		t.Fatalf("expected upstream body, got %q", rec.Body.String())
+	}
+	if upstreamPath != "/mfe-copper-roof/status-banner/5e83f48a/remoteEntry.js" {
+		t.Fatalf("expected recovered upstream path, got %q", upstreamPath)
+	}
+}
+
+func TestRecoveredRequestUsesSameResourcePolicy(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/bad.example/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected non-allowlisted recovered request to be denied, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	events := server.missedDiag.Recent()
+	if len(events) == 0 || events[0].Recovered {
+		t.Fatalf("expected unrecovered diagnostics event, got %#v", events)
+	}
+}
+
+func TestExplicitBlockPreventsRefererRecovery(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:     "jstor",
+		Name:   "JSTOR",
+		Status: "active",
+		Domains: []resources.DomainRule{
+			{Host: "www.jstor.org", Match: "exact", Role: "blocked", Action: "block"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert blocked resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected blocked recovered request to be denied, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "explicitly_blocked") {
+		t.Fatalf("expected explicit block reason, got %s", rec.Body.String())
+	}
+}
+
+func TestUnknownLocalPathRecoveryRequiresProxiedReferer(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+
+	noReferer := httptest.NewRecorder()
+	server.Routes().ServeHTTP(noReferer, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if noReferer.Code != http.StatusNotFound {
+		t.Fatalf("expected missing referer to return 404, got %d", noReferer.Code)
+	}
+
+	badRefererReq := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	badRefererReq.Header.Set("Referer", "http://127.0.0.1:8080/admin")
+	badReferer := httptest.NewRecorder()
+	server.Routes().ServeHTTP(badReferer, badRefererReq)
+	if badReferer.Code != http.StatusNotFound {
+		t.Fatalf("expected non-proxied referer to return 404, got %d", badReferer.Code)
+	}
+}
+
+func TestProtectedAppPathsAreNotRecovered(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	for _, path := range []string{"/api/search", "/admin/assets/app.js"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+		rec := httptest.NewRecorder()
+		server.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected protected path %s to return 404, got %d", path, rec.Code)
+		}
+	}
+}
+
+func TestRefererRecoveryCanBeDisabled(t *testing.T) {
+	t.Setenv("APP_PROXY_REFERER_RECOVERY", "false")
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected disabled recovery to return 404, got %d", rec.Code)
+	}
+}
+
+func TestMissedRewriteDiagnosticsEndpointRequiresAPIKey(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/missed-rewrites/recent", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missed rewrite diagnostics without API key to return 401, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMissedRewriteDiagnosticsRecordsRecoveredAndUnrecovered(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+
+	unrecovered := httptest.NewRecorder()
+	server.Routes().ServeHTTP(unrecovered, httptest.NewRequest(http.MethodGet, "/missing.js", nil))
+
+	recoveredReq := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	recoveredReq.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	recovered := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recovered, recoveredReq)
+
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/missed-rewrites/recent", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected diagnostics endpoint to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"recovered":true`, `"recovered":false`, `"path":"/assets/app.js"`, `"referer_route":"/odo"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected diagnostics body to contain %q, got %s", want, body)
+		}
+	}
+	if strings.Contains(body, "https://www.jstor.org/assets/app.js") || strings.Contains(body, "?secret=") {
+		t.Fatalf("diagnostics leaked full target URL or query: %s", body)
+	}
+}
+
+func TestRefererRecoveryDebugHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServerWithDebug(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-Odo-Recovered-From-Referer") != "true" || rec.Header().Get("X-Odo-Target-Host") != "www.jstor.org" {
+		t.Fatalf("expected safe recovery debug headers, got %#v", rec.Header())
+	}
+}
+
+func TestRecoveredAccessLogUsesSafeMetadata(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	var logs bytes.Buffer
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, &logs)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js?secret=query", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	line := logs.String()
+	for _, want := range []string{"route=/odo-recovered", "target_host=www.jstor.org", "decision=allowed", "recovered_from_referer=true"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected recovered access log to contain %q, got %q", want, line)
+		}
+	}
+	if strings.Contains(line, "secret=query") || strings.Contains(line, "assets/app.js") {
+		t.Fatalf("recovered access log leaked full local path/query: %q", line)
+	}
+}
+
+func TestRecoveredResponseDoesNotCopyUnsafeEncodingHeadersAndDefaultsJSType(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Content-Type"] = []string{""}
+		w.Header().Set("Content-Encoding", "br")
+		w.Header().Set("Content-Length", "9999")
+		_, _ = w.Write([]byte("console.log('ok');"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Header().Get("Content-Encoding") != "" || rec.Header().Get("Content-Length") != "" {
+		t.Fatalf("unsafe encoding headers copied: %#v", rec.Header())
+	}
+	if rec.Header().Get("Content-Type") != "application/javascript; charset=utf-8" {
+		t.Fatalf("expected JS content type fallback, got %q", rec.Header().Get("Content-Type"))
 	}
 }
 
@@ -960,6 +1183,31 @@ func newProxyFetchTestServerWithAccessLogAndAdmin(t *testing.T, upstreamURL stri
 		},
 	}
 	server := newTestServerWithConfigAccessLogResolverAndClient(t, adminKey, t.TempDir(), accessLogger, publicTestResolver, client)
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:      "jstor",
+		Name:    "JSTOR",
+		Status:  "active",
+		Domains: []resources.DomainRule{{Host: "www.jstor.org", Match: "exact"}},
+	}); err != nil {
+		t.Fatalf("upsert resource: %v", err)
+	}
+	return server
+}
+
+func newProxyFetchTestServerWithDebug(t *testing.T, upstreamURL string) *Server {
+	t.Helper()
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	client := &http.Client{
+		Transport: rewriteTransport(t, upstreamURL),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	server := newTestServerWithConfigAccessLogResolverAndClient(t, "", t.TempDir(), accessLogger, publicTestResolver, client)
+	server.proxyDebug = true
 	if err := server.store.UpsertResource(resources.Resource{
 		ID:      "jstor",
 		Name:    "JSTOR",

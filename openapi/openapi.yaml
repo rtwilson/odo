@@ -299,6 +299,23 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/diagnostics/missed-rewrites/recent:
+    get:
+      summary: List recent missed rewrite and referer recovery events
+      operationId: recentMissedRewrites
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Recent missed rewrite diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentMissedRewriteEventsResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /odo/https/{host}/{path}:
     get:
       summary: Minimal proxy fetch, preferred path form
@@ -645,6 +662,35 @@ components:
           items:
             type: object
             additionalProperties: true
+    RecentMissedRewriteEventsResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/MissedRewriteEvent"
+    MissedRewriteEvent:
+      type: object
+      required: [ts, method, path, recovered, reason]
+      properties:
+        ts:
+          type: string
+          format: date-time
+        method:
+          type: string
+        path:
+          type: string
+        referer_route:
+          type: string
+          examples: [/odo]
+        recovered:
+          type: boolean
+        recovered_target_host:
+          type: string
+          examples: [www.jstor.org]
+        reason:
+          type: string
     AccessLogEntry:
       type: object
       required: [ts, request_id, remote_ip, method, route, status, bytes, duration_ms]

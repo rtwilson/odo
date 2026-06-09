@@ -27,6 +27,8 @@ type FetchOptions struct {
 	MaxBodyBytes int64
 }
 
+const recoveredContextKey = "odo_recovered_from_referer"
+
 const DefaultProxyMaxBodyBytes int64 = 10 * 1024 * 1024
 
 func DefaultHTTPClient() *http.Client {
@@ -131,6 +133,12 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			w.Header().Set("X-Odo-Proxy-Session-Created", boolString(session.Created))
 			w.Header().Set("X-Odo-Upstream-Cookies-Sent", strconv.Itoa(upstreamCookiesSent))
 			w.Header().Set("X-Odo-Upstream-Cookies-Stored", strconv.Itoa(upstreamCookiesReceived))
+			if recoveredFromReferer(r) {
+				w.Header().Set("X-Odo-Recovered-From-Referer", "true")
+				if target != nil {
+					w.Header().Set("X-Odo-Target-Host", strings.ToLower(strings.TrimSuffix(target.Hostname(), ".")))
+				}
+			}
 		}
 
 		if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
@@ -144,6 +152,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 
 		copySafeResponseHeaders(w.Header(), resp.Header)
+		applyContentTypeFallback(w.Header(), target)
 		if r.Method != http.MethodHead && isTransformable(resp.Header.Get("Content-Type")) {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
@@ -161,6 +170,15 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			_, _ = io.Copy(w, resp.Body)
 		}
 	}
+}
+
+func WithRecoveredFromReferer(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), recoveredContextKey, true))
+}
+
+func recoveredFromReferer(r *http.Request) bool {
+	value, _ := r.Context().Value(recoveredContextKey).(bool)
+	return value
 }
 
 func ProxyMaxBodyBytes() int64 {
@@ -249,6 +267,19 @@ func copySafeResponseHeaders(dst, src http.Header) {
 				dst.Add(name, value)
 			}
 		}
+	}
+}
+
+func applyContentTypeFallback(headers http.Header, target *url.URL) {
+	if headers.Get("Content-Type") != "" || target == nil {
+		return
+	}
+	path := strings.ToLower(target.EscapedPath())
+	switch {
+	case strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs"):
+		headers.Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(path, ".css"):
+		headers.Set("Content-Type", "text/css; charset=utf-8")
 	}
 }
 

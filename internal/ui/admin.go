@@ -77,6 +77,7 @@ func AdminHTML() string {
       <h2 class="panel-title">Logs and Diagnostics</h2>
       <button id="access-logs">Load Access Logs</button>
       <button id="proxy-diagnostics">Load Proxy Diagnostics</button>
+      <button id="missed-rewrites">Load Missed Rewrites</button>
     </section>
 
     <section>
@@ -265,6 +266,10 @@ func AdminHTML() string {
 
     document.querySelector('#proxy-diagnostics').addEventListener('click', async () => {
       try { show(await api('/api/v1/diagnostics/proxy/recent')); } catch (err) { show(err); }
+    });
+
+    document.querySelector('#missed-rewrites').addEventListener('click', async () => {
+      try { show(await api('/api/v1/diagnostics/missed-rewrites/recent')); } catch (err) { show(err); }
     });
   </script>
 </body>

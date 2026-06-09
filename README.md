@@ -70,6 +70,7 @@ Environment variables:
 - `APP_PROXY_URL_MODE`, default `path`; use `query` to generate `/odo?url=...` compatibility links
 - `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
 - `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
+- `APP_PROXY_REFERER_RECOVERY`, default `true`; recovers missed local asset/script paths when a proxied Referer identifies the upstream host
 
 ## API Examples
 
@@ -170,6 +171,18 @@ curl http://127.0.0.1:8080/api/v1/logs/access/recent \
 The admin UI includes a Proxy Test panel that can test rule matching, open a target through `/odo`, or fetch a bounded body preview through the protected `/api/v1/proxy/test-fetch` endpoint.
 
 Recent access logs are privacy-filtered and available through the admin UI. Proxy diagnostics are also exposed from the UI for checking blocked hosts, rewrite counts, and upstream status as those diagnostics grow. These tools are intended to make the access layer easier to understand and troubleshoot without exposing full target URLs, cookies, or authorization headers.
+
+### Missed rewrites and referer recovery
+
+Modern sites may generate paths dynamically in JavaScript. These can appear as local paths outside `/odo`, such as `/assets/app.js` or `/mfe-copper-roof/.../remoteEntry.js`, when they should have been proxied.
+
+By default, Odo can infer the upstream host from a proxied `Referer` and recover the request through the normal proxy path. Recovery is still subject to URL safety checks, DNS/IP safety validation, resource allowlists, and domain rule actions. Disable recovery with:
+
+```sh
+APP_PROXY_REFERER_RECOVERY=false
+```
+
+Use **Load Missed Rewrites** in the admin UI to inspect recovered and unrecovered missed rewrite events.
 
 ## Access Logging
 

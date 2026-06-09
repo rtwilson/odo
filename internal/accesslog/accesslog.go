@@ -25,6 +25,7 @@ const (
 
 type Metadata struct {
 	RequestID      string
+	Route          string
 	TargetHost     string
 	ResourceID     string
 	RuleHost       string
@@ -32,6 +33,7 @@ type Metadata struct {
 	Decision       string
 	DenialReason   string
 	UpstreamStatus int
+	Recovered      bool
 }
 
 type Logger struct {
@@ -59,6 +61,7 @@ type Entry struct {
 	Decision       string `json:"decision,omitempty"`
 	DenialReason   string `json:"denial_reason,omitempty"`
 	UpstreamStatus int    `json:"upstream_status,omitempty"`
+	Recovered      bool   `json:"recovered_from_referer,omitempty"`
 }
 
 type contextKey struct{}
@@ -152,7 +155,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		RequestID:      metadata.RequestID,
 		RemoteIP:       remoteIP(r.RemoteAddr),
 		Method:         r.Method,
-		Route:          routePath(r.URL.Path),
+		Route:          metadataRoute(metadata.Route, r.URL.Path),
 		Status:         status,
 		Bytes:          bytes,
 		DurationMS:     duration.Milliseconds(),
@@ -163,6 +166,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		Decision:       metadata.Decision,
 		DenialReason:   metadata.DenialReason,
 		UpstreamStatus: metadata.UpstreamStatus,
+		Recovered:      metadata.Recovered,
 	}
 	if l.format == FormatCombined || l.format == FormatJSON {
 		e.UserAgent = r.UserAgent()
@@ -230,6 +234,9 @@ func privacyLine(e Entry) string {
 	parts = appendIf(parts, "rule_match", e.RuleMatch)
 	parts = appendIf(parts, "decision", e.Decision)
 	parts = appendIf(parts, "denial_reason", e.DenialReason)
+	if e.Recovered {
+		parts = append(parts, "recovered_from_referer=true")
+	}
 	if e.UpstreamStatus != 0 {
 		parts = append(parts, "upstream_status="+strconv.Itoa(e.UpstreamStatus))
 	}
@@ -283,4 +290,11 @@ func routePath(path string) string {
 		return "/odo"
 	}
 	return path
+}
+
+func metadataRoute(route, path string) string {
+	if route != "" {
+		return route
+	}
+	return routePath(path)
 }
