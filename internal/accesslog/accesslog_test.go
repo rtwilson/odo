@@ -29,6 +29,44 @@ func TestDefaultFormatIsPrivacy(t *testing.T) {
 	}
 }
 
+func TestPrivacyLogCollapsesPathModeProxyRoute(t *testing.T) {
+	var out bytes.Buffer
+	logger, err := New(FormatPrivacy, &out)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	req := requestWithMetadata(t, "GET", "/odo/https/www.economist.com/china/2026/06/08/example?q=secret")
+	logger.Log(req, http.StatusOK, 123, 2*time.Millisecond)
+
+	line := out.String()
+	if !strings.Contains(line, "route=/odo") {
+		t.Fatalf("expected collapsed proxy route, got %q", line)
+	}
+	if strings.Contains(line, "economist.com") || strings.Contains(line, "china/2026") || strings.Contains(line, "q=secret") {
+		t.Fatalf("privacy log leaked path-mode target details: %q", line)
+	}
+}
+
+func TestPrivacyLogDoesNotIncludePOSTBody(t *testing.T) {
+	var out bytes.Buffer
+	logger, err := New(FormatPrivacy, &out)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	req := requestWithMetadata(t, "POST", "/odo/https/www.jstor.org/search")
+	logger.Log(req, http.StatusOK, 123, 2*time.Millisecond)
+
+	line := out.String()
+	if !strings.Contains(line, "method=POST") || !strings.Contains(line, "route=/odo") {
+		t.Fatalf("expected POST proxy log metadata, got %q", line)
+	}
+	if strings.Contains(line, "q=science") || strings.Contains(line, "password") {
+		t.Fatalf("privacy log leaked POST body-like content: %q", line)
+	}
+}
+
 func TestJSONFormatEmitsValidJSON(t *testing.T) {
 	var out bytes.Buffer
 	logger, err := New(FormatJSON, &out)

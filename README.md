@@ -67,6 +67,8 @@ Environment variables:
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
+- `APP_PROXY_URL_MODE`, default `path`; use `query` to generate `/odo?url=...` compatibility links
+- `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
 
 ## API Examples
 
@@ -143,7 +145,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/resources \
 Minimal proxy fetch:
 
 ```sh
-curl -s 'http://127.0.0.1:8080/odo?url=https://www.jstor.org/stable/example'
+curl -s 'http://127.0.0.1:8080/odo/https/www.jstor.org/stable/example'
 ```
 
 Admin proxy test fetch:
@@ -197,13 +199,27 @@ APP_ACCESS_LOG_FORMAT=json go run ./cmd/odo
 
 Odo is default-deny for proxy/access decisions. Proxy targets must be HTTPS URLs that match configured resource domains. Raw IP hosts, localhost, private networks, link-local addresses, non-global addresses, suspicious internal hostnames such as `.local` and `.internal`, URL userinfo, fragments, wildcards, and non-default ports are blocked before the proxy fetch is allowed.
 
-`/odo?url=...` is the preferred public proxy route. Clicked links, asset references, GET form actions, and validated upstream redirects are rewritten back through `/odo` so the patron's browser continues to talk to Odo and vendors continue to see Odo's outbound IP rather than the patron's IP.
+`/odo/https/{host}/{path}` is the preferred local/MVP public proxy route. `/odo?url=https://...` is still accepted for compatibility and manual testing. Clicked links, asset references, GET form actions, and validated upstream redirects are generated through one proxy URL builder and rewritten back through `/odo` so the patron's browser continues to talk to Odo and vendors continue to see Odo's outbound IP rather than the patron's IP.
 
-`/odo` performs a minimal safe outbound `GET`/`HEAD` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
+Path mode is the default:
 
-Odo keeps a server-side per-session cookie jar for proxied browsing. The browser receives only an `odo_proxy_sid` cookie; upstream/vendor cookies are stored server-side and are not exposed directly to the browser. This improves continuity across proxied requests, but it is not user authentication. In HA deployments, the in-memory session store would need Redis or another shared session store.
+```sh
+APP_PROXY_URL_MODE=path
+```
 
-JavaScript-heavy sites may still break. POST forms, JavaScript fetch/XHR, WebSockets, and full SPA compatibility are future work. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect to `/odo?url=...`. Content-Security-Policy is not copied yet, and `integrity` attributes are removed when URLs are rewritten, because upstream CSP and SRI often reject proxied/transformed assets before fuller policy rewriting exists.
+Query compatibility mode can be selected with:
+
+```sh
+APP_PROXY_URL_MODE=query
+```
+
+Unknown local paths now return `404` instead of redirecting to `/admin`, which makes missed rewrites easier to spot during testing. Virtual-host mode may be added later for EZproxy-style URLs such as `www-economist-com.access.library.edu`.
+
+`/odo` performs a minimal safe outbound `GET`/`HEAD`/`POST` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
+
+Odo keeps a server-side per-session cookie jar for proxied browsing. The browser receives only an `odo_proxy_sid` cookie; upstream/vendor cookies are stored server-side and are not exposed directly to the browser. This improves continuity across proxied requests and POST form submissions, but it is not user authentication. In HA deployments, the in-memory session store would need Redis or another shared session store.
+
+POST form submissions are forwarded upstream when the target is safe and proxyable. Request bodies are size-limited by `APP_PROXY_MAX_BODY_BYTES`, and request bodies/form values are not logged. JavaScript fetch/XHR interception, WebSockets, and full SPA compatibility are future work. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect, which defaults to `/odo/https/{host}/{path}`. Content-Security-Policy is not copied yet, and `integrity` attributes are removed when URLs are rewritten, because upstream CSP and SRI often reject proxied/transformed assets before fuller policy rewriting exists.
 
 ## Domain Rules
 

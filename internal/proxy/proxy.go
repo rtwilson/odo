@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +24,10 @@ type FetchOptions struct {
 	Sessions     *SessionStore
 	DebugHeaders bool
 	Diagnostics  *DiagnosticsStore
+	MaxBodyBytes int64
 }
+
+const DefaultProxyMaxBodyBytes int64 = 10 * 1024 * 1024
 
 func DefaultHTTPClient() *http.Client {
 	return &http.Client{
@@ -50,9 +55,13 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 	if sessions == nil {
 		sessions = NewSessionStore(2 * time.Hour)
 	}
+	maxBodyBytes := options.MaxBodyBytes
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = ProxyMaxBodyBytes()
+	}
 	check := options.Check
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
 			writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "")
 			return
 		}
@@ -60,11 +69,21 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		session := sessions.GetOrCreate(r, w)
 
-		rawURL := r.URL.Query().Get("url")
-		target, result := check(r.Context(), rawURL)
+		parsedTarget, parseErr := ParseProxyRequest(r)
+		rawURL := ""
+		var target *url.URL
+		var result resources.TestResult
+		if parseErr != nil {
+			result = resources.TestResult{Allowed: false, Reason: parseErr.Error()}
+		} else {
+			rawURL = parsedTarget.String()
+			target, result = check(r.Context(), rawURL)
+		}
+		diagnostics.Method = r.Method
 		if target != nil {
 			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
 		}
+		diagnostics.ProxyURLMode = ProxyURLMode()
 		diagnostics.ResourceID = result.ResourceID
 		defer func() {
 			options.Diagnostics.Add(*diagnostics)
@@ -81,12 +100,22 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			return
 		}
 
-		upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
+		body, contentLength, ok := prepareUpstreamBody(w, r, maxBodyBytes, diagnostics)
+		if !ok {
+			return
+		}
+		upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), body)
 		if err != nil {
 			writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "request creation failed")
 			return
 		}
-		copySafeRequestHeaders(upstreamReq.Header, r.Header)
+		if contentLength >= 0 {
+			upstreamReq.ContentLength = contentLength
+		}
+		copySafeRequestHeaders(upstreamReq, r, target)
+		if r.Method == http.MethodPost {
+			diagnostics.ProxiedPostCount = 1
+		}
 
 		sessionClient := clientWithJar(client, session.Jar)
 		upstreamCookiesSent := len(session.Jar.Cookies(target))
@@ -115,7 +144,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 
 		copySafeResponseHeaders(w.Header(), resp.Header)
-		if r.Method == http.MethodGet && isTransformable(resp.Header.Get("Content-Type")) {
+		if r.Method != http.MethodHead && isTransformable(resp.Header.Get("Content-Type")) {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "response read failed")
@@ -132,6 +161,18 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			_, _ = io.Copy(w, resp.Body)
 		}
 	}
+}
+
+func ProxyMaxBodyBytes() int64 {
+	raw := strings.TrimSpace(os.Getenv("APP_PROXY_MAX_BODY_BYTES"))
+	if raw == "" {
+		return DefaultProxyMaxBodyBytes
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return DefaultProxyMaxBodyBytes
+	}
+	return value
 }
 
 func clientWithJar(base *http.Client, jar http.CookieJar) *http.Client {
@@ -157,12 +198,43 @@ func writeProxyError(w http.ResponseWriter, status int, errText, reason string) 
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-func copySafeRequestHeaders(dst, src http.Header) {
+func prepareUpstreamBody(w http.ResponseWriter, r *http.Request, maxBodyBytes int64, diagnostics *Diagnostics) (io.Reader, int64, bool) {
+	if r.Method != http.MethodPost {
+		return nil, -1, true
+	}
+	if r.ContentLength > maxBodyBytes {
+		diagnostics.RequestBodyLimited = true
+		writeProxyError(w, http.StatusRequestEntityTooLarge, "request body too large", "")
+		return nil, -1, false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil {
+		writeProxyError(w, http.StatusBadRequest, "request body read failed", "")
+		return nil, -1, false
+	}
+	if int64(len(body)) > maxBodyBytes {
+		diagnostics.RequestBodyLimited = true
+		writeProxyError(w, http.StatusRequestEntityTooLarge, "request body too large", "")
+		return nil, -1, false
+	}
+	return bytes.NewReader(body), int64(len(body)), true
+}
+
+func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.URL) {
 	for _, name := range []string{"Accept", "Accept-Language", "User-Agent"} {
-		if values := src.Values(name); len(values) > 0 {
+		if values := src.Header.Values(name); len(values) > 0 {
 			for _, value := range values {
-				dst.Add(name, value)
+				dst.Header.Add(name, value)
 			}
+		}
+	}
+	if src.Method == http.MethodPost {
+		if contentType := src.Header.Get("Content-Type"); contentType != "" {
+			dst.Header.Set("Content-Type", contentType)
+		}
+		if target != nil && target.Scheme == "https" {
+			dst.Header.Set("Referer", target.String())
+			dst.Header.Set("Origin", target.Scheme+"://"+target.Host)
 		}
 	}
 }
@@ -223,8 +295,11 @@ func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, res
 	}
 	if diagnostics := DiagnosticsFrom(r.Context()); diagnostics != nil {
 		diagnostics.RewrittenRedirectCount++
+		if r.Method == http.MethodPost {
+			diagnostics.RedirectedAfterPost = true
+		}
 	}
-	w.Header().Set("Location", PublicProxyPath+"?url="+url.QueryEscape(nextTarget.String()))
+	w.Header().Set("Location", BuildProxyURL(nextTarget))
 	w.WriteHeader(resp.StatusCode)
 }
 

@@ -34,6 +34,30 @@ func TestHealthDoesNotRequireAPIKey(t *testing.T) {
 	}
 }
 
+func TestRootRedirectsToAdmin(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/admin" {
+		t.Fatalf("expected root redirect to /admin, got %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestUnknownPathReturns404(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/china/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected unknown path to return 404, got %d with location %q and body %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+}
+
 func TestOpenAPIYAML(t *testing.T) {
 	server := newTestServer(t, "secret")
 
@@ -282,6 +306,22 @@ func TestProxyStubAllowsSafeMatchedURLWithPublicDNS(t *testing.T) {
 	}
 }
 
+func TestProxyPathModeRouteAllowsSafeMatchedURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	server := newProxyFetchTestServer(t, upstream.URL)
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/stable/example", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected path-mode proxy URL to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxyFetchesAllowlistedUpstreamContent(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -338,9 +378,9 @@ func TestProxyHEADWorks(t *testing.T) {
 	}
 }
 
-func TestProxyPOSTReturns405(t *testing.T) {
+func TestProxyPUTReturns405(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
-	req := httptest.NewRequest(http.MethodPost, "/odo?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodPut, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -436,7 +476,7 @@ func TestProxyRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
 		t.Fatalf("expected 302, got %d with body %s", rec.Code, rec.Body.String())
 	}
 	location := rec.Header().Get("Location")
-	if !strings.HasPrefix(location, "/odo?url=") || !strings.Contains(location, "www.jstor.org") {
+	if location != "/odo/https/www.jstor.org/stable/next" {
 		t.Fatalf("expected local proxied redirect, got %q", location)
 	}
 }

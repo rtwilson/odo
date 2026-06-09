@@ -299,11 +299,86 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /odo/https/{host}/{path}:
+    get:
+      summary: Minimal proxy fetch, preferred path form
+      description: Preferred local/MVP proxy URL form. Builds a target URL from /odo/https/{host}/{path}, validates and allowlist-checks it, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. JavaScript rewriting is not implemented yet.
+      operationId: proxyFetch
+      security: []
+      parameters:
+        - name: host
+          in: path
+          required: true
+          schema:
+            type: string
+          example: www.jstor.org
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          example: stable/example
+      responses:
+        "200":
+          description: Upstream response body and safe response headers
+        "403":
+          description: URL is not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchResult"
+        "405":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Minimal proxy POST, preferred path form
+      description: Forwards a bounded POST body to a safe, allowlisted, proxyable HTTPS target using the server-side session cookie jar. Request bodies are size-limited and are not logged. HTML/CSS responses and safe redirects are rewritten back through Odo.
+      operationId: proxyPost
+      security: []
+      parameters:
+        - name: host
+          in: path
+          required: true
+          schema:
+            type: string
+          example: www.jstor.org
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          example: search
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: string
+          application/json:
+            schema: {}
+      responses:
+        "200":
+          description: Upstream response body and safe response headers
+        "303":
+          description: Safe upstream redirect rewritten to local Odo URL
+        "403":
+          description: URL is not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchResult"
+        "405":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
   /odo:
     get:
-      summary: Minimal proxy fetch
-      description: Validates and allowlist-checks the target URL, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. POST forms and JavaScript rewriting are not implemented yet.
-      operationId: proxyFetch
+      summary: Minimal proxy fetch, query compatibility form
+      description: Compatibility form accepting /odo?url=https://www.jstor.org/. Generated proxied links default to /odo/https/{host}/{path} unless APP_PROXY_URL_MODE=query is configured.
+      operationId: proxyFetchQuery
       security: []
       parameters:
         - name: url
@@ -322,6 +397,33 @@ paths:
               schema:
                 $ref: "#/components/schemas/MatchResult"
         "405":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Minimal proxy POST, query compatibility form
+      description: Compatibility POST form accepting /odo?url=https://www.jstor.org/. Generated form actions default to /odo/https/{host}/{path} unless APP_PROXY_URL_MODE=query is configured.
+      operationId: proxyPostQuery
+      security: []
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+      responses:
+        "200":
+          description: Upstream response body and safe response headers
+        "403":
+          description: URL is not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchResult"
+        "405":
+          $ref: "#/components/responses/Error"
+        "413":
           $ref: "#/components/responses/Error"
         "502":
           $ref: "#/components/responses/Error"

@@ -99,18 +99,20 @@ func (s *Server) Routes() http.Handler {
 		DebugHeaders: s.proxyDebug,
 		Diagnostics:  s.proxyDiag,
 	})
-	mux.HandleFunc("GET /odo", proxyHandler)
-	mux.HandleFunc("HEAD /odo", proxyHandler)
-	mux.HandleFunc("POST /odo", proxyHandler)
-	mux.HandleFunc("PUT /odo", proxyHandler)
-	mux.HandleFunc("PATCH /odo", proxyHandler)
-	mux.HandleFunc("DELETE /odo", proxyHandler)
+	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
+		mux.HandleFunc(method+" /odo", proxyHandler)
+		mux.HandleFunc(method+" /odo/", proxyHandler)
+	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
 	return s.logging(mux)
 }
 
 func (s *Server) root(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
@@ -125,11 +127,12 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
-	target := proxy.PublicProxyPath
-	if r.URL.RawQuery != "" {
-		target += "?" + r.URL.RawQuery
+	targetURL, err := proxy.ParseProxyRequest(r)
+	if err != nil {
+		http.Redirect(w, r, proxy.PublicProxyPath, http.StatusMovedPermanently)
+		return
 	}
-	http.Redirect(w, r, target, http.StatusMovedPermanently)
+	http.Redirect(w, r, proxy.BuildProxyURL(targetURL), http.StatusMovedPermanently)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

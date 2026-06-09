@@ -8,9 +8,14 @@ import (
 
 type Diagnostics struct {
 	TS                       string `json:"ts"`
+	Method                   string `json:"method,omitempty"`
 	TargetHost               string `json:"target_host,omitempty"`
 	ResourceID               string `json:"resource_id,omitempty"`
+	ProxyURLMode             string `json:"proxy_url_mode,omitempty"`
 	UpstreamStatus           int    `json:"upstream_status,omitempty"`
+	RequestBodyLimited       bool   `json:"request_body_limited,omitempty"`
+	ProxiedPostCount         int    `json:"proxied_post_count,omitempty"`
+	RedirectedAfterPost      bool   `json:"redirected_after_post,omitempty"`
 	RewrittenNavigationCount int    `json:"rewritten_navigation_count"`
 	RewrittenAssetCount      int    `json:"rewritten_asset_count"`
 	RewrittenFormCount       int    `json:"rewritten_form_count"`

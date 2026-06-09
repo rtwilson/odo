@@ -12,13 +12,14 @@ var (
 	htmlSrcsetRE    = regexp.MustCompile(`(?i)\bsrcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 	htmlStyleAttrRE = regexp.MustCompile(`(?i)\bstyle\s*=\s*("[^"]*"|'[^']*')`)
 	htmlIntegrityRE = regexp.MustCompile(`(?i)\s+integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	htmlFormTagRE   = regexp.MustCompile(`(?i)<form\b[^>]*>`)
 	cssURLRE        = regexp.MustCompile(`(?i)url\(\s*("[^"]*"|'[^']*'|[^)]*)\s*\)`)
 )
 
-const PublicProxyPath = "/odo"
-
 func RewriteHTML(ctx context.Context, body string, base *url.URL, check TargetCheck) string {
 	original := body
+	body = rewriteMissingFormActions(ctx, body, base, check)
+
 	body = htmlURLAttrRE.ReplaceAllStringFunc(body, func(match string) string {
 		name, rawValue, ok := splitAttr(match)
 		if !ok {
@@ -58,6 +59,19 @@ func RewriteHTML(ctx context.Context, body string, base *url.URL, check TargetCh
 	}
 
 	return body
+}
+
+func rewriteMissingFormActions(ctx context.Context, body string, base *url.URL, check TargetCheck) string {
+	return htmlFormTagRE.ReplaceAllStringFunc(body, func(tag string) string {
+		if strings.Contains(strings.ToLower(tag), " action=") {
+			return tag
+		}
+		rewritten := rewriteOneURL(ctx, base.String(), base, check, "form")
+		if rewritten == base.String() {
+			return tag
+		}
+		return strings.TrimSuffix(tag, ">") + ` action="` + rewritten + `">`
+	})
 }
 
 func RewriteCSS(ctx context.Context, body string, base *url.URL, check TargetCheck) string {
@@ -135,6 +149,9 @@ func rewriteOneURL(ctx context.Context, raw string, base *url.URL, check TargetC
 	if raw == "" || strings.HasPrefix(raw, "#") {
 		return raw
 	}
+	if raw == PublicProxyPath || strings.HasPrefix(raw, PublicProxyPath+"/") || strings.HasPrefix(raw, PublicProxyPath+"?") {
+		return raw
+	}
 	lower := strings.ToLower(raw)
 	if strings.HasPrefix(lower, "data:") || strings.HasPrefix(lower, "about:") ||
 		strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "mailto:") {
@@ -176,7 +193,7 @@ func rewriteOneURL(ctx context.Context, raw string, base *url.URL, check TargetC
 			diagnostics.RewrittenAssetCount++
 		}
 	}
-	return PublicProxyPath + "?url=" + url.QueryEscape(target.String())
+	return BuildProxyURL(target)
 }
 
 func rewriteCategory(attr string) string {

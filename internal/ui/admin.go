@@ -123,6 +123,11 @@ func AdminHTML() string {
       };
     }
 
+    function proxyURL(raw) {
+      const target = new URL(raw);
+      return '/odo/https/' + target.host + target.pathname + target.search;
+    }
+
     function setEditor(value) {
       editor.value = JSON.stringify(value, null, 2);
       selectedId = value.id || '';
@@ -238,7 +243,11 @@ func AdminHTML() string {
         show({ error: 'target URL is required' });
         return;
       }
-      window.open('/odo?url=' + encodeURIComponent(target), '_blank', 'noopener');
+      try {
+        window.open(proxyURL(target), '_blank', 'noopener');
+      } catch (err) {
+        show({ error: 'target URL is invalid', detail: err.message });
+      }
     });
 
     document.querySelector('#fetch-proxy').addEventListener('click', async () => {

@@ -18,7 +18,7 @@ func TestFetchHandlerRejectsUnsupportedMethod(t *testing.T) {
 		return nil, resources.TestResult{}
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/odo?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodPut, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -27,6 +27,107 @@ func TestFetchHandlerRejectsUnsupportedMethod(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "method not allowed") {
 		t.Fatalf("expected method not allowed JSON, got %s", rec.Body.String())
+	}
+}
+
+func TestFetchHandlerPOSTForwardsBodyAndContentType(t *testing.T) {
+	var upstreamBody string
+	var upstreamContentType string
+	var upstreamCookie string
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		upstreamContentType = req.Header.Get("Content-Type")
+		upstreamCookie = req.Header.Get("Cookie")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/plain"}, "Set-Cookie": []string{"vendor=post; Path=/"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}).client()
+	handler := FetchHandler(client, allowedTargetCheck)
+
+	req := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("q=science"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", "browser=secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if upstreamBody != "q=science" {
+		t.Fatalf("expected upstream body forwarded, got %q", upstreamBody)
+	}
+	if upstreamContentType != "application/x-www-form-urlencoded" {
+		t.Fatalf("expected Content-Type forwarded, got %q", upstreamContentType)
+	}
+	if strings.Contains(upstreamCookie, "browser=secret") {
+		t.Fatalf("browser cookie was forwarded upstream: %q", upstreamCookie)
+	}
+	if strings.Contains(rec.Header().Get("Set-Cookie"), "vendor=post") {
+		t.Fatalf("upstream Set-Cookie leaked to browser: %q", rec.Header().Get("Set-Cookie"))
+	}
+}
+
+func TestFetchHandlerPOSTUsesServerSideCookieJar(t *testing.T) {
+	var seen []string
+	handler := FetchHandler(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Header.Get("Cookie"))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Set-Cookie": []string{"vendor=abc; Path=/"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}).client(), allowedTargetCheck)
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("first=1")))
+	sessionCookie := findCookie(first.Result().Cookies(), ProxySessionCookieName)
+	if sessionCookie == nil {
+		t.Fatal("expected proxy session cookie")
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("second=1"))
+	secondReq.AddCookie(sessionCookie)
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, secondReq)
+
+	if len(seen) != 2 {
+		t.Fatalf("expected two upstream requests, got %d", len(seen))
+	}
+	if seen[0] != "" {
+		t.Fatalf("first POST should not send vendor cookie, got %q", seen[0])
+	}
+	if !strings.Contains(seen[1], "vendor=abc") {
+		t.Fatalf("second POST should send stored vendor cookie, got %q", seen[1])
+	}
+}
+
+func TestFetchHandlerPOSTOversizedBodyReturns413(t *testing.T) {
+	handler := FetchHandlerWithOptions(FetchOptions{
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatal("oversized request should not reach upstream")
+			return nil, nil
+		}).client(),
+		Check:        allowedTargetCheck,
+		MaxBodyBytes: 4,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("12345"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("expected body too large response, got %s", rec.Body.String())
 	}
 }
 
@@ -231,16 +332,16 @@ func TestFetchHandlerRewritesHTMLAssetAttributes(t *testing.T) {
 	body, headers := fetchBody(t, "text/html; charset=utf-8", html, allowedHostTargetCheck)
 
 	for _, want := range []string{
-		`href="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fstyle.css"`,
-		`src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fapp.js"`,
-		`src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fimage.png"`,
-		`data-src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Flazy.png"`,
-		`src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fmovie.mp4"`,
-		`src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fframe.html"`,
-		`poster="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fposter.jpg"`,
-		`action="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fsearch"`,
-		`data-href="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fdata-link"`,
-		`href="/odo?url=https%3A%2F%2Fwww.jstor.org%2Farticle"`,
+		`href="/odo/https/www.jstor.org/style.css"`,
+		`src="/odo/https/www.jstor.org/app.js"`,
+		`src="/odo/https/www.jstor.org/image.png"`,
+		`data-src="/odo/https/www.jstor.org/lazy.png"`,
+		`src="/odo/https/www.jstor.org/movie.mp4"`,
+		`src="/odo/https/www.jstor.org/frame.html"`,
+		`poster="/odo/https/www.jstor.org/poster.jpg"`,
+		`action="/odo/https/www.jstor.org/search"`,
+		`data-href="/odo/https/www.jstor.org/data-link"`,
+		`href="/odo/https/www.jstor.org/article"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected rewritten HTML to contain %s, got %s", want, body)
@@ -255,8 +356,122 @@ func TestFetchHandlerRewritesRelativeAnchorURL(t *testing.T) {
 	html := `<a href="../journal/article">Article</a>`
 	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
 
-	if !strings.Contains(body, `href="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fjournal%2Farticle"`) {
+	if !strings.Contains(body, `href="/odo/https/www.jstor.org/journal/article"`) {
 		t.Fatalf("expected relative anchor to resolve and rewrite through /odo, got %s", body)
+	}
+}
+
+func TestRewriteHTMLMissingFormActionUsesCurrentTarget(t *testing.T) {
+	base, _ := url.Parse("https://www.jstor.org/search")
+	body := RewriteHTML(context.Background(), `<form method="POST"><input name="q"></form>`, base, allowedHostTargetCheck)
+
+	if !strings.Contains(body, `<form method="POST" action="/odo/https/www.jstor.org/search">`) {
+		t.Fatalf("expected missing form action to use current target URL, got %s", body)
+	}
+}
+
+func TestRewriteHTMLPostFormActionUsesProxyURL(t *testing.T) {
+	html := `<form method="POST" action="/login"><input name="user"></form>`
+	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
+
+	if !strings.Contains(body, `method="POST" action="/odo/https/www.jstor.org/login"`) {
+		t.Fatalf("expected POST form action rewritten through proxy URL builder, got %s", body)
+	}
+}
+
+func TestRewriteHTMLRootRelativeEconomistLinkUsesTargetOrigin(t *testing.T) {
+	base, _ := url.Parse("https://www.economist.com/foo/bar")
+	body := RewriteHTML(context.Background(), `<a href="/china/2026/06/08/example">story</a>`, base, func(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
+		target, _ := url.Parse(rawURL)
+		return target, resources.TestResult{Allowed: true, Action: "proxy", ResourceID: "economist"}
+	})
+
+	if !strings.Contains(body, `href="/odo/https/www.economist.com/china/2026/06/08/example"`) {
+		t.Fatalf("expected root-relative link to rewrite against target origin, got %s", body)
+	}
+}
+
+func TestFetchHandlerUsesQueryModeWhenConfigured(t *testing.T) {
+	t.Setenv("APP_PROXY_URL_MODE", "query")
+	html := `<a href="/article">Article</a>`
+	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
+
+	if !strings.Contains(body, `href="/odo?url=https%3A%2F%2Fwww.jstor.org%2Farticle"`) {
+		t.Fatalf("expected query-mode rewrite, got %s", body)
+	}
+}
+
+func TestFetchHandlerPOSTResponseHTMLIsRewritten(t *testing.T) {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader(`<a href="/next">next</a>`)),
+			Request:    req,
+		}, nil
+	}).client()
+	handler := FetchHandler(client, allowedHostTargetCheck)
+
+	req := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("q=science"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `href="/odo/https/www.jstor.org/next"`) {
+		t.Fatalf("expected POST HTML response rewritten, got %s", rec.Body.String())
+	}
+}
+
+func TestFetchHandlerPOSTRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
+	store := NewDiagnosticsStore(10)
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"/login"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	}).client()
+	handler := FetchHandlerWithOptions(FetchOptions{Client: client, Check: allowedHostTargetCheck, Diagnostics: store})
+
+	req := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("q=science"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Location") != "/odo/https/www.jstor.org/login" {
+		t.Fatalf("expected local Odo redirect, got %q", rec.Header().Get("Location"))
+	}
+	entries := store.Recent()
+	if len(entries) != 1 || !entries[0].RedirectedAfterPost {
+		t.Fatalf("expected redirected_after_post diagnostics, got %#v", entries)
+	}
+}
+
+func TestFetchHandlerPOSTRedirectToNonAllowlistedTargetIsRejected(t *testing.T) {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"https://bad.example/login"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	}).client()
+	handler := FetchHandler(client, allowedHostTargetCheck)
+
+	req := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("q=science"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Header().Get("Location"), "bad.example") {
+		t.Fatalf("unsafe redirect Location leaked to browser: %q", rec.Header().Get("Location"))
 	}
 }
 
@@ -291,7 +506,7 @@ func TestFetchHandlerRemovesIntegrityWhenURLIsRewritten(t *testing.T) {
 	if strings.Contains(strings.ToLower(body), "integrity=") {
 		t.Fatalf("expected integrity attribute removed after rewrite, got %s", body)
 	}
-	if !strings.Contains(body, `src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fapp.js"`) {
+	if !strings.Contains(body, `src="/odo/https/www.jstor.org/app.js"`) {
 		t.Fatalf("expected script URL rewritten, got %s", body)
 	}
 }
@@ -301,8 +516,8 @@ func TestFetchHandlerRewritesSrcset(t *testing.T) {
 	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
 
 	for _, want := range []string{
-		`/odo?url=https%3A%2F%2Fwww.jstor.org%2Fsmall.jpg 1x`,
-		`/odo?url=https%3A%2F%2Fwww.jstor.org%2Flarge.jpg 2x`,
+		`/odo/https/www.jstor.org/small.jpg 1x`,
+		`/odo/https/www.jstor.org/large.jpg 2x`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected rewritten srcset to contain %s, got %s", want, body)
@@ -314,7 +529,7 @@ func TestFetchHandlerRewritesInlineStyleURLs(t *testing.T) {
 	html := `<div style="background: url('/asset.png')"></div>`
 	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
 
-	if !strings.Contains(body, `url('/odo?url=https%3A%2F%2Fwww.jstor.org%2Fasset.png')`) {
+	if !strings.Contains(body, `url('/odo/https/www.jstor.org/asset.png')`) {
 		t.Fatalf("expected inline style URL rewrite, got %s", body)
 	}
 }
@@ -324,8 +539,8 @@ func TestFetchHandlerRewritesCSSURLs(t *testing.T) {
 	body, headers := fetchBody(t, "text/css", css, allowedHostTargetCheck)
 
 	for _, want := range []string{
-		`url(/odo?url=https%3A%2F%2Fwww.jstor.org%2Fasset.css)`,
-		`url("/odo?url=https%3A%2F%2Fwww.jstor.org%2Ffont.woff2")`,
+		`url(/odo/https/www.jstor.org/asset.css)`,
+		`url("/odo/https/www.jstor.org/font.woff2")`,
 		`url(data:image/png;base64,aaa)`,
 	} {
 		if !strings.Contains(body, want) {
@@ -350,7 +565,7 @@ func TestFetchHandlerLeavesNonProxyableAssetURLUnchanged(t *testing.T) {
 	if !strings.Contains(body, `href="https://external.example.org/page"`) {
 		t.Fatalf("expected external/allow URL unchanged, got %s", body)
 	}
-	if !strings.Contains(body, `src="/odo?url=https%3A%2F%2Fwww.jstor.org%2Fallowed.png"`) {
+	if !strings.Contains(body, `src="/odo/https/www.jstor.org/allowed.png"`) {
 		t.Fatalf("expected allowlisted relative URL rewritten, got %s", body)
 	}
 }

@@ -19,6 +19,7 @@ func main() {
 	accessLogFormat := env("APP_ACCESS_LOG_FORMAT", accesslog.FormatPrivacy)
 	accessLogPath := os.Getenv("APP_ACCESS_LOG_PATH")
 	proxyDebug := env("APP_PROXY_DEBUG", "false") == "true"
+	proxyURLMode := proxy.ProxyURLMode()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	if adminAPIKey == "" {
@@ -45,7 +46,7 @@ func main() {
 	defer accessLogCloser.Close()
 
 	server := api.NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminAPIKey, logger, accessLogger, nil, proxy.DefaultHTTPClient(), proxyDebug)
-	logger.Info("odo listening", "addr", addr, "db", dbPath, "config_dir", configDir)
+	logger.Info("odo listening", "addr", addr, "db", dbPath, "config_dir", configDir, "proxy_url_mode", proxyURLMode)
 	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
 		logger.Error("server stopped", "err", err)
 		os.Exit(1)

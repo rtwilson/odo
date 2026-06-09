@@ -152,7 +152,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		RequestID:      metadata.RequestID,
 		RemoteIP:       remoteIP(r.RemoteAddr),
 		Method:         r.Method,
-		Route:          r.URL.Path,
+		Route:          routePath(r.URL.Path),
 		Status:         status,
 		Bytes:          bytes,
 		DurationMS:     duration.Milliseconds(),
@@ -252,7 +252,7 @@ func commonLine(e Entry, r *http.Request, combined bool) string {
 		e.RemoteIP,
 		time.Now().Format("02/Jan/2006:15:04:05 -0700"),
 		r.Method,
-		r.URL.Path,
+		e.Route,
 		r.Proto,
 		e.Status,
 		e.Bytes,
@@ -276,4 +276,11 @@ func remoteIP(remoteAddr string) string {
 		return host
 	}
 	return remoteAddr
+}
+
+func routePath(path string) string {
+	if path == "/odo" || strings.HasPrefix(path, "/odo/") {
+		return "/odo"
+	}
+	return path
 }
