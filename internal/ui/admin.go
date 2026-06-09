@@ -145,6 +145,16 @@ func AdminHTML() string {
         <section id="section-auth" class="section">
           <h2>Auth / SAML</h2>
           <p class="muted">Future SAML Service Provider configuration will live here.</p>
+          <div class="toolbar">
+            <button id="load-saml-providers">Load SAML Providers</button>
+            <button id="new-saml-provider">New SAML Provider</button>
+            <button id="save-saml-provider">Save SAML Provider</button>
+            <button id="delete-saml-provider" class="danger">Delete SAML Provider</button>
+            <button id="open-saml-metadata">Open SP Metadata</button>
+          </div>
+          <div id="saml-provider-list" class="list">No SAML providers loaded.</div>
+          <h3>SAML provider JSON</h3>
+          <textarea id="saml-editor" spellcheck="false" aria-label="SAML provider JSON editor"></textarea>
         </section>
 
         <section id="section-settings" class="section">
@@ -166,12 +176,16 @@ func AdminHTML() string {
     const output = document.querySelector('#output');
     const editor = document.querySelector('#editor');
     const apiKeyEditor = document.querySelector('#api-key-editor');
+    const samlEditor = document.querySelector('#saml-editor');
     const resourceList = document.querySelector('#resource-list');
     const apiKeyTable = document.querySelector('#api-key-table');
+    const samlProviderList = document.querySelector('#saml-provider-list');
     let resources = [];
     let apiKeys = [];
+    let samlProviders = [];
     let selectedResourceId = '';
     let selectedAPIKeyId = '';
+    let selectedSAMLProviderId = '';
 
     const template = {
       id: 'new-resource',
@@ -188,6 +202,25 @@ func AdminHTML() string {
       name: 'Local admin',
       scopes: ['admin'],
       expires_at: null
+    };
+
+    const samlProviderTemplate = {
+      id: 'campus-shibboleth',
+      name: 'Campus Shibboleth',
+      status: 'active',
+      entity_id: '',
+      acs_url: '',
+      sign_authn_requests: true,
+      require_signed_assertions: true,
+      require_signed_responses: true,
+      attribute_mappings: {
+        subject: 'urn:oid:0.9.2342.19200300.100.1.1',
+        email: 'urn:oid:0.9.2342.19200300.100.1.3',
+        affiliation: 'urn:oid:1.3.6.1.4.1.5923.1.1.1.1',
+        entitlement: 'urn:oid:1.3.6.1.4.1.5923.1.1.1.7'
+      },
+      session_ttl_minutes: 480,
+      idle_timeout_minutes: 60
     };
 
     const show = value => output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
@@ -342,6 +375,27 @@ func AdminHTML() string {
       apiKeyTable.appendChild(table);
     }
 
+    function setSAMLEditor(provider) {
+      selectedSAMLProviderId = provider.id || '';
+      samlEditor.value = JSON.stringify(provider, null, 2);
+      renderSAMLProviders();
+    }
+
+    function renderSAMLProviders() {
+      if (!samlProviders.length) {
+        samlProviderList.textContent = 'No SAML providers loaded.';
+        return;
+      }
+      samlProviderList.textContent = '';
+      for (const provider of samlProviders) {
+        const button = document.createElement('button');
+        button.className = 'resource-item' + (provider.id === selectedSAMLProviderId ? ' active' : '');
+        button.textContent = provider.id + ' - ' + provider.name + ' (' + provider.status + ')';
+        button.addEventListener('click', () => setSAMLEditor(provider));
+        samlProviderList.appendChild(button);
+      }
+    }
+
     function showAPIKeyResponse(result) {
       const value = unwrap(result);
       if (value && value.token) {
@@ -381,6 +435,14 @@ func AdminHTML() string {
       const data = unwrap(result);
       apiKeys = data.api_keys || [];
       renderAPIKeys();
+      if (showResult) show(result);
+    }
+
+    async function loadSAMLProviders(showResult = true) {
+      const result = await api('/api/v1/auth/saml/providers');
+      const data = unwrap(result);
+      samlProviders = data.providers || [];
+      renderSAMLProviders();
       if (showResult) show(result);
     }
 
@@ -487,6 +549,33 @@ func AdminHTML() string {
 
     document.querySelector('#settings-health').addEventListener('click', async () => { try { show(await api('/api/v1/health', { auth: false })); } catch (err) { show(err); } });
     document.querySelector('#settings-openapi').addEventListener('click', () => window.open('/openapi.yaml', '_blank', 'noopener'));
+
+    document.querySelector('#load-saml-providers').addEventListener('click', async () => { try { await loadSAMLProviders(); } catch (err) { show(err); } });
+    document.querySelector('#new-saml-provider').addEventListener('click', () => {
+      selectedSAMLProviderId = '';
+      samlEditor.value = JSON.stringify(samlProviderTemplate, null, 2);
+      renderSAMLProviders();
+      show('New SAML provider template loaded.');
+    });
+    document.querySelector('#save-saml-provider').addEventListener('click', async () => {
+      const provider = parseJSONEditor(samlEditor, 'saml provider');
+      if (!provider) return;
+      try {
+        const result = await api('/api/v1/auth/saml/providers', { method: 'POST', body: JSON.stringify(provider) });
+        const saved = unwrap(result);
+        selectedSAMLProviderId = saved.id || '';
+        show(result);
+        await loadSAMLProviders(false);
+      } catch (err) { show(err); }
+    });
+    document.querySelector('#delete-saml-provider').addEventListener('click', async () => {
+      const provider = parseJSONEditor(samlEditor, 'saml provider');
+      const id = selectedSAMLProviderId || (provider || {}).id;
+      if (!id) { show({ error: 'saml provider id is required' }); return; }
+      if (!confirm('Delete SAML provider "' + id + '"?')) return;
+      try { show(await api('/api/v1/auth/saml/providers/' + encodeURIComponent(id), { method: 'DELETE' })); await loadSAMLProviders(false); } catch (err) { show(err); }
+    });
+    document.querySelector('#open-saml-metadata').addEventListener('click', () => window.open('/auth/saml/metadata', '_blank', 'noopener'));
   </script>
 </body>
 </html>`

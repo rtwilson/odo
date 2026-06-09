@@ -71,6 +71,7 @@ Environment variables:
 - `APP_ADDR`, default `:8080`
 - `APP_DB_PATH`, default `./data/app.db`
 - `APP_CONFIG_DIR`, default `./config`
+- `APP_PUBLIC_URL`, optional public base URL used for generated SAML SP metadata defaults
 - `APP_ADMIN_API_KEY`, optional bootstrap/dev fallback for creating and managing stored API keys
 - `APP_KEY_HASH_SECRET`, recommended secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
@@ -205,7 +206,31 @@ curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/revoke \
   -H 'Authorization: Bearer odo_live_...' | jq
 ```
 
-Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, and `auth:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
+Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `auth:read`, and `auth:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
+
+## SAML SP Scaffolding
+
+Odo is designed to act as a SAML Service Provider for campus/Shibboleth-style identity infrastructure. Full SAML login initiation and assertion validation are future work, but the MVP includes SAML provider configuration APIs, admin UI controls, and a Service Provider metadata endpoint.
+
+Manage provider config through:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/auth/saml/providers \
+  -H 'Authorization: Bearer devsecret' | jq
+```
+
+The public SP metadata endpoint is:
+
+```text
+http://127.0.0.1:8080/auth/saml/metadata
+```
+
+Placeholder routes are also present for future integration:
+
+- `GET /auth/saml/login`
+- `POST /auth/saml/acs`
+
+A sample provider config lives at `config/auth/saml/campus-shibboleth.json`. The current scaffold omits signing certificates and does not validate SAML assertions yet.
 
 ## Admin Troubleshooting Tools
 

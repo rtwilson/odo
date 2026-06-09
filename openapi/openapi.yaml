@@ -327,6 +327,130 @@ paths:
                 $ref: "#/components/schemas/APIKeyRevokeResponse"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/auth/saml/providers:
+    get:
+      summary: List SAML providers
+      operationId: listSAMLProviders
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: SAML provider list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SAMLProvider"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create or update a SAML provider
+      operationId: upsertSAMLProvider
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SAMLProvider"
+      responses:
+        "200":
+          description: Upserted SAML provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SAMLProvider"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/saml/providers/{id}:
+    get:
+      summary: Get one SAML provider
+      operationId: getSAMLProvider
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SAML provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SAMLProvider"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      summary: Delete a SAML provider
+      operationId: deleteSAMLProvider
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted provider
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted:
+                    type: boolean
+                  id:
+                    type: string
+        "404":
+          $ref: "#/components/responses/Error"
+  /auth/saml/metadata:
+    get:
+      summary: SAML SP metadata
+      operationId: samlMetadata
+      security: []
+      responses:
+        "200":
+          description: SAML SP metadata XML
+          content:
+            application/samlmetadata+xml:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/Error"
+  /auth/saml/login:
+    get:
+      summary: SAML login placeholder
+      operationId: samlLogin
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/Error"
+  /auth/saml/acs:
+    post:
+      summary: SAML assertion consumer service placeholder
+      operationId: samlACS
+      security: []
+      responses:
+        "501":
+          $ref: "#/components/responses/Error"
   /api/v1/rules/test-url:
     post:
       summary: Test whether a URL matches an active resource rule
@@ -730,7 +854,7 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, auth:write]
+            enum: [admin, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, auth:read, auth:write]
           examples:
             - [config:write, config:read]
         expires_at:
@@ -803,6 +927,50 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/APIKeySummary"
+    SAMLProvider:
+      type: object
+      required: [id, name, entity_id, acs_url]
+      properties:
+        id:
+          type: string
+          examples: [campus-shibboleth]
+        name:
+          type: string
+          examples: [Campus Shibboleth]
+        status:
+          type: string
+          enum: [active, disabled]
+          default: active
+        entity_id:
+          type: string
+          examples: [https://access.example.edu/auth/saml/metadata]
+        acs_url:
+          type: string
+          examples: [https://access.example.edu/auth/saml/acs]
+        metadata_url:
+          type: string
+        metadata_xml:
+          type: string
+        sign_authn_requests:
+          type: boolean
+        require_signed_assertions:
+          type: boolean
+        require_signed_responses:
+          type: boolean
+        attribute_mappings:
+          type: object
+          additionalProperties:
+            type: string
+        role_mappings:
+          type: object
+          additionalProperties:
+            type: string
+        session_ttl_minutes:
+          type: integer
+          default: 480
+        idle_timeout_minutes:
+          type: integer
+          default: 60
     TestURLRequest:
       type: object
       required: [url]

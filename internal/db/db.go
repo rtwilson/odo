@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"example.org/odo/internal/auth/saml"
 	"example.org/odo/internal/resources"
 	_ "modernc.org/sqlite"
 )
@@ -101,6 +102,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
 	last_used_at TEXT NULL,
 	revoked_at TEXT NULL
 );
+
+CREATE TABLE IF NOT EXISTS saml_providers (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	status TEXT NOT NULL,
+	config_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 `)
 	return err
 }
@@ -186,6 +195,99 @@ func (s *Store) DeleteResource(id string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *Store) UpsertSAMLProvider(provider saml.Provider) error {
+	provider, err := saml.Validate(provider, "")
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(provider)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.Exec(`
+INSERT INTO saml_providers (id, name, status, config_json, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	name = excluded.name,
+	status = excluded.status,
+	config_json = excluded.config_json,
+	updated_at = excluded.updated_at
+`, provider.ID, provider.Name, provider.Status, string(payload), now)
+	if err != nil {
+		return err
+	}
+	return s.Audit("saml_provider_upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, provider.ID, provider.Status))
+}
+
+func (s *Store) ListSAMLProviders() ([]saml.Provider, error) {
+	rows, err := s.db.Query(`SELECT config_json FROM saml_providers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []saml.Provider
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		provider, err := saml.Decode([]byte(payload))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, provider)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetSAMLProvider(id string) (saml.Provider, bool, error) {
+	var payload string
+	err := s.db.QueryRow(`SELECT config_json FROM saml_providers WHERE id = ?`, id).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return saml.Provider{}, false, nil
+	}
+	if err != nil {
+		return saml.Provider{}, false, err
+	}
+	provider, err := saml.Decode([]byte(payload))
+	if err != nil {
+		return saml.Provider{}, false, err
+	}
+	return provider, true, nil
+}
+
+func (s *Store) DeleteSAMLProvider(id string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM saml_providers WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	if err := s.Audit("saml_provider_delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) ActiveSAMLProvider() (saml.Provider, bool, error) {
+	providers, err := s.ListSAMLProviders()
+	if err != nil {
+		return saml.Provider{}, false, err
+	}
+	for _, provider := range providers {
+		if provider.Status == "active" {
+			return provider, true, nil
+		}
+	}
+	return saml.Provider{}, false, nil
 }
 
 func (s *Store) CreateConfigRevision(source, status, summary string, configJSON []byte) (int64, error) {

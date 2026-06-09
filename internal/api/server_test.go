@@ -103,7 +103,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -1414,6 +1414,122 @@ func TestAPIKeyRotateInvalidatesOldTokenAndRevokeDisablesNewToken(t *testing.T) 
 	}
 }
 
+func TestSAMLProviderCreateListGetDelete(t *testing.T) {
+	server := newTestServer(t, "secret")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/providers", bytes.NewBufferString(testSAMLProviderJSON()))
+	createReq.Header.Set("Authorization", "Bearer secret")
+	createRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected create SAML provider 200, got %d with body %s", createRec.Code, createRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/providers", nil)
+	listReq.Header.Set("Authorization", "Bearer secret")
+	listRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), "campus-shibboleth") {
+		t.Fatalf("expected list SAML providers, got %d with body %s", listRec.Code, listRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/providers/campus-shibboleth", nil)
+	getReq.Header.Set("Authorization", "Bearer secret")
+	getRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), "Campus Shibboleth") {
+		t.Fatalf("expected get SAML provider, got %d with body %s", getRec.Code, getRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/saml/providers/campus-shibboleth", nil)
+	deleteReq.Header.Set("Authorization", "Bearer secret")
+	deleteRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected delete SAML provider, got %d with body %s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestSAMLProviderAPIKeyAndScopeBehavior(t *testing.T) {
+	server := newTestServer(t, "secret")
+	missingReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/providers", nil)
+	missingRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing key 401, got %d with body %s", missingRec.Code, missingRec.Body.String())
+	}
+
+	readToken, _ := createTestAPIKey(t, server, "secret", []string{"auth:read"})
+	readReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/providers", nil)
+	readReq.Header.Set("Authorization", "Bearer "+readToken)
+	readRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(readRec, readReq)
+	if readRec.Code != http.StatusOK {
+		t.Fatalf("expected auth:read to list providers, got %d with body %s", readRec.Code, readRec.Body.String())
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/providers", bytes.NewBufferString(testSAMLProviderJSON()))
+	writeReq.Header.Set("Authorization", "Bearer "+readToken)
+	writeRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(writeRec, writeReq)
+	if writeRec.Code != http.StatusForbidden || !strings.Contains(writeRec.Body.String(), "insufficient scope") {
+		t.Fatalf("expected insufficient scope for write, got %d with body %s", writeRec.Code, writeRec.Body.String())
+	}
+}
+
+func TestInvalidSAMLProviderRejected(t *testing.T) {
+	server := newTestServer(t, "secret")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/providers", bytes.NewBufferString(`{"id":"","name":"","status":"weird"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid SAML provider 400, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSAMLMetadataEndpoint(t *testing.T) {
+	server := newTestServer(t, "secret")
+	emptyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(emptyRec, httptest.NewRequest(http.MethodGet, "/auth/saml/metadata", nil))
+	if emptyRec.Code != http.StatusNotFound {
+		t.Fatalf("expected metadata without provider 404, got %d with body %s", emptyRec.Code, emptyRec.Body.String())
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/providers", bytes.NewBufferString(testSAMLProviderJSON()))
+	createReq.Header.Set("Authorization", "Bearer secret")
+	createRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create SAML provider: %d %s", createRec.Code, createRec.Body.String())
+	}
+
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/saml/metadata", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"EntityDescriptor", "SPSSODescriptor", "AssertionConsumerService", `entityID="https://access.example.edu/auth/saml/metadata"`, `Location="https://access.example.edu/auth/saml/acs"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected metadata to contain %q, got %s", want, body)
+		}
+	}
+}
+
+func TestSAMLPlaceholdersReturn501(t *testing.T) {
+	server := newTestServer(t, "")
+	loginRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(loginRec, httptest.NewRequest(http.MethodGet, "/auth/saml/login", nil))
+	if loginRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected SAML login 501, got %d", loginRec.Code)
+	}
+	acsRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(acsRec, httptest.NewRequest(http.MethodPost, "/auth/saml/acs", nil))
+	if acsRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected SAML ACS 501, got %d", acsRec.Code)
+	}
+}
+
 func TestConfigImportRequiresAPIKey(t *testing.T) {
 	server := newTestServer(t, "secret")
 
@@ -1781,4 +1897,23 @@ func upsertTestResource(t *testing.T, server *Server, id string) {
 	}); err != nil {
 		t.Fatalf("upsert test resource: %v", err)
 	}
+}
+
+func testSAMLProviderJSON() string {
+	return `{
+  "id": "campus-shibboleth",
+  "name": "Campus Shibboleth",
+  "status": "active",
+  "entity_id": "https://access.example.edu/auth/saml/metadata",
+  "acs_url": "https://access.example.edu/auth/saml/acs",
+  "sign_authn_requests": true,
+  "require_signed_assertions": true,
+  "require_signed_responses": true,
+  "attribute_mappings": {
+    "subject": "urn:oid:0.9.2342.19200300.100.1.1",
+    "email": "urn:oid:0.9.2342.19200300.100.1.3"
+  },
+  "session_ttl_minutes": 480,
+  "idle_timeout_minutes": 60
+}`
 }

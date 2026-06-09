@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"example.org/odo/internal/accesslog"
+	"example.org/odo/internal/auth/saml"
 	"example.org/odo/internal/config"
 	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
@@ -89,6 +92,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /", s.root)
 	mux.HandleFunc("GET /admin", s.admin)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
+	mux.HandleFunc("GET /auth/saml/metadata", s.samlMetadata)
+	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
+	mux.HandleFunc("POST /auth/saml/acs", s.samlACS)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
 	mux.HandleFunc("POST /api/v1/resources", s.requireScopes(s.upsertResource, "resources:write"))
@@ -110,6 +116,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/api-keys/{id}/rotate", s.requireScopes(s.rotateAPIKey, "auth:write"))
 	mux.HandleFunc("POST /api/v1/api-keys/{id}/revoke", s.requireScopes(s.revokeAPIKey, "auth:write"))
 	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", s.requireScopes(s.deleteAPIKey, "auth:write"))
+	mux.HandleFunc("GET /api/v1/auth/saml/providers", s.requireScopes(s.listSAMLProviders, "auth:read"))
+	mux.HandleFunc("POST /api/v1/auth/saml/providers", s.requireScopes(s.upsertSAMLProvider, "auth:write"))
+	mux.HandleFunc("GET /api/v1/auth/saml/providers/{id}", s.requireScopes(s.getSAMLProvider, "auth:read"))
+	mux.HandleFunc("DELETE /api/v1/auth/saml/providers/{id}", s.requireScopes(s.deleteSAMLProvider, "auth:write"))
 	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
@@ -599,6 +609,95 @@ func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "api_key": key})
 }
 
+func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.store.ListSAMLProviders()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+}
+
+func (s *Server) upsertSAMLProvider(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var provider saml.Provider
+	if err := json.NewDecoder(r.Body).Decode(&provider); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	provider, err := saml.Validate(provider, publicBaseURL(r))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.store.UpsertSAMLProvider(provider); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, provider)
+}
+
+func (s *Server) getSAMLProvider(w http.ResponseWriter, r *http.Request) {
+	provider, found, err := s.store.GetSAMLProvider(strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "saml provider not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, provider)
+}
+
+func (s *Server) deleteSAMLProvider(w http.ResponseWriter, r *http.Request) {
+	deleted, err := s.store.DeleteSAMLProvider(strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "saml provider not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": strings.TrimSpace(r.PathValue("id"))})
+}
+
+func (s *Server) samlMetadata(w http.ResponseWriter, r *http.Request) {
+	provider, found, err := s.store.ActiveSAMLProvider()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "no active SAML provider configured")
+		return
+	}
+	provider, err = saml.Validate(provider, publicBaseURL(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.Audit("saml_metadata_served", fmt.Sprintf(`{"provider_id":%q}`, provider.ID)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/samlmetadata+xml; charset=utf-8")
+	_, _ = w.Write([]byte(spMetadataXML(provider)))
+}
+
+func (s *Server) samlLogin(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"error": "SAML login initiation is not implemented yet",
+	})
+}
+
+func (s *Server) samlACS(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"error": "SAML assertion validation is not implemented yet",
+	})
+}
+
 func (s *Server) newStoredAPIKey(req apiKeyCreateRequest) (db.APIKey, string, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -853,6 +952,48 @@ func keyPrefix(token string) string {
 	return token[:len("odo_live_")+8]
 }
 
+func publicBaseURL(r *http.Request) string {
+	if value := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/"); value != "" {
+		return value
+	}
+	scheme := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	host := r.Host
+	if host == "" {
+		host = "127.0.0.1:8080"
+	}
+	return scheme + "://" + host
+}
+
+func spMetadataXML(provider saml.Provider) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>` + "\n" +
+		`<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="` + xmlEscape(provider.EntityID) + `">` + "\n" +
+		`  <md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol" AuthnRequestsSigned="` + boolXML(provider.SignAuthnRequests) + `" WantAssertionsSigned="` + boolXML(provider.RequireSignedAssertions) + `">` + "\n" +
+		`    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</md:NameIDFormat>` + "\n" +
+		`    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="` + xmlEscape(provider.ACSURL) + `" index="1" isDefault="true"/>` + "\n" +
+		`  </md:SPSSODescriptor>` + "\n" +
+		`</md:EntityDescriptor>` + "\n"
+}
+
+func xmlEscape(value string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(value))
+	return buf.String()
+}
+
+func boolXML(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
 var validAPIKeyScopes = map[string]bool{
 	"admin":            true,
 	"resources:read":   true,
@@ -861,6 +1002,7 @@ var validAPIKeyScopes = map[string]bool{
 	"config:write":     true,
 	"diagnostics:read": true,
 	"logs:read":        true,
+	"auth:read":        true,
 	"auth:write":       true,
 }
 
