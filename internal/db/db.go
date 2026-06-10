@@ -48,6 +48,33 @@ type APIKey struct {
 	RevokedAt  string   `json:"revoked_at,omitempty"`
 }
 
+type User struct {
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Email        string   `json:"email,omitempty"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	PasswordHash string   `json:"-"`
+	Status       string   `json:"status"`
+	Roles        []string `json:"roles"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+	LastLoginAt  string   `json:"last_login_at,omitempty"`
+	LockedAt     string   `json:"locked_at,omitempty"`
+	DisabledAt   string   `json:"disabled_at,omitempty"`
+}
+
+type Session struct {
+	ID            string `json:"id"`
+	UserID        string `json:"user_id"`
+	SessionHash   string `json:"-"`
+	CreatedAt     string `json:"created_at"`
+	LastSeenAt    string `json:"last_seen_at"`
+	ExpiresAt     string `json:"expires_at"`
+	RevokedAt     string `json:"revoked_at,omitempty"`
+	UserAgentHash string `json:"user_agent_hash,omitempty"`
+	IPHash        string `json:"ip_hash,omitempty"`
+}
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -109,6 +136,33 @@ CREATE TABLE IF NOT EXISTS saml_providers (
 	status TEXT NOT NULL,
 	config_json TEXT NOT NULL,
 	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+	id TEXT PRIMARY KEY,
+	username TEXT UNIQUE NOT NULL,
+	email TEXT NULL,
+	display_name TEXT NULL,
+	password_hash TEXT NOT NULL,
+	status TEXT NOT NULL,
+	roles_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	last_login_at TEXT NULL,
+	locked_at TEXT NULL,
+	disabled_at TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL,
+	session_hash TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	last_seen_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	revoked_at TEXT NULL,
+	user_agent_hash TEXT NULL,
+	ip_hash TEXT NULL
 );
 `)
 	return err
@@ -533,4 +587,189 @@ func scanAPIKey(row apiKeyScanner) (APIKey, error) {
 		return APIKey{}, err
 	}
 	return key, nil
+}
+
+func (s *Store) CountUsers() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	return count, err
+}
+
+func (s *Store) CreateUser(user User) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if user.CreatedAt == "" {
+		user.CreatedAt = now
+	}
+	if user.UpdatedAt == "" {
+		user.UpdatedAt = now
+	}
+	if user.Status == "" {
+		user.Status = "active"
+	}
+	if len(user.Roles) == 0 {
+		user.Roles = []string{"user"}
+	}
+	roles, err := json.Marshal(user.Roles)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+INSERT INTO users (id, username, email, display_name, password_hash, status, roles_json, created_at, updated_at, last_login_at, locked_at, disabled_at)
+VALUES (?, ?, nullif(?, ''), nullif(?, ''), ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), nullif(?, ''))
+`, user.ID, user.Username, user.Email, user.DisplayName, user.PasswordHash, user.Status, string(roles), user.CreatedAt, user.UpdatedAt, user.LastLoginAt, user.LockedAt, user.DisabledAt)
+	if err != nil {
+		return err
+	}
+	return s.Audit("user_created", fmt.Sprintf(`{"id":%q,"username":%q}`, user.ID, user.Username))
+}
+
+func (s *Store) ListUsers() ([]User, error) {
+	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, user)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetUser(id string) (User, bool, error) {
+	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id)
+	return scanUserFound(row)
+}
+
+func (s *Store) GetUserByUsername(username string) (User, bool, error) {
+	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE username = ?`, username)
+	return scanUserFound(row)
+}
+
+func (s *Store) UpdateUser(user User) (User, bool, error) {
+	existing, found, err := s.GetUser(user.ID)
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if user.Username == "" {
+		user.Username = existing.Username
+	}
+	if user.Status == "" {
+		user.Status = existing.Status
+	}
+	if len(user.Roles) == 0 {
+		user.Roles = existing.Roles
+	}
+	roles, err := json.Marshal(user.Roles)
+	if err != nil {
+		return User{}, false, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, updated_at = ? WHERE id = ?`,
+		user.Email, user.DisplayName, user.Status, string(roles), now, user.ID)
+	if err != nil {
+		return User{}, false, err
+	}
+	return s.GetUser(user.ID)
+}
+
+func (s *Store) SetUserPassword(id, hash string) (bool, error) {
+	result, err := s.db.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, hash, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
+}
+
+func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	disabledAt, lockedAt := "", ""
+	if status == "disabled" {
+		disabledAt = now
+	}
+	if status == "locked" {
+		lockedAt = now
+	}
+	result, err := s.db.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ?`, status, disabledAt, lockedAt, now, id)
+	if err != nil {
+		return User{}, false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return User{}, false, err
+	}
+	if status == "disabled" || status == "locked" {
+		_ = s.RevokeUserSessions(id)
+	}
+	return s.GetUser(id)
+}
+
+func (s *Store) MarkUserLogin(id string) error {
+	_, err := s.db.Exec(`UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+func (s *Store) CreateSession(session Session) error {
+	_, err := s.db.Exec(`
+INSERT INTO sessions (id, user_id, session_hash, created_at, last_seen_at, expires_at, revoked_at, user_agent_hash, ip_hash)
+VALUES (?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), nullif(?, ''))
+`, session.ID, session.UserID, session.SessionHash, session.CreatedAt, session.LastSeenAt, session.ExpiresAt, session.RevokedAt, session.UserAgentHash, session.IPHash)
+	return err
+}
+
+func (s *Store) GetSession(id string) (Session, bool, error) {
+	row := s.db.QueryRow(`SELECT id, user_id, session_hash, created_at, last_seen_at, expires_at, coalesce(revoked_at, ''), coalesce(user_agent_hash, ''), coalesce(ip_hash, '') FROM sessions WHERE id = ?`, id)
+	var session Session
+	err := row.Scan(&session.ID, &session.UserID, &session.SessionHash, &session.CreatedAt, &session.LastSeenAt, &session.ExpiresAt, &session.RevokedAt, &session.UserAgentHash, &session.IPHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, false, nil
+	}
+	return session, err == nil, err
+}
+
+func (s *Store) TouchSession(id string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET last_seen_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+func (s *Store) RevokeSession(id string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+func (s *Store) RevokeUserSessions(userID string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), userID)
+	return err
+}
+
+type userScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUserFound(row userScanner) (User, bool, error) {
+	user, err := scanUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	return user, true, nil
+}
+
+func scanUser(row userScanner) (User, error) {
+	var user User
+	var rolesJSON string
+	if err := row.Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash, &user.Status, &rolesJSON, &user.CreatedAt, &user.UpdatedAt, &user.LastLoginAt, &user.LockedAt, &user.DisabledAt); err != nil {
+		return User{}, err
+	}
+	if err := json.Unmarshal([]byte(rolesJSON), &user.Roles); err != nil {
+		return User{}, err
+	}
+	return user, nil
 }

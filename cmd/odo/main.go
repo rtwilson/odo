@@ -4,9 +4,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/api"
+	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
 )
@@ -45,6 +47,10 @@ func main() {
 	if os.Getenv("APP_KEY_HASH_SECRET") == "" {
 		logger.Warn("APP_KEY_HASH_SECRET is not set; API keys use local-dev SHA-256 hashing")
 	}
+	if err := bootstrapAdminUser(store, logger); err != nil {
+		logger.Error("bootstrap admin user", "err", err)
+		os.Exit(1)
+	}
 
 	accessLogger, accessLogCloser, err := accesslog.Open(accessLogFormat, accessLogPath)
 	if err != nil {
@@ -66,4 +72,43 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func bootstrapAdminUser(store *db.Store, logger *slog.Logger) error {
+	count, err := store.CountUsers()
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	username := os.Getenv("APP_BOOTSTRAP_ADMIN_USERNAME")
+	password := os.Getenv("APP_BOOTSTRAP_ADMIN_PASSWORD")
+	if username == "" || password == "" {
+		logger.Warn("no local users exist; set APP_BOOTSTRAP_ADMIN_USERNAME and APP_BOOTSTRAP_ADMIN_PASSWORD to create an initial admin user")
+		return nil
+	}
+	hash, err := local.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	id, err := local.NewToken("user_", 12)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := store.CreateUser(db.User{
+		ID:           id,
+		Username:     username,
+		Email:        os.Getenv("APP_BOOTSTRAP_ADMIN_EMAIL"),
+		PasswordHash: hash,
+		Status:       "active",
+		Roles:        []string{"admin"},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		return err
+	}
+	logger.Info("created bootstrap admin user", "username", username)
+	return nil
 }

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"example.org/odo/internal/accesslog"
+	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/auth/saml"
 	"example.org/odo/internal/config"
 	"example.org/odo/internal/db"
@@ -91,6 +92,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /", s.root)
 	mux.HandleFunc("POST /", s.root)
 	mux.HandleFunc("GET /admin", s.admin)
+	mux.HandleFunc("GET /login", s.loginPage)
+	mux.HandleFunc("POST /login", s.loginPost)
+	mux.HandleFunc("POST /logout", s.logoutPost)
+	mux.HandleFunc("GET /resources", s.userResources)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /auth/saml/metadata", s.samlMetadata)
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
@@ -121,6 +126,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/saml/providers", s.requireScopes(s.upsertSAMLProvider, "auth:write"))
 	mux.HandleFunc("GET /api/v1/auth/saml/providers/{id}", s.requireScopes(s.getSAMLProvider, "auth:read"))
 	mux.HandleFunc("DELETE /api/v1/auth/saml/providers/{id}", s.requireScopes(s.deleteSAMLProvider, "auth:write"))
+	mux.HandleFunc("GET /api/v1/users", s.requireScopes(s.listUsers, "admin"))
+	mux.HandleFunc("POST /api/v1/users", s.requireScopes(s.createUser, "admin"))
+	mux.HandleFunc("GET /api/v1/users/{id}", s.requireScopes(s.getUser, "admin"))
+	mux.HandleFunc("PATCH /api/v1/users/{id}", s.requireScopes(s.patchUser, "admin"))
+	mux.HandleFunc("POST /api/v1/users/{id}/set-password", s.requireScopes(s.setUserPassword, "admin"))
+	mux.HandleFunc("POST /api/v1/users/{id}/disable", s.requireScopes(s.disableUser, "admin"))
+	mux.HandleFunc("POST /api/v1/users/{id}/enable", s.requireScopes(s.enableUser, "admin"))
+	mux.HandleFunc("POST /api/v1/users/{id}/lock", s.requireScopes(s.lockUser, "admin"))
+	mux.HandleFunc("POST /api/v1/users/{id}/unlock", s.requireScopes(s.unlockUser, "admin"))
+	mux.HandleFunc("POST /api/v1/users/{id}/revoke-sessions", s.requireScopes(s.revokeUserSessions, "admin"))
 	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
@@ -130,8 +145,8 @@ func (s *Server) Routes() http.Handler {
 	})
 	s.proxyH = proxyHandler
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /odo", proxyHandler)
-		mux.HandleFunc(method+" /odo/", proxyHandler)
+		mux.HandleFunc(method+" /odo", s.requireProxySession(proxyHandler))
+		mux.HandleFunc(method+" /odo/", s.requireProxySession(proxyHandler))
 	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
@@ -257,6 +272,84 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(openapi.Spec)
 }
 
+func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	next := safeNextPath(r.URL.Query().Get("next"))
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}</style></head><body><main><h1>odo login</h1><form method="post" action="/login?next=%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form></main></body></html>`, htmlEscape(url.QueryEscape(next)))
+}
+
+func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid login request")
+		return
+	}
+	user, found, err := s.store.GetUserByUsername(strings.TrimSpace(r.Form.Get("username")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found || user.Status != "active" || !local.CheckPassword(user.PasswordHash, r.Form.Get("password")) {
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	token, session, err := newBrowserSession(user.ID, r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session creation failed")
+		return
+	}
+	if err := s.store.CreateSession(session); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.store.MarkUserLogin(user.ID)
+	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
+	http.Redirect(w, r, safeNextPath(r.URL.Query().Get("next")), http.StatusFound)
+}
+
+func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(browserSessionCookieName); err == nil {
+		_ = s.store.RevokeSession(local.SessionIDFromToken(cookie.Value))
+	}
+	clear := &http.Cookie{Name: browserSessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+	http.SetCookie(w, clear)
+	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := s.currentUser(r)
+	if !ok {
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+		return
+	}
+	items, err := s.store.ListResources()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><title>odo resources</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:920px;margin:0 auto;padding:28px}a{color:#8cc7ff}li{margin:12px 0}button{padding:8px 10px}</style></head><body><main>`)
+	b.WriteString("<h1>Resources</h1><p>Signed in as " + htmlEscape(displayUser(user)) + `</p><form method="post" action="/logout"><button>Logout</button></form><ul>`)
+	for _, resource := range items {
+		if resource.Status != "active" {
+			continue
+		}
+		entry := ""
+		if len(resource.EntryURLs) > 0 {
+			entry = resource.EntryURLs[0]
+		} else if len(resource.SampleURLs) > 0 {
+			entry = resource.SampleURLs[0]
+		}
+		if entry == "" {
+			continue
+		}
+		parsed, _ := url.Parse(entry)
+		b.WriteString(`<li><a href="` + htmlEscape(proxy.BuildProxyURL(parsed)) + `">` + htmlEscape(resource.Title) + `</a></li>`)
+	}
+	b.WriteString("</ul></main></body></html>")
+	_, _ = w.Write([]byte(b.String()))
+}
+
 func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
 	targetURL, err := proxy.ParseProxyRequest(r)
 	if err != nil {
@@ -264,6 +357,148 @@ func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, proxy.BuildProxyURL(targetURL), http.StatusMovedPermanently)
+}
+
+const browserSessionCookieName = "odo_session"
+
+func newBrowserSession(userID string, r *http.Request) (string, db.Session, error) {
+	idPart, err := local.NewToken("", 16)
+	if err != nil {
+		return "", db.Session{}, err
+	}
+	secret, err := local.NewToken("", 32)
+	if err != nil {
+		return "", db.Session{}, err
+	}
+	id := "sess_" + idPart
+	token := id + "." + secret
+	now := time.Now().UTC()
+	session := db.Session{
+		ID:            id,
+		UserID:        userID,
+		SessionHash:   local.HashToken(token),
+		CreatedAt:     now.Format(time.RFC3339),
+		LastSeenAt:    now.Format(time.RFC3339),
+		ExpiresAt:     now.Add(8 * time.Hour).Format(time.RFC3339),
+		UserAgentHash: local.HashToken(r.UserAgent()),
+		IPHash:        local.HashToken(remoteIPOnly(r.RemoteAddr)),
+	}
+	return token, session, nil
+}
+
+func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
+	expiresAt, _ := time.Parse(time.RFC3339, expires)
+	secure := r.TLS != nil || strings.HasPrefix(strings.ToLower(os.Getenv("APP_PUBLIC_URL")), "https://")
+	return &http.Cookie{
+		Name:     browserSessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		Expires:  expiresAt,
+	}
+}
+
+func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
+	cookie, err := r.Cookie(browserSessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return db.User{}, db.Session{}, false
+	}
+	sessionID := local.SessionIDFromToken(cookie.Value)
+	session, found, err := s.store.GetSession(sessionID)
+	if err != nil || !found || session.RevokedAt != "" || session.SessionHash != local.HashToken(cookie.Value) {
+		return db.User{}, db.Session{}, false
+	}
+	expiresAt, err := time.Parse(time.RFC3339, session.ExpiresAt)
+	if err != nil || time.Now().UTC().After(expiresAt) {
+		return db.User{}, db.Session{}, false
+	}
+	user, found, err := s.store.GetUser(session.UserID)
+	if err != nil || !found || user.Status != "active" {
+		_ = s.store.RevokeSession(session.ID)
+		return db.User{}, db.Session{}, false
+	}
+	_ = s.store.TouchSession(session.ID)
+	if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
+		metadata.UserID = user.ID
+		metadata.SessionID = session.ID
+	}
+	return user, session, true
+}
+
+func (s *Server) proxyLoginRequired() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("APP_PROXY_REQUIRE_LOGIN")))
+	switch value {
+	case "false", "0", "no", "off":
+		return false
+	case "true", "1", "yes", "on":
+		return true
+	}
+	count, err := s.store.CountUsers()
+	return err == nil && count > 0
+}
+
+func (s *Server) requireProxySession(next http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.proxyLoginRequired() || s.proxyRequestAllowedAnonymously(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if _, _, ok := s.currentUser(r); ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if isDocumentRequest(r) {
+			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "login required")
+	}
+}
+
+func (s *Server) proxyRequestAllowedAnonymously(r *http.Request) bool {
+	target, err := proxy.ParseProxyRequest(r)
+	if err != nil {
+		return false
+	}
+	_, result := s.proxyTarget(r.Context(), target.String())
+	return result.Allowed && result.AnonymousRuleMatched
+}
+
+func isDocumentRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+}
+
+func safeNextPath(raw string) string {
+	if raw == "" {
+		return "/resources"
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.IsAbs() || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+		return "/resources"
+	}
+	return parsed.RequestURI()
+}
+
+func htmlEscape(value string) string {
+	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;", "'", "&#39;")
+	return replacer.Replace(value)
+}
+
+func displayUser(user db.User) string {
+	if user.DisplayName != "" {
+		return user.DisplayName
+	}
+	return user.Username
+}
+
+func remoteIPOnly(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -527,6 +762,242 @@ func (s *Server) proxyTestTarget(ctx context.Context, rawURL string) (*url.URL, 
 		return nil, result
 	}
 	return target, result
+}
+
+type userCreateRequest struct {
+	Username    string   `json:"username"`
+	Email       string   `json:"email"`
+	DisplayName string   `json:"display_name"`
+	Password    string   `json:"password"`
+	Roles       []string `json:"roles"`
+	Status      string   `json:"status"`
+}
+
+type userPatchRequest struct {
+	Email       *string  `json:"email"`
+	DisplayName *string  `json:"display_name"`
+	Roles       []string `json:"roles"`
+	Status      string   `json:"status"`
+}
+
+type userPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.store.ListUsers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+}
+
+func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req userCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	user, err := s.newStoredUser(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.store.CreateUser(user); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
+	user, found, err := s.store.GetUser(strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	id := strings.TrimSpace(r.PathValue("id"))
+	existing, found, err := s.store.GetUser(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	var req userPatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Email != nil {
+		existing.Email = strings.TrimSpace(*req.Email)
+	}
+	if req.DisplayName != nil {
+		existing.DisplayName = strings.TrimSpace(*req.DisplayName)
+	}
+	if len(req.Roles) > 0 {
+		roles, err := validateUserRoles(req.Roles)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		existing.Roles = roles
+	}
+	if strings.TrimSpace(req.Status) != "" {
+		status, err := validateUserStatus(req.Status)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		existing.Status = status
+	}
+	user, found, err := s.store.UpdateUser(existing)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	_ = s.store.Audit("user_updated", fmt.Sprintf(`{"id":%q,"username":%q}`, user.ID, user.Username))
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) setUserPassword(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req userPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+	hash, err := local.HashPassword(req.Password)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "password hashing failed")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	updated, err := s.store.SetUserPassword(id, hash)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !updated {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	_ = s.store.RevokeUserSessions(id)
+	_ = s.store.Audit("user_password_set", fmt.Sprintf(`{"id":%q}`, id))
+	writeJSON(w, http.StatusOK, map[string]any{"password_set": true, "id": id})
+}
+
+func (s *Server) disableUser(w http.ResponseWriter, r *http.Request) {
+	s.setUserStatus(w, r, "disabled")
+}
+
+func (s *Server) enableUser(w http.ResponseWriter, r *http.Request) {
+	s.setUserStatus(w, r, "active")
+}
+
+func (s *Server) lockUser(w http.ResponseWriter, r *http.Request) {
+	s.setUserStatus(w, r, "locked")
+}
+
+func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
+	s.setUserStatus(w, r, "active")
+}
+
+func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, found, err := s.store.GetUser(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if !found {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err := s.store.RevokeUserSessions(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.store.Audit("user_sessions_revoked", fmt.Sprintf(`{"id":%q}`, id))
+	writeJSON(w, http.StatusOK, map[string]any{"sessions_revoked": true, "id": id})
+}
+
+func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status string) {
+	user, found, err := s.store.SetUserStatus(strings.TrimSpace(r.PathValue("id")), status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	_ = s.store.Audit("user_status_set", fmt.Sprintf(`{"id":%q,"status":%q}`, user.ID, status))
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) newStoredUser(req userCreateRequest) (db.User, error) {
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		return db.User{}, fmt.Errorf("username is required")
+	}
+	if strings.ContainsAny(username, " \t\r\n") {
+		return db.User{}, fmt.Errorf("username must not contain whitespace")
+	}
+	if len(req.Password) < 8 {
+		return db.User{}, fmt.Errorf("password must be at least 8 characters")
+	}
+	status, err := validateUserStatus(req.Status)
+	if err != nil {
+		return db.User{}, err
+	}
+	roles, err := validateUserRoles(req.Roles)
+	if err != nil {
+		return db.User{}, err
+	}
+	hash, err := local.HashPassword(req.Password)
+	if err != nil {
+		return db.User{}, err
+	}
+	id, err := randomID("user_", 12)
+	if err != nil {
+		return db.User{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	return db.User{
+		ID:           id,
+		Username:     username,
+		Email:        strings.TrimSpace(req.Email),
+		DisplayName:  strings.TrimSpace(req.DisplayName),
+		PasswordHash: hash,
+		Status:       status,
+		Roles:        roles,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, nil
 }
 
 type apiKeyCreateRequest struct {
@@ -1039,6 +1510,45 @@ func validateAPIKeyScopes(scopes []string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+var validUserRoles = map[string]bool{
+	"admin": true,
+	"staff": true,
+	"user":  true,
+	"test":  true,
+}
+
+func validateUserRoles(roles []string) ([]string, error) {
+	if len(roles) == 0 {
+		return []string{"user"}, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, role := range roles {
+		role = strings.TrimSpace(strings.ToLower(role))
+		if !validUserRoles[role] {
+			return nil, fmt.Errorf("unknown role %q", role)
+		}
+		if !seen[role] {
+			out = append(out, role)
+			seen[role] = true
+		}
+	}
+	return out, nil
+}
+
+func validateUserStatus(status string) (string, error) {
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		return "active", nil
+	}
+	switch status {
+	case "active", "disabled", "locked":
+		return status, nil
+	default:
+		return "", fmt.Errorf("unknown user status %q", status)
+	}
 }
 
 func hasRequiredScope(granted, required []string) bool {

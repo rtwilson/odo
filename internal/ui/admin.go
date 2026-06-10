@@ -36,8 +36,8 @@ func AdminHTML() string {
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0 16px; }
     .workspace { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 18px; align-items: start; }
     .list { min-height: 340px; }
-    .resource-item, .api-key-row { display: block; width: 100%; text-align: left; margin-bottom: 8px; background: #1f262d; border-color: #303943; }
-    .resource-item.active, .api-key-row.active { background: #2c704f; border-color: #3f946a; }
+    .resource-item, .api-key-row, .user-row { display: block; width: 100%; text-align: left; margin-bottom: 8px; background: #1f262d; border-color: #303943; }
+    .resource-item.active, .api-key-row.active, .user-row.active { background: #2c704f; border-color: #3f946a; }
     .sample { display: block; width: 100%; text-align: left; margin: 6px 0 10px; background: #222a32; border-color: #39424d; color: #cfe4ff; }
     table { width: 100%; border-collapse: collapse; min-width: 860px; }
     th, td { border-bottom: 1px solid #2b3138; padding: 8px; text-align: left; vertical-align: top; }
@@ -66,6 +66,7 @@ func AdminHTML() string {
         <button class="nav-button" data-section="proxy">Proxy Test</button>
         <button class="nav-button" data-section="diagnostics">Diagnostics / Logs</button>
         <button class="nav-button" data-section="api-keys">API Keys</button>
+        <button class="nav-button" data-section="users">Users</button>
         <button class="nav-button" data-section="auth">Auth / SAML</button>
         <button class="nav-button" data-section="settings">Settings / System</button>
       </nav>
@@ -82,6 +83,7 @@ func AdminHTML() string {
             <button id="dash-proxy-diagnostics">Load Proxy Diagnostics</button>
             <button id="dash-missed-rewrites">Load Missed Rewrites</button>
             <button id="dash-api-keys">Load API Keys</button>
+            <button id="dash-users">Load Users</button>
           </div>
         </section>
 
@@ -183,6 +185,29 @@ func AdminHTML() string {
           <textarea id="api-key-editor" spellcheck="false" aria-label="API key JSON editor"></textarea>
         </section>
 
+        <section id="section-users" class="section">
+          <h2>Users</h2>
+          <div class="toolbar">
+            <button id="load-users">Load Users</button>
+            <button id="new-user">New User</button>
+            <button id="create-user">Create User</button>
+            <button id="update-user">Update User</button>
+            <button id="set-user-password">Set Password</button>
+            <button id="disable-user" class="danger">Disable</button>
+            <button id="enable-user">Enable</button>
+            <button id="lock-user" class="danger">Lock</button>
+            <button id="unlock-user">Unlock</button>
+            <button id="revoke-user-sessions" class="danger">Revoke Sessions</button>
+          </div>
+          <div class="workspace">
+            <aside><div id="user-list" class="list">No users loaded.</div></aside>
+            <div>
+              <textarea id="user-editor" spellcheck="false" aria-label="User JSON editor"></textarea>
+              <input id="user-password" type="password" placeholder="New user password" aria-label="New user password">
+            </div>
+          </div>
+        </section>
+
         <section id="section-auth" class="section">
           <h2>Auth / SAML</h2>
           <p class="muted">Future SAML Service Provider configuration will live here.</p>
@@ -217,9 +242,11 @@ func AdminHTML() string {
     const output = document.querySelector('#output');
     const editor = document.querySelector('#editor');
     const apiKeyEditor = document.querySelector('#api-key-editor');
+    const userEditor = document.querySelector('#user-editor');
     const samlEditor = document.querySelector('#saml-editor');
     const resourceList = document.querySelector('#resource-list');
     const apiKeyTable = document.querySelector('#api-key-table');
+    const userList = document.querySelector('#user-list');
     const samlProviderList = document.querySelector('#saml-provider-list');
     const builderDomains = document.querySelector('#builder-domains');
     const builderHeaders = document.querySelector('#builder-headers');
@@ -227,9 +254,11 @@ func AdminHTML() string {
     const builderRewriteRules = document.querySelector('#builder-rewrite-rules');
     let resources = [];
     let apiKeys = [];
+    let users = [];
     let samlProviders = [];
     let selectedResourceId = '';
     let selectedAPIKeyId = '';
+    let selectedUserId = '';
     let selectedSAMLProviderId = '';
 
     const template = {
@@ -247,6 +276,15 @@ func AdminHTML() string {
       name: 'Local admin',
       scopes: ['admin'],
       expires_at: null
+    };
+
+    const userTemplate = {
+      username: 'new-user',
+      email: '',
+      display_name: 'New User',
+      password: '',
+      roles: ['user'],
+      status: 'active'
     };
 
     const samlProviderTemplate = {
@@ -559,6 +597,39 @@ func AdminHTML() string {
       apiKeyTable.appendChild(table);
     }
 
+    function selectUser(user) {
+      selectedUserId = user.id || '';
+      userEditor.value = JSON.stringify({
+        id: user.id,
+        username: user.username,
+        email: user.email || '',
+        display_name: user.display_name || '',
+        roles: user.roles || [],
+        status: user.status || 'active',
+        created_at: user.created_at || '',
+        updated_at: user.updated_at || '',
+        last_login_at: user.last_login_at || '',
+        locked_at: user.locked_at || '',
+        disabled_at: user.disabled_at || ''
+      }, null, 2);
+      renderUsers();
+    }
+
+    function renderUsers() {
+      if (!users.length) {
+        userList.textContent = 'No users loaded.';
+        return;
+      }
+      userList.textContent = '';
+      for (const user of users) {
+        const button = document.createElement('button');
+        button.className = 'user-row' + (user.id === selectedUserId ? ' active' : '');
+        button.textContent = user.username + ' - ' + user.status + ' - ' + (user.roles || []).join(', ');
+        button.addEventListener('click', () => selectUser(user));
+        userList.appendChild(button);
+      }
+    }
+
     function setSAMLEditor(provider) {
       selectedSAMLProviderId = provider.id || '';
       samlEditor.value = JSON.stringify(provider, null, 2);
@@ -622,6 +693,14 @@ func AdminHTML() string {
       if (showResult) show(result);
     }
 
+    async function loadUsers(showResult = true) {
+      const result = await api('/api/v1/users');
+      const data = unwrap(result);
+      users = data.users || [];
+      renderUsers();
+      if (showResult) show(result);
+    }
+
     async function loadSAMLProviders(showResult = true) {
       const result = await api('/api/v1/auth/saml/providers');
       const data = unwrap(result);
@@ -638,6 +717,7 @@ func AdminHTML() string {
     document.querySelector('#dash-proxy-diagnostics').addEventListener('click', async () => { switchSection('diagnostics'); try { await loadProxyDiagnostics(); } catch (err) { show(err); } });
     document.querySelector('#dash-missed-rewrites').addEventListener('click', async () => { switchSection('diagnostics'); try { await loadMissedRewrites(); } catch (err) { show(err); } });
     document.querySelector('#dash-api-keys').addEventListener('click', async () => { switchSection('api-keys'); try { await loadAPIKeys(); } catch (err) { show(err); } });
+    document.querySelector('#dash-users').addEventListener('click', async () => { switchSection('users'); try { await loadUsers(); } catch (err) { show(err); } });
 
     document.querySelector('#load').addEventListener('click', async () => { try { await loadResources(); } catch (err) { show(err); } });
     document.querySelector('#new-resource').addEventListener('click', () => { setEditor(template); show('New resource template loaded.'); });
@@ -769,6 +849,67 @@ func AdminHTML() string {
       if (!confirm('Delete API key "' + id + '"?')) return;
       try { show(await api('/api/v1/api-keys/' + encodeURIComponent(id), { method: 'DELETE' })); await loadAPIKeys(); } catch (err) { show(err); }
     });
+
+    document.querySelector('#load-users').addEventListener('click', async () => { try { await loadUsers(); } catch (err) { show(err); } });
+    document.querySelector('#new-user').addEventListener('click', () => {
+      selectedUserId = '';
+      userEditor.value = JSON.stringify(userTemplate, null, 2);
+      document.querySelector('#user-password').value = '';
+      renderUsers();
+      show('New user template loaded.');
+    });
+    document.querySelector('#create-user').addEventListener('click', async () => {
+      const user = parseJSONEditor(userEditor, 'user');
+      if (!user) return;
+      const password = document.querySelector('#user-password').value;
+      if (password) user.password = password;
+      try {
+        const result = await api('/api/v1/users', { method: 'POST', body: JSON.stringify(user) });
+        const created = unwrap(result);
+        selectedUserId = created.id || '';
+        document.querySelector('#user-password').value = '';
+        show(result);
+        await loadUsers(false);
+      } catch (err) { show(err); }
+    });
+    document.querySelector('#update-user').addEventListener('click', async () => {
+      const user = parseJSONEditor(userEditor, 'user');
+      const id = selectedUserId || (user || {}).id;
+      if (!user || !id) { show({ error: 'user id is required' }); return; }
+      try {
+        const result = await api('/api/v1/users/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            email: user.email || '',
+            display_name: user.display_name || '',
+            roles: user.roles || [],
+            status: user.status || 'active'
+          })
+        });
+        show(result);
+        await loadUsers(false);
+      } catch (err) { show(err); }
+    });
+    document.querySelector('#set-user-password').addEventListener('click', async () => {
+      const user = parseJSONEditor(userEditor, 'user');
+      const id = selectedUserId || (user || {}).id;
+      const password = document.querySelector('#user-password').value;
+      if (!id) { show({ error: 'user id is required' }); return; }
+      if (!password) { show({ error: 'new password is required' }); return; }
+      try { show(await api('/api/v1/users/' + encodeURIComponent(id) + '/set-password', { method: 'POST', body: JSON.stringify({ password }) })); document.querySelector('#user-password').value = ''; } catch (err) { show(err); }
+    });
+    async function userAction(action, confirmText) {
+      const user = parseJSONEditor(userEditor, 'user');
+      const id = selectedUserId || (user || {}).id;
+      if (!id) { show({ error: 'user id is required' }); return; }
+      if (confirmText && !confirm(confirmText.replace('{id}', id))) return;
+      try { show(await api('/api/v1/users/' + encodeURIComponent(id) + '/' + action, { method: 'POST' })); await loadUsers(false); } catch (err) { show(err); }
+    }
+    document.querySelector('#disable-user').addEventListener('click', () => userAction('disable', 'Disable user "{id}"?'));
+    document.querySelector('#enable-user').addEventListener('click', () => userAction('enable'));
+    document.querySelector('#lock-user').addEventListener('click', () => userAction('lock', 'Lock user "{id}"?'));
+    document.querySelector('#unlock-user').addEventListener('click', () => userAction('unlock'));
+    document.querySelector('#revoke-user-sessions').addEventListener('click', () => userAction('revoke-sessions', 'Revoke all sessions for user "{id}"?'));
 
     document.querySelector('#settings-health').addEventListener('click', async () => { try { show(await api('/api/v1/health', { auth: false })); } catch (err) { show(err); } });
     document.querySelector('#settings-openapi').addEventListener('click', () => window.open('/openapi.yaml', '_blank', 'noopener'));

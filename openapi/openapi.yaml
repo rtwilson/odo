@@ -352,6 +352,179 @@ paths:
                 $ref: "#/components/schemas/APIKeyRevokeResponse"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/users:
+    get:
+      summary: List local users
+      operationId: listUsers
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User list without password hashes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create local user
+      operationId: createUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreateRequest"
+      responses:
+        "201":
+          description: Created user without password hash
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/v1/users/{id}:
+    get:
+      summary: Get local user
+      operationId: getUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: User without password hash
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          $ref: "#/components/responses/Error"
+    patch:
+      summary: Update local user metadata, roles, or status
+      operationId: patchUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserPatchRequest"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/users/{id}/set-password:
+    post:
+      summary: Set a local user's password and revoke existing sessions
+      operationId: setUserPassword
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserPasswordRequest"
+      responses:
+        "200":
+          description: Password set
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/users/{id}/disable:
+    post:
+      summary: Disable a local user and revoke sessions
+      operationId: disableUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Disabled user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /api/v1/users/{id}/enable:
+    post:
+      summary: Enable a local user
+      operationId: enableUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Enabled user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /api/v1/users/{id}/lock:
+    post:
+      summary: Lock a local user and revoke sessions
+      operationId: lockUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Locked user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /api/v1/users/{id}/unlock:
+    post:
+      summary: Unlock a local user
+      operationId: unlockUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Unlocked user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /api/v1/users/{id}/revoke-sessions:
+    post:
+      summary: Revoke all browser sessions for a local user
+      operationId: revokeUserSessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Sessions revoked
+  /api/v1/auth/saml/providers:
   /api/v1/auth/saml/providers:
     get:
       summary: List SAML providers
@@ -576,7 +749,7 @@ paths:
   /odo/https/{host}/{path}:
     get:
       summary: Minimal proxy fetch, preferred path form
-      description: Preferred local/MVP proxy URL form. Builds a target URL from /odo/https/{host}/{path}, validates and allowlist-checks it, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, injects a conservative same-origin fetch/XHR shim into proxied HTML when enabled, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Upstream cookies are not passed directly to the browser. Full JavaScript rewriting is not implemented yet.
+      description: Preferred local/MVP proxy URL form. Builds a target URL from /odo/https/{host}/{path}, validates and allowlist-checks it, performs a safe outbound GET, streams the upstream response, rewrites allowlisted HTML/CSS links/assets/GET form actions back through /odo, injects a conservative same-origin fetch/XHR shim into proxied HTML when enabled, rewrites safe upstream redirects to local /odo redirects, and uses a server-side per-session cookie jar. Once local users exist this route requires a browser login session by default unless development mode or an explicit anonymous URL rule allows access. Upstream cookies are not passed directly to the browser. Full JavaScript rewriting is not implemented yet.
       operationId: proxyFetch
       security: []
       parameters:
@@ -607,7 +780,7 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       summary: Minimal proxy POST, preferred path form
-      description: Forwards a bounded POST body to a safe, allowlisted, proxyable HTTPS target using the server-side session cookie jar. Request bodies are size-limited and are not logged. HTML/CSS responses and safe redirects are rewritten back through Odo.
+      description: Forwards a bounded POST body to a safe, allowlisted, proxyable HTTPS target using the server-side session cookie jar. Once local users exist this route requires a browser login session by default unless development mode or an explicit anonymous URL rule allows access. Request bodies are size-limited and are not logged. HTML/CSS responses and safe redirects are rewritten back through Odo.
       operationId: proxyPost
       security: []
       parameters:
@@ -722,6 +895,13 @@ components:
       schema:
         type: string
       example: key_abc123
+    UserID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: user_abc123
   schemas:
     HealthResponse:
       type: object
@@ -1078,6 +1258,97 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/APIKeySummary"
+    User:
+      type: object
+      description: Local user account metadata. Password hashes are never returned.
+      required: [id, username, status, roles, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled, locked]
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff, user, test]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: string
+          format: date-time
+        locked_at:
+          type: string
+          format: date-time
+        disabled_at:
+          type: string
+          format: date-time
+    UserCreateRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        password:
+          type: string
+          format: password
+          minLength: 8
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff, user, test]
+        status:
+          type: string
+          enum: [active, disabled, locked]
+    UserPatchRequest:
+      type: object
+      properties:
+        email:
+          type: string
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff, user, test]
+        status:
+          type: string
+          enum: [active, disabled, locked]
+    UserPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          format: password
+          minLength: 8
+    UserListResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
     SAMLProvider:
       type: object
       required: [id, name, entity_id, acs_url]

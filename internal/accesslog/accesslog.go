@@ -26,6 +26,8 @@ const (
 type Metadata struct {
 	RequestID      string
 	Route          string
+	UserID         string
+	SessionID      string
 	TargetHost     string
 	ResourceID     string
 	RuleHost       string
@@ -33,6 +35,7 @@ type Metadata struct {
 	Decision       string
 	DenialReason   string
 	UpstreamStatus int
+	RateLimited    bool
 	Recovered      bool
 }
 
@@ -52,6 +55,8 @@ type Entry struct {
 	Status         int    `json:"status"`
 	Bytes          int    `json:"bytes"`
 	DurationMS     int64  `json:"duration_ms"`
+	UserID         string `json:"user_id,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
 	UserAgent      string `json:"user_agent,omitempty"`
 	Referer        string `json:"referer,omitempty"`
 	TargetHost     string `json:"target_host,omitempty"`
@@ -61,6 +66,7 @@ type Entry struct {
 	Decision       string `json:"decision,omitempty"`
 	DenialReason   string `json:"denial_reason,omitempty"`
 	UpstreamStatus int    `json:"upstream_status,omitempty"`
+	RateLimited    bool   `json:"rate_limited,omitempty"`
 	Recovered      bool   `json:"recovered_from_referer,omitempty"`
 }
 
@@ -159,6 +165,8 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		Status:         status,
 		Bytes:          bytes,
 		DurationMS:     duration.Milliseconds(),
+		UserID:         metadata.UserID,
+		SessionID:      metadata.SessionID,
 		TargetHost:     metadata.TargetHost,
 		ResourceID:     metadata.ResourceID,
 		RuleHost:       metadata.RuleHost,
@@ -166,6 +174,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		Decision:       metadata.Decision,
 		DenialReason:   metadata.DenialReason,
 		UpstreamStatus: metadata.UpstreamStatus,
+		RateLimited:    metadata.RateLimited,
 		Recovered:      metadata.Recovered,
 	}
 	if l.format == FormatCombined || l.format == FormatJSON {
@@ -229,11 +238,16 @@ func privacyLine(e Entry) string {
 		"duration_ms=" + strconv.FormatInt(e.DurationMS, 10),
 	}
 	parts = appendIf(parts, "target_host", e.TargetHost)
+	parts = appendIf(parts, "user_id", e.UserID)
+	parts = appendIf(parts, "session_id", e.SessionID)
 	parts = appendIf(parts, "resource_id", e.ResourceID)
 	parts = appendIf(parts, "rule_host", e.RuleHost)
 	parts = appendIf(parts, "rule_match", e.RuleMatch)
 	parts = appendIf(parts, "decision", e.Decision)
 	parts = appendIf(parts, "denial_reason", e.DenialReason)
+	if e.RateLimited {
+		parts = append(parts, "rate_limited=true")
+	}
 	if e.Recovered {
 		parts = append(parts, "recovered_from_referer=true")
 	}

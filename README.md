@@ -60,11 +60,13 @@ http://127.0.0.1:8080/openapi.yaml
 
 ## Admin UI
 
-Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Proxy Test, Diagnostics / Logs, API Keys, Auth / SAML, and Settings / System.
+Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Proxy Test, Diagnostics / Logs, API Keys, Users, Auth / SAML, and Settings / System.
 
 Enter an `APP_ADMIN_API_KEY` bootstrap token or stored API key in the global Admin API Key field for protected actions. The key is kept only in the page runtime and is not stored in browser storage. Resources can still be created, edited, and deleted using a raw JSON editor.
 
 API key management is available in the API Keys section. Newly created or rotated tokens are shown once with a copy warning and are not persisted by the UI. The UI uses the same documented `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
+
+User management is available in the Users section. Admins can create local users, update roles/status, set passwords, lock/disable users, and revoke sessions through the same `/api/v1/users` endpoints used by scripts. Password hashes are never displayed.
 
 The Resources section includes a Resource Config Builder for authoring structured JSON resource configs. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, and export a `resource-<id>.json` file.
 
@@ -75,6 +77,10 @@ Environment variables:
 - `APP_CONFIG_DIR`, default `./config`
 - `APP_PUBLIC_URL`, optional public base URL used for generated SAML SP metadata defaults
 - `APP_ADMIN_API_KEY`, optional bootstrap/dev fallback for creating and managing stored API keys
+- `APP_BOOTSTRAP_ADMIN_USERNAME`, optional username used to create the first local admin user when no users exist
+- `APP_BOOTSTRAP_ADMIN_PASSWORD`, optional password used to create the first local admin user when no users exist
+- `APP_BOOTSTRAP_ADMIN_EMAIL`, optional email for the first local admin user
+- `APP_PROXY_REQUIRE_LOGIN`, default is enabled once local users exist; set `false` for development-only anonymous proxy access
 - `APP_KEY_HASH_SECRET`, recommended secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
@@ -210,6 +216,44 @@ curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/revoke \
 
 Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `auth:read`, and `auth:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
 
+## Local Users and Browser Sessions
+
+Odo now has local user accounts for browser access to proxied resources. To create the first admin user on an empty database:
+
+```sh
+APP_BOOTSTRAP_ADMIN_USERNAME=admin \
+APP_BOOTSTRAP_ADMIN_PASSWORD='change-me-long-random-password' \
+APP_ADMIN_API_KEY=devsecret \
+go run ./cmd/odo
+```
+
+Open `http://127.0.0.1:8080/login` to sign in. Signed-in users can open `http://127.0.0.1:8080/resources` for a simple patron resource portal. Browser sessions use an HttpOnly `odo_session` cookie and proxy browsing also keeps upstream/vendor cookies in a separate server-side jar.
+
+Once local users exist, `/odo` proxy access requires login by default. For local development only, disable that gate with:
+
+```sh
+APP_PROXY_REQUIRE_LOGIN=false go run ./cmd/odo
+```
+
+Create a user through the management API:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/users \
+  -H 'Authorization: Bearer devsecret' \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"patron1","password":"change-me-too","roles":["user"],"status":"active"}' | jq
+```
+
+List users or revoke a user's sessions:
+
+```sh
+curl http://127.0.0.1:8080/api/v1/users \
+  -H 'Authorization: Bearer devsecret' | jq
+
+curl -X POST http://127.0.0.1:8080/api/v1/users/user_abc123/revoke-sessions \
+  -H 'Authorization: Bearer devsecret' | jq
+```
+
 ## Resource Config Builder
 
 Odo resources are JSON control-plane objects. The expanded resource config model supports entry URLs, per-resource HTTP method allowlists, cookie policy metadata, request header rules, anonymous URL rules, resource-specific content rewrite rules, compatibility hints, and domain behavior rules.
@@ -330,6 +374,8 @@ Unknown local paths now return `404` instead of redirecting to `/admin` unless r
 `/odo` performs a minimal safe outbound `GET`/`HEAD`/`POST` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
 
 Odo keeps a server-side per-session cookie jar for proxied browsing. The browser receives only an `odo_proxy_sid` cookie; upstream/vendor cookies are stored server-side and are not exposed directly to the browser. This improves continuity across proxied requests and POST form submissions, but it is not user authentication. In HA deployments, the in-memory session store would need Redis or another shared session store.
+
+Local browser login is separate from vendor cookie handling. Once local users exist, `/odo` requires a valid `odo_session` by default so patrons use Odo as the access path instead of reaching vendors directly. Narrow anonymous URL rules can still allow explicitly configured public proxy URLs.
 
 POST form submissions are forwarded upstream when the target is safe and proxyable. Request bodies are size-limited by `APP_PROXY_MAX_BODY_BYTES`, and request bodies/form values are not logged. Full JavaScript rewriting, WebSockets, and full SPA compatibility are future work. Only a small set of safe request and response headers are copied. Redirects are validated before returning a local proxied redirect, which defaults to `/odo/https/{host}/{path}`. Content-Security-Policy is not copied yet, and `integrity` attributes are removed when URLs are rewritten, because upstream CSP and SRI often reject proxied/transformed assets before fuller policy rewriting exists.
 

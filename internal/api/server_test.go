@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"example.org/odo/internal/accesslog"
+	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
@@ -103,7 +104,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -113,6 +114,173 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 	}
 	if strings.Contains(body, `data-odo-js-shim="true"`) {
 		t.Fatalf("admin UI should not include proxy JS shim")
+	}
+}
+
+func TestUserAPICreatesUserWithHashedPasswordAndNoHashInJSON(t *testing.T) {
+	server := newTestServer(t, "secret")
+	body := `{"username":"alice","email":"alice@example.edu","display_name":"Alice","password":"correct horse battery","roles":["user"],"status":"active"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected user create 201, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "password_hash") || strings.Contains(rec.Body.String(), "correct horse") {
+		t.Fatalf("user JSON should not expose password material: %s", rec.Body.String())
+	}
+	user, found, err := server.store.GetUserByUsername("alice")
+	if err != nil || !found {
+		t.Fatalf("expected stored user, found=%v err=%v", found, err)
+	}
+	if user.PasswordHash == "" || user.PasswordHash == "correct horse battery" || !local.CheckPassword(user.PasswordHash, "correct horse battery") {
+		t.Fatalf("expected bcrypt password hash, got %q", user.PasswordHash)
+	}
+
+	dupReq := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(body))
+	dupReq.Header.Set("Content-Type", "application/json")
+	dupReq.Header.Set("Authorization", "Bearer secret")
+	dupRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(dupRec, dupReq)
+	if dupRec.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate username 409, got %d with body %s", dupRec.Code, dupRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	listReq.Header.Set("Authorization", "Bearer secret")
+	listRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected user list 200, got %d with body %s", listRec.Code, listRec.Body.String())
+	}
+	if strings.Contains(listRec.Body.String(), "password_hash") || strings.Contains(listRec.Body.String(), user.PasswordHash) {
+		t.Fatalf("user list should not expose password hashes: %s", listRec.Body.String())
+	}
+}
+
+func TestUserAPIRequiresAdminAPIKey(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing API key 401, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLoginResourcesAndProxyRequireLocalSession(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("proxied ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:        "portal",
+		Name:      "Portal",
+		Title:     "Portal Resource",
+		Status:    "active",
+		EntryURLs: []string{"https://www.jstor.org/"},
+		Domains:   []resources.DomainRule{{Host: "www.jstor.org", Match: "exact", Action: "proxy"}},
+	}); err != nil {
+		t.Fatalf("upsert portal resource: %v", err)
+	}
+
+	anon := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/", nil)
+	anon.Header.Set("Accept", "text/html")
+	anonRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(anonRec, anon)
+	if anonRec.Code != http.StatusFound || !strings.HasPrefix(anonRec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("expected proxy document to redirect to login, got %d location %q", anonRec.Code, anonRec.Header().Get("Location"))
+	}
+
+	cookie := loginTestUser(t, server, "alice", "correct horse battery", "/resources")
+	resourcesReq := httptest.NewRequest(http.MethodGet, "/resources", nil)
+	resourcesReq.AddCookie(cookie)
+	resourcesRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(resourcesRec, resourcesReq)
+	if resourcesRec.Code != http.StatusOK || !strings.Contains(resourcesRec.Body.String(), "Portal Resource") || !strings.Contains(resourcesRec.Body.String(), "/odo/https/www.jstor.org/") {
+		t.Fatalf("expected signed-in resource portal, got %d body %s", resourcesRec.Code, resourcesRec.Body.String())
+	}
+
+	proxyReq := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/", nil)
+	proxyReq.AddCookie(cookie)
+	proxyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusOK || !strings.Contains(proxyRec.Body.String(), "proxied ok") {
+		t.Fatalf("expected signed-in proxy fetch 200, got %d body %s", proxyRec.Code, proxyRec.Body.String())
+	}
+	if got := proxyRec.Header().Values("Set-Cookie"); strings.Contains(strings.Join(got, "\n"), "vendor") {
+		t.Fatalf("proxy response should not expose upstream cookies: %v", got)
+	}
+}
+
+func TestDisabledUserCannotReuseSession(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("proxied ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+	user := createLocalTestUser(t, server, "bob", "correct horse battery")
+	cookie := loginTestUser(t, server, "bob", "correct horse battery", "/resources")
+
+	if _, found, err := server.store.SetUserStatus(user.ID, "disabled"); err != nil || !found {
+		t.Fatalf("disable user found=%v err=%v", found, err)
+	}
+	proxyReq := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/", nil)
+	proxyReq.Header.Set("Accept", "text/html")
+	proxyReq.AddCookie(cookie)
+	proxyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusFound || !strings.HasPrefix(proxyRec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("expected disabled user's session to be rejected, got %d location %q", proxyRec.Code, proxyRec.Header().Get("Location"))
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("username=bob&password=correct+horse+battery"))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected disabled user login to fail, got %d body %s", loginRec.Code, loginRec.Body.String())
+	}
+}
+
+func TestAccessLogIncludesSafeUserSessionMetadata(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "")
+	var buf bytes.Buffer
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, &buf)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("proxied ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
+	user := createLocalTestUser(t, server, "carol", "correct horse battery")
+	cookie := loginTestUser(t, server, "carol", "correct horse battery", "/resources")
+
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example?token=secret", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proxy fetch 200, got %d body %s", rec.Code, rec.Body.String())
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "user_id="+user.ID) || !strings.Contains(logs, "session_id=sess_") || !strings.Contains(logs, "resource_id=jstor") || !strings.Contains(logs, "target_host=www.jstor.org") {
+		t.Fatalf("expected safe user/session/resource metadata in access log, got:\n%s", logs)
+	}
+	if strings.Contains(logs, "token=secret") || strings.Contains(logs, "stable/example?") {
+		t.Fatalf("privacy access log should not include target query/full URL, got:\n%s", logs)
 	}
 }
 
@@ -1827,6 +1995,56 @@ func newTestServerWithConfigAccessLogResolverAndClient(t *testing.T, adminKey, c
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewServerWithAccessLoggerResolverAndHTTPClient(store, configDir, adminKey, logger, accessLogger, lookup, client)
+}
+
+func createLocalTestUser(t *testing.T, server *Server, username, password string) db.User {
+	t.Helper()
+	hash, err := local.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	id, err := randomID("user_", 12)
+	if err != nil {
+		t.Fatalf("random user id: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	user := db.User{
+		ID:           id,
+		Username:     username,
+		PasswordHash: hash,
+		Status:       "active",
+		Roles:        []string{"user"},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := server.store.CreateUser(user); err != nil {
+		t.Fatalf("create local test user: %v", err)
+	}
+	return user
+}
+
+func loginTestUser(t *testing.T, server *Server, username, password, next string) *http.Cookie {
+	t.Helper()
+	form := url.Values{}
+	form.Set("username", username)
+	form.Set("password", password)
+	req := httptest.NewRequest(http.MethodPost, "/login?next="+url.QueryEscape(next), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected login redirect, got %d body %s", rec.Code, rec.Body.String())
+	}
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == browserSessionCookieName {
+			if !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+				t.Fatalf("login session cookie missing security attributes: %#v", cookie)
+			}
+			return cookie
+		}
+	}
+	t.Fatalf("login did not set %s cookie; headers=%v", browserSessionCookieName, rec.Header())
+	return nil
 }
 
 func publicTestResolver(ctx context.Context, host string) ([]net.IPAddr, error) {
