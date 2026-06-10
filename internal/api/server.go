@@ -98,6 +98,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
 	mux.HandleFunc("POST /api/v1/resources", s.requireScopes(s.upsertResource, "resources:write"))
+	mux.HandleFunc("POST /api/v1/resources/validate", s.requireScopes(s.validateResource, "resources:write"))
 	mux.HandleFunc("GET /api/v1/resources/{id}", s.getResource)
 	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireScopes(s.putResource, "resources:write"))
 	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireScopes(s.deleteResource, "resources:write"))
@@ -298,6 +299,21 @@ func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resource)
+}
+
+func (s *Server) validateResource(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var resource resources.Resource
+	if err := json.NewDecoder(r.Body).Decode(&resource); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	result := resources.ValidateDetailed(resource)
+	status := http.StatusOK
+	if !result.Valid {
+		status = http.StatusBadRequest
+	}
+	writeJSON(w, status, result)
 }
 
 func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {

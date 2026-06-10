@@ -18,7 +18,7 @@ func TestFetchHandlerRejectsUnsupportedMethod(t *testing.T) {
 		return nil, resources.TestResult{}
 	})
 
-	req := httptest.NewRequest(http.MethodPut, "/odo?url=https://www.jstor.org/stable/example", nil)
+	req := httptest.NewRequest(http.MethodTrace, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

@@ -1,0 +1,47 @@
+{
+  "id": "jstor-aluka",
+  "title": "JSTOR Aluka",
+  "status": "active",
+  "description": "JSTOR Aluka resource profile",
+  "entry_urls": [
+    "https://www.aluka.org/"
+  ],
+  "http_methods": [
+    "GET",
+    "HEAD",
+    "POST"
+  ],
+  "cookie_policy": {
+    "enabled": true,
+    "jar_scope": "resource",
+    "allowed_cookie_domains": [
+      "aluka.org"
+    ]
+  },
+  "request_header_rules": [
+    {
+      "name": "X-Requested-With",
+      "action": "remove",
+      "phase": "request"
+    }
+  ],
+  "domains": [
+    {
+      "host": "www.aluka.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "aluka.org",
+      "behavior": "proxy",
+      "include_subdomains": true,
+      "role": "content"
+    }
+  ],
+  "compatibility": {
+    "referer_recovery": true,
+    "js_shim": true,
+    "app_data_recovery": true
+  }
+}

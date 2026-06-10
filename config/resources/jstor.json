@@ -1,36 +1,109 @@
 {
   "id": "jstor",
-  "name": "JSTOR",
+  "title": "JSTOR",
   "status": "active",
-  "description": "Test resource for MVP development",
+  "description": "JSTOR resource profile with explicit proxy behavior",
+  "entry_urls": [
+    "https://www.jstor.org/"
+  ],
+  "http_methods": [
+    "GET",
+    "HEAD",
+    "POST",
+    "PUT",
+    "PATCH",
+    "OPTIONS",
+    "DELETE"
+  ],
+  "cookie_policy": {
+    "enabled": true,
+    "jar_scope": "resource",
+    "allowed_cookie_domains": [
+      "jstor.org"
+    ]
+  },
+  "request_header_rules": [
+    {
+      "name": "X-Requested-With",
+      "action": "remove",
+      "phase": "request"
+    }
+  ],
   "domains": [
     {
       "host": "www.jstor.org",
-      "match": "exact",
-      "role": "content",
-      "action": "proxy"
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
     },
     {
       "host": "jstor.org",
-      "match": "subdomain",
+      "behavior": "proxy",
+      "include_subdomains": true,
+      "role": "content"
+    },
+    {
+      "host": "dfr.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "labs.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "links.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "redirect"
+    },
+    {
+      "host": "mobile.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "about.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "plants.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "uk.jstor.org",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content"
+    },
+    {
+      "host": "jstore.org",
+      "behavior": "proxy",
+      "include_subdomains": true,
       "role": "content",
-      "action": "proxy"
+      "notes": "Alias domain from legacy proxy stanza"
     },
     {
       "host": "analytics.example.com",
-      "match": "exact",
-      "role": "blocked",
-      "action": "block",
-      "reason": "tracking"
-    },
-    {
-      "host": "example.org",
-      "match": "exact",
-      "role": "external",
-      "action": "allow",
-      "reason": "external documentation"
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Example explicit tracking block"
     }
   ],
+  "compatibility": {
+    "referer_recovery": true,
+    "js_shim": true,
+    "app_data_recovery": true
+  },
   "sample_urls": [
     "https://www.jstor.org/stable/example"
   ]

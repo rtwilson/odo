@@ -66,6 +66,8 @@ Enter an `APP_ADMIN_API_KEY` bootstrap token or stored API key in the global Adm
 
 API key management is available in the API Keys section. Newly created or rotated tokens are shown once with a copy warning and are not persisted by the UI. The UI uses the same documented `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
 
+The Resources section includes a Resource Config Builder for authoring structured JSON resource configs. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, and export a `resource-<id>.json` file.
+
 Environment variables:
 
 - `APP_ADDR`, default `:8080`
@@ -207,6 +209,22 @@ curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/revoke \
 ```
 
 Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `auth:read`, and `auth:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
+
+## Resource Config Builder
+
+Odo resources are JSON control-plane objects. The expanded resource config model supports entry URLs, per-resource HTTP method allowlists, cookie policy metadata, request header rules, compatibility hints, and domain behavior rules.
+
+Domain rules can use behaviors:
+
+- `proxy`: safe matching requests may be proxied.
+- `cookie_domain`: host/domain may be used for cookie scope metadata.
+- `redirect_only`: redirects may be allowed without proxying the host directly.
+- `block`: explicit block; this wins over broader allow/proxy rules.
+- `external_allow`: links may leave the proxy without being treated as failures.
+
+Request header rules can model vendor-specific behavior such as removing `X-Requested-With` from outbound proxy requests. The included JSTOR sample at `config/resources/jstor.json` shows a more complex resource profile with method expansion, cookie policy, domain behaviors, and a header removal rule. `config/resources/jstor-aluka.json` provides a second related-resource example.
+
+The builder is not a full EZproxy parser and does not guarantee exact EZproxy directive compatibility.
 
 ## SAML SP Scaffolding
 

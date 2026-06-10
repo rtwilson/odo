@@ -39,6 +39,48 @@ func TestValidateDefaultsAndNormalizesResource(t *testing.T) {
 	}
 }
 
+func TestValidateExpandedJSTORLikeConfig(t *testing.T) {
+	resource, err := Validate(Resource{
+		ID:                 "jstor",
+		Title:              "JSTOR",
+		EntryURLs:          []string{"https://www.jstor.org/"},
+		HTTPMethods:        []string{"GET", "HEAD", "POST", "PUT", "PATCH", "OPTIONS", "DELETE"},
+		CookiePolicy:       CookiePolicy{Enabled: true, AllowedCookieDomains: []string{"JSTOR.ORG"}},
+		RequestHeaderRules: []RequestHeaderRule{{Name: "X-Requested-With", Action: "remove", Phase: "request"}},
+		Domains: []DomainRule{
+			{Host: "www.jstor.org", Behavior: "proxy", Role: "content"},
+			{Host: "jstor.org", Behavior: "proxy", IncludeSubdomains: true, Role: "content"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if resource.Name != "JSTOR" || resource.Title != "JSTOR" {
+		t.Fatalf("expected title/name normalization, got %#v", resource)
+	}
+	if resource.Domains[1].Match != "subdomain" || resource.Domains[1].Action != "proxy" {
+		t.Fatalf("expected behavior/subdomain normalization, got %#v", resource.Domains[1])
+	}
+	if resource.CookiePolicy.JarScope != "resource" || resource.CookiePolicy.AllowedCookieDomains[0] != "jstor.org" {
+		t.Fatalf("expected cookie policy normalization, got %#v", resource.CookiePolicy)
+	}
+}
+
+func TestValidateDetailedDuplicateDomainWarning(t *testing.T) {
+	result := ValidateDetailed(Resource{
+		ID:        "dup",
+		Title:     "Duplicate",
+		EntryURLs: []string{"https://example.org/"},
+		Domains: []DomainRule{
+			{Host: "example.org", Behavior: "proxy"},
+			{Host: "example.org", Behavior: "proxy"},
+		},
+	})
+	if !result.Valid || len(result.Warnings) == 0 {
+		t.Fatalf("expected valid resource with duplicate warning, got %#v", result)
+	}
+}
+
 func TestValidateDefaultsActionBasedOnRole(t *testing.T) {
 	resource, err := Validate(Resource{
 		ID:   "roles",
@@ -115,6 +157,35 @@ func TestValidateRejectsInvalidResources(t *testing.T) {
 				ID:      "jstor",
 				Name:    "JSTOR",
 				Domains: []DomainRule{{Host: "www.jstor.org", Action: "mirror"}},
+			},
+		},
+		{
+			name: "unknown behavior",
+			resource: Resource{
+				ID:        "jstor",
+				Title:     "JSTOR",
+				EntryURLs: []string{"https://www.jstor.org/"},
+				Domains:   []DomainRule{{Host: "www.jstor.org", Behavior: "mirror"}},
+			},
+		},
+		{
+			name: "bad method",
+			resource: Resource{
+				ID:          "jstor",
+				Title:       "JSTOR",
+				EntryURLs:   []string{"https://www.jstor.org/"},
+				HTTPMethods: []string{"GET", "TRACE"},
+				Domains:     []DomainRule{{Host: "www.jstor.org", Behavior: "proxy"}},
+			},
+		},
+		{
+			name: "bad header rule",
+			resource: Resource{
+				ID:                 "jstor",
+				Title:              "JSTOR",
+				EntryURLs:          []string{"https://www.jstor.org/"},
+				Domains:            []DomainRule{{Host: "www.jstor.org", Behavior: "proxy"}},
+				RequestHeaderRules: []RequestHeaderRule{{Action: "remove", Phase: "request"}},
 			},
 		},
 	}

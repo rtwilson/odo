@@ -97,6 +97,41 @@ func AdminHTML() string {
             <aside><div id="resource-list" class="list">No resources loaded.</div></aside>
             <div><textarea id="editor" spellcheck="false" aria-label="Resource JSON editor"></textarea></div>
           </div>
+          <h3>Resource Config Builder</h3>
+          <div class="toolbar">
+            <input id="builder-id" placeholder="Resource ID" aria-label="Resource ID">
+            <input id="builder-title" placeholder="Title" aria-label="Title">
+            <input id="builder-entry-url" placeholder="https://www.jstor.org/" aria-label="Entry URL">
+          </div>
+          <div class="toolbar">
+            <label><input type="checkbox" class="builder-method" value="GET" checked> GET</label>
+            <label><input type="checkbox" class="builder-method" value="HEAD" checked> HEAD</label>
+            <label><input type="checkbox" class="builder-method" value="POST" checked> POST</label>
+            <label><input type="checkbox" class="builder-method" value="PUT"> PUT</label>
+            <label><input type="checkbox" class="builder-method" value="PATCH"> PATCH</label>
+            <label><input type="checkbox" class="builder-method" value="OPTIONS"> OPTIONS</label>
+            <label><input type="checkbox" class="builder-method" value="DELETE"> DELETE</label>
+          </div>
+          <div class="toolbar">
+            <label><input id="builder-cookie-enabled" type="checkbox" checked> Cookie policy enabled</label>
+            <input id="builder-cookie-domains" placeholder="allowed cookie domains, comma-separated" aria-label="Allowed cookie domains">
+          </div>
+          <div id="builder-domains" class="list"></div>
+          <div class="toolbar"><button id="add-domain">Add Domain</button></div>
+          <div id="builder-headers" class="list"></div>
+          <div class="toolbar"><button id="add-header-rule">Add Header Rule</button></div>
+          <div class="toolbar">
+            <label><input id="builder-referer-recovery" type="checkbox" checked> referer recovery</label>
+            <label><input id="builder-js-shim" type="checkbox" checked> JS shim</label>
+            <label><input id="builder-app-data" type="checkbox" checked> app data recovery</label>
+          </div>
+          <div class="toolbar">
+            <button id="generate-json">Generate JSON</button>
+            <button id="validate-json">Validate JSON</button>
+            <button id="save-builder-resource">Save as Resource</button>
+            <button id="export-json">Export JSON</button>
+            <button id="load-existing-builder">Load Existing Resource into Builder</button>
+          </div>
         </section>
 
         <section id="section-config" class="section">
@@ -180,6 +215,8 @@ func AdminHTML() string {
     const resourceList = document.querySelector('#resource-list');
     const apiKeyTable = document.querySelector('#api-key-table');
     const samlProviderList = document.querySelector('#saml-provider-list');
+    const builderDomains = document.querySelector('#builder-domains');
+    const builderHeaders = document.querySelector('#builder-headers');
     let resources = [];
     let apiKeys = [];
     let samlProviders = [];
@@ -224,6 +261,38 @@ func AdminHTML() string {
     };
 
     const show = value => output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+
+    function addDomainRow(value = {}) {
+      const row = document.createElement('div');
+      row.className = 'toolbar';
+      row.innerHTML = '<input class="domain-host" placeholder="host">' +
+        '<select class="domain-behavior"><option>proxy</option><option>cookie_domain</option><option>redirect_only</option><option>block</option><option>external_allow</option></select>' +
+        '<label><input type="checkbox" class="domain-subdomains"> include subdomains</label>' +
+        '<select class="domain-role"><option>content</option><option>asset</option><option>api</option><option>auth</option><option>redirect</option><option>cookie</option><option>unknown</option></select>' +
+        '<input class="domain-notes" placeholder="notes">' +
+        '<button type="button" class="danger">Remove row</button>';
+      row.querySelector('.domain-host').value = value.host || '';
+      row.querySelector('.domain-behavior').value = value.behavior || 'proxy';
+      row.querySelector('.domain-subdomains').checked = !!value.include_subdomains || value.match === 'subdomain';
+      row.querySelector('.domain-role').value = value.role || 'content';
+      row.querySelector('.domain-notes').value = value.notes || '';
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      builderDomains.appendChild(row);
+    }
+
+    function addHeaderRuleRow(value = {}) {
+      const row = document.createElement('div');
+      row.className = 'toolbar';
+      row.innerHTML = '<input class="header-name" placeholder="Header name">' +
+        '<select class="header-action"><option>remove</option><option>preserve</option></select>' +
+        '<select class="header-phase"><option>request</option><option>response</option></select>' +
+        '<button type="button" class="danger">Remove row</button>';
+      row.querySelector('.header-name').value = value.name || '';
+      row.querySelector('.header-action').value = value.action || 'remove';
+      row.querySelector('.header-phase').value = value.phase || 'request';
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      builderHeaders.appendChild(row);
+    }
 
     function switchSection(name) {
       for (const section of document.querySelectorAll('.section')) section.classList.remove('active');
@@ -288,6 +357,62 @@ func AdminHTML() string {
       editor.value = JSON.stringify(value, null, 2);
       selectedResourceId = value.id || '';
       renderResources();
+    }
+
+    function buildResourceConfig() {
+      const methods = Array.from(document.querySelectorAll('.builder-method:checked')).map(input => input.value);
+      const domains = Array.from(builderDomains.querySelectorAll('.toolbar')).map(row => ({
+        host: row.querySelector('.domain-host').value.trim(),
+        behavior: row.querySelector('.domain-behavior').value,
+        include_subdomains: row.querySelector('.domain-subdomains').checked,
+        role: row.querySelector('.domain-role').value,
+        notes: row.querySelector('.domain-notes').value.trim()
+      })).filter(domain => domain.host);
+      const requestHeaderRules = Array.from(builderHeaders.querySelectorAll('.toolbar')).map(row => ({
+        name: row.querySelector('.header-name').value.trim(),
+        action: row.querySelector('.header-action').value,
+        phase: row.querySelector('.header-phase').value
+      })).filter(rule => rule.name);
+      const entryURL = document.querySelector('#builder-entry-url').value.trim();
+      const cookieDomains = document.querySelector('#builder-cookie-domains').value.split(',').map(value => value.trim()).filter(Boolean);
+      return {
+        id: document.querySelector('#builder-id').value.trim(),
+        title: document.querySelector('#builder-title').value.trim(),
+        status: 'active',
+        entry_urls: entryURL ? [entryURL] : [],
+        http_methods: methods,
+        cookie_policy: {
+          enabled: document.querySelector('#builder-cookie-enabled').checked,
+          jar_scope: 'resource',
+          allowed_cookie_domains: cookieDomains
+        },
+        request_header_rules: requestHeaderRules,
+        domains,
+        compatibility: {
+          referer_recovery: document.querySelector('#builder-referer-recovery').checked,
+          js_shim: document.querySelector('#builder-js-shim').checked,
+          app_data_recovery: document.querySelector('#builder-app-data').checked
+        }
+      };
+    }
+
+    function loadBuilder(resource) {
+      document.querySelector('#builder-id').value = resource.id || '';
+      document.querySelector('#builder-title').value = resource.title || resource.name || '';
+      document.querySelector('#builder-entry-url').value = (resource.entry_urls || resource.sample_urls || [''])[0] || '';
+      const methods = new Set(resource.http_methods || ['GET', 'HEAD', 'POST']);
+      for (const input of document.querySelectorAll('.builder-method')) input.checked = methods.has(input.value);
+      document.querySelector('#builder-cookie-enabled').checked = !!(resource.cookie_policy || {}).enabled;
+      document.querySelector('#builder-cookie-domains').value = ((resource.cookie_policy || {}).allowed_cookie_domains || []).join(', ');
+      builderDomains.textContent = '';
+      for (const domain of resource.domains || []) addDomainRow(domain);
+      builderHeaders.textContent = '';
+      for (const rule of resource.request_header_rules || []) addHeaderRuleRow(rule);
+      if (!builderDomains.children.length) addDomainRow();
+      const compatibility = resource.compatibility || {};
+      document.querySelector('#builder-referer-recovery').checked = compatibility.referer_recovery !== false;
+      document.querySelector('#builder-js-shim').checked = compatibility.js_shim !== false;
+      document.querySelector('#builder-app-data').checked = compatibility.app_data_recovery !== false;
     }
 
     function parseJSONEditor(textarea, label) {
@@ -479,6 +604,43 @@ func AdminHTML() string {
         await loadResources();
       } catch (err) { show(err); }
     });
+    document.querySelector('#add-domain').addEventListener('click', () => addDomainRow());
+    document.querySelector('#add-header-rule').addEventListener('click', () => addHeaderRuleRow());
+    document.querySelector('#generate-json').addEventListener('click', () => {
+      const resource = buildResourceConfig();
+      setEditor(resource);
+      show(resource);
+    });
+    document.querySelector('#validate-json').addEventListener('click', async () => {
+      const resource = parseJSONEditor(editor, 'resource') || buildResourceConfig();
+      try { show(await api('/api/v1/resources/validate', { method: 'POST', body: JSON.stringify(resource) })); } catch (err) { show(err); }
+    });
+    document.querySelector('#save-builder-resource').addEventListener('click', async () => {
+      const resource = buildResourceConfig();
+      setEditor(resource);
+      try {
+        const result = await api('/api/v1/resources', { method: 'POST', body: JSON.stringify(resource) });
+        show(result);
+        await loadResources();
+      } catch (err) { show(err); }
+    });
+    document.querySelector('#export-json').addEventListener('click', () => {
+      const resource = parseJSONEditor(editor, 'resource') || buildResourceConfig();
+      const json = JSON.stringify(resource, null, 2);
+      const blob = new Blob([json + '\n'], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'resource-' + (resource.id || 'new-resource') + '.json';
+      link.click();
+      URL.revokeObjectURL(link.href);
+      show(json);
+    });
+    document.querySelector('#load-existing-builder').addEventListener('click', () => {
+      const resource = parseJSONEditor(editor, 'resource');
+      if (!resource) return;
+      loadBuilder(resource);
+      show('Resource loaded into builder.');
+    });
 
     document.querySelector('#validate').addEventListener('click', async () => { try { show(await api('/api/v1/config/validate', { method: 'POST' })); } catch (err) { show(err); } });
     document.querySelector('#import').addEventListener('click', async () => { try { show(await api('/api/v1/config/import', { method: 'POST' })); } catch (err) { show(err); } });
@@ -576,6 +738,9 @@ func AdminHTML() string {
       try { show(await api('/api/v1/auth/saml/providers/' + encodeURIComponent(id), { method: 'DELETE' })); await loadSAMLProviders(false); } catch (err) { show(err); }
     });
     document.querySelector('#open-saml-metadata').addEventListener('click', () => window.open('/auth/saml/metadata', '_blank', 'noopener'));
+
+    addDomainRow();
+    addHeaderRuleRow({ name: 'X-Requested-With', action: 'remove', phase: 'request' });
   </script>
 </body>
 </html>`

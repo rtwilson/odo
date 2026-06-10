@@ -103,7 +103,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Add Domain", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -914,7 +914,7 @@ func TestProxyHEADWorks(t *testing.T) {
 	}
 }
 
-func TestProxyPUTReturns405(t *testing.T) {
+func TestProxyPUTReturns405WhenResourceDoesNotAllowMethod(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
 	req := httptest.NewRequest(http.MethodPut, "/odo?url=https://www.jstor.org/stable/example", nil)
 	rec := httptest.NewRecorder()
@@ -922,6 +922,44 @@ func TestProxyPUTReturns405(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyPUTAllowedByExpandedResourceAndHeaderRuleApplied(t *testing.T) {
+	var upstreamMethod string
+	var xRequestedWith string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamMethod = r.Method
+		xRequestedWith = r.Header.Get("X-Requested-With")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:          "jstor",
+		Title:       "JSTOR",
+		Status:      "active",
+		EntryURLs:   []string{"https://www.jstor.org/"},
+		HTTPMethods: []string{"GET", "HEAD", "POST", "PUT"},
+		RequestHeaderRules: []resources.RequestHeaderRule{
+			{Name: "X-Requested-With", Action: "remove", Phase: "request"},
+		},
+		Domains: []resources.DomainRule{{Host: "www.jstor.org", Behavior: "proxy", Role: "content"}},
+	}); err != nil {
+		t.Fatalf("upsert expanded resource: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/odo?url=https://www.jstor.org/stable/example", strings.NewReader("body"))
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected PUT to be allowed, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if upstreamMethod != http.MethodPut {
+		t.Fatalf("expected upstream PUT, got %q", upstreamMethod)
+	}
+	if xRequestedWith != "" {
+		t.Fatalf("expected X-Requested-With removed, got %q", xRequestedWith)
 	}
 }
 
@@ -1236,6 +1274,25 @@ func TestManagementEndpointRejectsInvalidAPIKey(t *testing.T) {
 	}
 }
 
+func TestValidateResourceEndpointReturnsNormalizedResource(t *testing.T) {
+	server := newTestServer(t, "secret")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/resources/validate", bytes.NewBufferString(`{
+  "id": "jstor",
+  "title": "JSTOR",
+  "entry_urls": ["https://www.jstor.org/"],
+  "domains": [{"host":"jstor.org","behavior":"proxy","include_subdomains":true,"role":"content"}]
+}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected validate resource 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"valid":true`) || !strings.Contains(rec.Body.String(), `"normalized"`) || !strings.Contains(rec.Body.String(), `"match":"subdomain"`) {
+		t.Fatalf("expected normalized validation response, got %s", rec.Body.String())
+	}
+}
+
 func TestCreateAPIKeyReturnsTokenOnceAndStoresHash(t *testing.T) {
 	server := newTestServer(t, "secret")
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/api-keys", bytes.NewBufferString(`{"name":"Local admin","scopes":["admin"]}`))
@@ -1527,6 +1584,18 @@ func TestSAMLPlaceholdersReturn501(t *testing.T) {
 	server.Routes().ServeHTTP(acsRec, httptest.NewRequest(http.MethodPost, "/auth/saml/acs", nil))
 	if acsRec.Code != http.StatusNotImplemented {
 		t.Fatalf("expected SAML ACS 501, got %d", acsRec.Code)
+	}
+}
+
+func TestSampleResourceConfigsParseAndValidate(t *testing.T) {
+	for _, path := range []string{"../../config/resources/jstor.json", "../../config/resources/jstor-aluka.json"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if _, err := resources.Decode(data); err != nil {
+			t.Fatalf("expected %s to parse and validate: %v", path, err)
+		}
 	}
 }
 

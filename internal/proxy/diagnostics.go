@@ -11,8 +11,13 @@ type Diagnostics struct {
 	Method                   string `json:"method,omitempty"`
 	TargetHost               string `json:"target_host,omitempty"`
 	ResourceID               string `json:"resource_id,omitempty"`
+	MatchedDomain            string `json:"matched_domain,omitempty"`
+	DomainBehavior           string `json:"domain_behavior,omitempty"`
+	DomainRole               string `json:"domain_role,omitempty"`
 	ProxyURLMode             string `json:"proxy_url_mode,omitempty"`
 	UpstreamStatus           int    `json:"upstream_status,omitempty"`
+	MethodAllowed            bool   `json:"method_allowed,omitempty"`
+	HeaderRulesApplied       int    `json:"header_rules_applied,omitempty"`
 	RequestBodyLimited       bool   `json:"request_body_limited,omitempty"`
 	ProxiedPostCount         int    `json:"proxied_post_count,omitempty"`
 	RedirectedAfterPost      bool   `json:"redirected_after_post,omitempty"`

@@ -66,7 +66,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 	}
 	check := options.Check
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
+		if !globallySupportedProxyMethod(r.Method) {
 			writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "")
 			return
 		}
@@ -90,6 +90,9 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 		diagnostics.ProxyURLMode = ProxyURLMode()
 		diagnostics.ResourceID = result.ResourceID
+		diagnostics.MatchedDomain = result.RuleHost
+		diagnostics.DomainBehavior = result.Behavior
+		diagnostics.DomainRole = result.Role
 		defer func() {
 			options.Diagnostics.Add(*diagnostics)
 		}()
@@ -102,6 +105,11 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 				"allowed": result.Allowed,
 				"reason":  result.Reason,
 			})
+			return
+		}
+		diagnostics.MethodAllowed = resources.MethodAllowed(result, r.Method)
+		if !diagnostics.MethodAllowed {
+			writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "")
 			return
 		}
 
@@ -117,8 +125,9 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		if contentLength >= 0 {
 			upstreamReq.ContentLength = contentLength
 		}
-		copySafeRequestHeaders(upstreamReq, r, target)
-		if r.Method == http.MethodPost {
+		copySafeRequestHeaders(upstreamReq, r, target, result.RequestHeaderRules)
+		diagnostics.HeaderRulesApplied = len(resources.RequestHeaderRemovals(result.RequestHeaderRules))
+		if methodMayCarryBody(r.Method) {
 			diagnostics.ProxiedPostCount = 1
 		}
 
@@ -225,6 +234,24 @@ func boolString(value bool) string {
 	return "false"
 }
 
+func globallySupportedProxyMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodOptions, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func methodMayCarryBody(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return true
+	default:
+		return false
+	}
+}
+
 func writeProxyError(w http.ResponseWriter, status int, errText, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -236,7 +263,7 @@ func writeProxyError(w http.ResponseWriter, status int, errText, reason string) 
 }
 
 func prepareUpstreamBody(w http.ResponseWriter, r *http.Request, maxBodyBytes int64, diagnostics *Diagnostics) (io.Reader, int64, bool) {
-	if r.Method != http.MethodPost {
+	if !methodMayCarryBody(r.Method) {
 		return nil, -1, true
 	}
 	if r.ContentLength > maxBodyBytes {
@@ -257,7 +284,7 @@ func prepareUpstreamBody(w http.ResponseWriter, r *http.Request, maxBodyBytes in
 	return bytes.NewReader(body), int64(len(body)), true
 }
 
-func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.URL) {
+func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.URL, rules []resources.RequestHeaderRule) {
 	for _, name := range []string{"Accept", "Accept-Language", "User-Agent"} {
 		if values := src.Header.Values(name); len(values) > 0 {
 			for _, value := range values {
@@ -265,7 +292,7 @@ func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.UR
 			}
 		}
 	}
-	if src.Method == http.MethodPost {
+	if methodMayCarryBody(src.Method) {
 		if contentType := src.Header.Get("Content-Type"); contentType != "" {
 			dst.Header.Set("Content-Type", contentType)
 		}
@@ -273,6 +300,9 @@ func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.UR
 			dst.Header.Set("Referer", target.String())
 			dst.Header.Set("Origin", target.Scheme+"://"+target.Host)
 		}
+	}
+	for _, name := range resources.RequestHeaderRemovals(rules) {
+		dst.Header.Del(name)
 	}
 }
 

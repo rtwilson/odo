@@ -134,6 +134,31 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/resources/validate:
+    post:
+      summary: Validate and normalize a resource config
+      operationId: validateResource
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceConfig"
+      responses:
+        "200":
+          description: Valid resource config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceValidationResponse"
+        "400":
+          description: Invalid resource config with validation errors
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceValidationResponse"
   /api/v1/config/validate:
     post:
       summary: Validate dropped resource config files without writing to SQLite
@@ -723,25 +748,50 @@ components:
         id:
           type: string
     Resource:
+      $ref: "#/components/schemas/ResourceConfig"
+    ResourceConfig:
       type: object
-      required: [id, name, status, domains]
+      required: [id, domains]
       properties:
         id:
           type: string
           examples: [jstor]
         name:
           type: string
+          description: Backward-compatible display name. New configs should use title.
+          examples: [JSTOR]
+        title:
+          type: string
           examples: [JSTOR]
         status:
           type: string
+          enum: [active, disabled, inactive]
           default: active
           examples: [active]
         description:
           type: string
+        entry_urls:
+          type: array
+          items:
+            type: string
+            format: uri
+        http_methods:
+          type: array
+          items:
+            type: string
+            enum: [GET, HEAD, POST, PUT, PATCH, OPTIONS, DELETE]
+        cookie_policy:
+          $ref: "#/components/schemas/CookiePolicy"
+        request_header_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/RequestHeaderRule"
         domains:
           type: array
           items:
             $ref: "#/components/schemas/DomainRule"
+        compatibility:
+          $ref: "#/components/schemas/ResourceCompatibility"
         sample_urls:
           type: array
           items:
@@ -749,18 +799,24 @@ components:
             format: uri
     DomainRule:
       type: object
-      required: [host, match, role, action]
+      required: [host]
       properties:
         host:
           type: string
           examples: [www.jstor.org]
+        behavior:
+          type: string
+          enum: [proxy, cookie_domain, redirect_only, block, external_allow]
+          default: proxy
+        include_subdomains:
+          type: boolean
         match:
           type: string
           enum: [exact, subdomain]
           default: exact
         role:
           type: string
-          enum: [content, asset, api, auth, redirect, external, blocked]
+          enum: [content, asset, api, auth, redirect, cookie, unknown, external, blocked]
           default: content
           examples: [content]
         action:
@@ -770,6 +826,59 @@ components:
           examples: [proxy]
         reason:
           type: string
+        notes:
+          type: string
+    CookiePolicy:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        jar_scope:
+          type: string
+          enum: [resource, host]
+          default: resource
+        allowed_cookie_domains:
+          type: array
+          items:
+            type: string
+    RequestHeaderRule:
+      type: object
+      required: [name, action, phase]
+      properties:
+        name:
+          type: string
+          examples: [X-Requested-With]
+        action:
+          type: string
+          enum: [remove, preserve]
+        phase:
+          type: string
+          enum: [request, response]
+    ResourceCompatibility:
+      type: object
+      properties:
+        referer_recovery:
+          type: boolean
+        js_shim:
+          type: boolean
+        app_data_recovery:
+          type: boolean
+    ResourceValidationResponse:
+      type: object
+      required: [valid, warnings, errors, normalized]
+      properties:
+        valid:
+          type: boolean
+        warnings:
+          type: array
+          items:
+            type: string
+        errors:
+          type: array
+          items:
+            type: string
+        normalized:
+          $ref: "#/components/schemas/ResourceConfig"
     ConfigValidationResponse:
       type: object
       required: [valid, config_dir, results]
