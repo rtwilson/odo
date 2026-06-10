@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"example.org/odo/internal/resources"
 )
 
 var (
@@ -89,6 +91,79 @@ func RewriteCSS(ctx context.Context, body string, base *url.URL, check TargetChe
 		}
 		return "url(" + quoteLike(rawValue, rewritten) + ")"
 	})
+}
+
+func ApplyContentRewriteRules(ctx context.Context, body, contentType string, base *url.URL, result resources.TestResult) string {
+	if len(result.ContentRewriteRules) == 0 || base == nil || !contentRewriteAllowed(contentType, result) {
+		return body
+	}
+	applied := 0
+	for _, rule := range result.ContentRewriteRules {
+		if !rewriteRuleMatchesContentType(rule, contentType) || rule.Find == "" {
+			continue
+		}
+		replacement := expandRewriteTemplate(rule.Replace, base)
+		count := strings.Count(body, rule.Find)
+		if count == 0 {
+			continue
+		}
+		body = strings.ReplaceAll(body, rule.Find, replacement)
+		applied += count
+	}
+	if applied > 0 {
+		if diagnostics := DiagnosticsFrom(ctx); diagnostics != nil {
+			diagnostics.ContentRewriteRulesApplied += applied
+		}
+	}
+	return body
+}
+
+func contentRewriteAllowed(contentType string, result resources.TestResult) bool {
+	contentType = strings.ToLower(contentType)
+	if strings.Contains(contentType, "application/javascript") || strings.Contains(contentType, "text/javascript") {
+		return result.JavaScriptTextRewriteEnabled
+	}
+	return textLikeContentType(contentType)
+}
+
+func rewriteRuleMatchesContentType(rule resources.ContentRewriteRule, contentType string) bool {
+	contentType = strings.ToLower(strings.Split(contentType, ";")[0])
+	for _, allowed := range rule.ContentTypes {
+		allowed = strings.ToLower(strings.TrimSpace(allowed))
+		if allowed != "" && strings.Contains(contentType, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func textLikeContentType(contentType string) bool {
+	for _, allowed := range []string{"text/html", "text/css", "application/json", "application/xml", "text/xml"} {
+		if strings.Contains(contentType, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func expandRewriteTemplate(template string, base *url.URL) string {
+	out := template
+	out = strings.ReplaceAll(out, "{proxy_host_suffix}", "")
+	out = strings.ReplaceAll(out, "{proxy_base_url}", BuildProxyURL(base))
+	out = strings.ReplaceAll(out, "{target_origin}", base.Scheme+"://"+base.Host)
+	tokenRE := regexp.MustCompile(`\{proxy_(?:http_)?url:([^}]+)\}`)
+	out = tokenRE.ReplaceAllStringFunc(out, func(match string) string {
+		parts := tokenRE.FindStringSubmatch(match)
+		if len(parts) != 2 {
+			return match
+		}
+		parsed, err := url.Parse(parts[1])
+		if err != nil || parsed.Hostname() == "" {
+			return match
+		}
+		return BuildProxyURL(parsed)
+	})
+	return out
 }
 
 func splitAttr(match string) (string, string, bool) {

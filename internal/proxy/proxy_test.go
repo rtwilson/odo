@@ -673,6 +673,39 @@ func allowedTargetCheck(ctx context.Context, rawURL string) (*url.URL, resources
 	}
 }
 
+func TestContentRewriteAppliesToHTMLAndDropsStaleHeaders(t *testing.T) {
+	store := NewDiagnosticsStore(10)
+	body, headers := fetchBodyWithDiagnostics(t, "text/html", `go https://www.economist.com/ now`, rewriteTargetCheck(true), store)
+	if !strings.Contains(body, `/odo/https/www.economist.com/`) {
+		t.Fatalf("expected content rewrite to proxy URL, got %s", body)
+	}
+	if headers.Get("Content-Length") != "" || headers.Get("Content-Encoding") != "" {
+		t.Fatalf("expected stale length/encoding headers removed, got %#v", headers)
+	}
+	entries := store.Recent()
+	if len(entries) == 0 || entries[0].ContentRewriteRulesApplied == 0 {
+		t.Fatalf("expected content rewrite diagnostics, got %#v", entries)
+	}
+}
+
+func TestContentRewriteAppliesToJavaScriptOnlyWhenAllowed(t *testing.T) {
+	body, _ := fetchBody(t, "application/javascript", `const u = "https://www.economist.com/";`, rewriteTargetCheck(false))
+	if strings.Contains(body, `/odo/https/www.economist.com/`) {
+		t.Fatalf("expected JS rewrite disabled, got %s", body)
+	}
+	body, _ = fetchBody(t, "application/javascript", `const u = "https://www.economist.com/";`, rewriteTargetCheck(true))
+	if !strings.Contains(body, `/odo/https/www.economist.com/`) {
+		t.Fatalf("expected JS rewrite enabled, got %s", body)
+	}
+}
+
+func TestContentRewriteDoesNotApplyToBinary(t *testing.T) {
+	body, _ := fetchBody(t, "image/png", `https://www.economist.com/`, rewriteTargetCheck(true))
+	if body != `https://www.economist.com/` {
+		t.Fatalf("expected binary response to be unchanged, got %s", body)
+	}
+}
+
 func allowedHostTargetCheck(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
 	target, _ := url.Parse(rawURL)
 	if target != nil && target.Hostname() == "tracking.jstor.org" {
@@ -711,6 +744,31 @@ func allowedHostTargetCheck(ctx context.Context, rawURL string) (*url.URL, resou
 		Action:     "proxy",
 		Matched:    &resources.DomainRule{Host: "www.jstor.org", Match: "exact"},
 		Reason:     "matched active resource domain rule",
+	}
+}
+
+func rewriteTargetCheck(js bool) TargetCheck {
+	return func(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
+		target, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, resources.TestResult{Allowed: false, Reason: "bad target"}
+		}
+		return target, resources.TestResult{
+			Allowed:                      true,
+			ResourceID:                   "economist",
+			RuleHost:                     target.Hostname(),
+			RuleMatch:                    "exact",
+			Role:                         "content",
+			Action:                       "proxy",
+			Behavior:                     "proxy",
+			Reason:                       "matched",
+			JavaScriptTextRewriteEnabled: js,
+			ContentRewriteRules: []resources.ContentRewriteRule{{
+				ContentTypes: []string{"text/html", "application/javascript"},
+				Find:         "https://www.economist.com/",
+				Replace:      "{proxy_url:https://www.economist.com/}",
+			}},
+		}
 	}
 }
 

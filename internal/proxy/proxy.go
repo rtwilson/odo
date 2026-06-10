@@ -93,6 +93,9 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		diagnostics.MatchedDomain = result.RuleHost
 		diagnostics.DomainBehavior = result.Behavior
 		diagnostics.DomainRole = result.Role
+		diagnostics.AnonymousRuleMatched = result.AnonymousRuleMatched
+		diagnostics.AnonymousRulePattern = result.AnonymousRulePattern
+		diagnostics.JavaScriptTextRewriteEnabled = result.JavaScriptTextRewriteEnabled
 		defer func() {
 			options.Diagnostics.Add(*diagnostics)
 		}()
@@ -174,7 +177,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 				writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "response read failed")
 				return
 			}
-			transformed := transformBody(r.Context(), string(body), resp.Header.Get("Content-Type"), target, check)
+			transformed := transformBody(r.Context(), string(body), resp.Header.Get("Content-Type"), target, check, result)
 			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.WriteString(w, transformed)
@@ -336,13 +339,19 @@ func applyContentTypeFallback(headers http.Header, target *url.URL) {
 
 func isTransformable(contentType string) bool {
 	contentType = strings.ToLower(contentType)
-	return strings.Contains(contentType, "text/html") || strings.Contains(contentType, "text/css")
+	for _, allowed := range []string{"text/html", "text/css", "application/javascript", "text/javascript", "application/json", "application/xml", "text/xml"} {
+		if strings.Contains(contentType, allowed) {
+			return true
+		}
+	}
+	return false
 }
 
-func transformBody(ctx context.Context, body, contentType string, base *url.URL, check TargetCheck) string {
+func transformBody(ctx context.Context, body, contentType string, base *url.URL, check TargetCheck, result resources.TestResult) string {
 	contentType = strings.ToLower(contentType)
 	if strings.Contains(contentType, "text/css") {
-		return RewriteCSS(ctx, body, base, check)
+		body = RewriteCSS(ctx, body, base, check)
+		return ApplyContentRewriteRules(ctx, body, contentType, base, result)
 	}
 	if strings.Contains(contentType, "text/html") {
 		transformed := RewriteHTML(ctx, body, base, check)
@@ -356,9 +365,9 @@ func transformBody(ctx context.Context, body, contentType string, base *url.URL,
 				diagnostics.JSXHRShimEnabled = injected
 			}
 		}
-		return transformed
+		return ApplyContentRewriteRules(ctx, transformed, contentType, base, result)
 	}
-	return body
+	return ApplyContentRewriteRules(ctx, body, contentType, base, result)
 }
 
 func isRedirect(status int) bool {

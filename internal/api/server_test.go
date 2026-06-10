@@ -103,7 +103,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Add Domain", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -1588,13 +1588,22 @@ func TestSAMLPlaceholdersReturn501(t *testing.T) {
 }
 
 func TestSampleResourceConfigsParseAndValidate(t *testing.T) {
-	for _, path := range []string{"../../config/resources/jstor.json", "../../config/resources/jstor-aluka.json"} {
+	for _, path := range []string{"../../config/resources/jstor.json", "../../config/resources/jstor-aluka.json", "../../config/resources/economist.json"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		if _, err := resources.Decode(data); err != nil {
+		resource, err := resources.Decode(data)
+		if err != nil {
 			t.Fatalf("expected %s to parse and validate: %v", path, err)
+		}
+		if strings.Contains(path, "economist") {
+			if len(resource.AnonymousURLRules) == 0 || len(resource.ContentRewriteRules) == 0 {
+				t.Fatalf("expected economist sample to include anonymous and content rewrite rules: %#v", resource)
+			}
+			if len(resource.RequestHeaderRules) == 0 || resource.RequestHeaderRules[0].Name != "X-Requested-With" {
+				t.Fatalf("expected economist sample to remove X-Requested-With: %#v", resource.RequestHeaderRules)
+			}
 		}
 	}
 }

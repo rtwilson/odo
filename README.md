@@ -212,7 +212,7 @@ Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, 
 
 ## Resource Config Builder
 
-Odo resources are JSON control-plane objects. The expanded resource config model supports entry URLs, per-resource HTTP method allowlists, cookie policy metadata, request header rules, compatibility hints, and domain behavior rules.
+Odo resources are JSON control-plane objects. The expanded resource config model supports entry URLs, per-resource HTTP method allowlists, cookie policy metadata, request header rules, anonymous URL rules, resource-specific content rewrite rules, compatibility hints, and domain behavior rules.
 
 Domain rules can use behaviors:
 
@@ -222,7 +222,11 @@ Domain rules can use behaviors:
 - `block`: explicit block; this wins over broader allow/proxy rules.
 - `external_allow`: links may leave the proxy without being treated as failures.
 
-Request header rules can model vendor-specific behavior such as removing `X-Requested-With` from outbound proxy requests. The included JSTOR sample at `config/resources/jstor.json` shows a more complex resource profile with method expansion, cookie policy, domain behaviors, and a header removal rule. `config/resources/jstor-aluka.json` provides a second related-resource example.
+Anonymous URL rules are scoped public proxy allowances, similar in intent to EZproxy `AnonymousURL`. They still pass URL safety checks and should be narrow, such as `https://cms-films.economist.com/*`.
+
+Content rewrite rules are explicit resource-specific text substitutions for difficult vendors. They support a small set of Odo-native replacement tokens such as `{proxy_url:https://www.example.com/}`, `{proxy_http_url:https://www.example.com/}`, `{proxy_base_url}`, `{target_origin}`, and `{proxy_host_suffix}`. Use them sparingly, especially for JSON or JavaScript payloads, and validate generated JSON before saving.
+
+Request header rules can model vendor-specific behavior such as removing `X-Requested-With` from outbound proxy requests. The included JSTOR sample at `config/resources/jstor.json` shows a more complex resource profile with method expansion, cookie policy, domain behaviors, and a header removal rule. `config/resources/jstor-aluka.json` provides a second related-resource example. `config/resources/economist.json` shows anonymous URL rules and content rewrite rules for a more app-shell-heavy resource.
 
 The builder is not a full EZproxy parser and does not guarantee exact EZproxy directive compatibility.
 

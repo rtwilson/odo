@@ -10,18 +10,20 @@ import (
 )
 
 type Resource struct {
-	ID                 string              `json:"id"`
-	Name               string              `json:"name,omitempty"`
-	Title              string              `json:"title,omitempty"`
-	Status             string              `json:"status"`
-	Description        string              `json:"description,omitempty"`
-	EntryURLs          []string            `json:"entry_urls,omitempty"`
-	HTTPMethods        []string            `json:"http_methods,omitempty"`
-	CookiePolicy       CookiePolicy        `json:"cookie_policy,omitempty"`
-	RequestHeaderRules []RequestHeaderRule `json:"request_header_rules,omitempty"`
-	Domains            []DomainRule        `json:"domains"`
-	Compatibility      Compatibility       `json:"compatibility,omitempty"`
-	SampleURLs         []string            `json:"sample_urls,omitempty"`
+	ID                  string               `json:"id"`
+	Name                string               `json:"name,omitempty"`
+	Title               string               `json:"title,omitempty"`
+	Status              string               `json:"status"`
+	Description         string               `json:"description,omitempty"`
+	EntryURLs           []string             `json:"entry_urls,omitempty"`
+	HTTPMethods         []string             `json:"http_methods,omitempty"`
+	CookiePolicy        CookiePolicy         `json:"cookie_policy,omitempty"`
+	RequestHeaderRules  []RequestHeaderRule  `json:"request_header_rules,omitempty"`
+	AnonymousURLRules   []AnonymousURLRule   `json:"anonymous_url_rules,omitempty"`
+	ContentRewriteRules []ContentRewriteRule `json:"content_rewrite_rules,omitempty"`
+	Domains             []DomainRule         `json:"domains"`
+	Compatibility       Compatibility        `json:"compatibility,omitempty"`
+	SampleURLs          []string             `json:"sample_urls,omitempty"`
 }
 
 type DomainRule struct {
@@ -33,6 +35,7 @@ type DomainRule struct {
 	Behavior          string `json:"behavior,omitempty"`
 	IncludeSubdomains bool   `json:"include_subdomains,omitempty"`
 	Notes             string `json:"notes,omitempty"`
+	RewriteJavaScript bool   `json:"rewrite_javascript,omitempty"`
 }
 
 type CookiePolicy struct {
@@ -48,26 +51,44 @@ type RequestHeaderRule struct {
 }
 
 type Compatibility struct {
-	RefererRecovery *bool `json:"referer_recovery,omitempty"`
-	JSShim          *bool `json:"js_shim,omitempty"`
-	AppDataRecovery *bool `json:"app_data_recovery,omitempty"`
+	RefererRecovery         *bool `json:"referer_recovery,omitempty"`
+	JSShim                  *bool `json:"js_shim,omitempty"`
+	AppDataRecovery         *bool `json:"app_data_recovery,omitempty"`
+	JavaScriptTextRewriting *bool `json:"javascript_text_rewriting,omitempty"`
+}
+
+type AnonymousURLRule struct {
+	Pattern  string   `json:"pattern"`
+	Behavior string   `json:"behavior"`
+	Methods  []string `json:"methods,omitempty"`
+	Notes    string   `json:"notes,omitempty"`
+}
+
+type ContentRewriteRule struct {
+	ContentTypes []string `json:"content_types"`
+	Find         string   `json:"find"`
+	Replace      string   `json:"replace"`
 }
 
 type TestResult struct {
-	Allowed            bool                `json:"allowed"`
-	Blocked            bool                `json:"blocked,omitempty"`
-	Host               string              `json:"host,omitempty"`
-	ResourceID         string              `json:"resource_id,omitempty"`
-	RuleHost           string              `json:"rule_host,omitempty"`
-	RuleMatch          string              `json:"rule_match,omitempty"`
-	Role               string              `json:"role,omitempty"`
-	Action             string              `json:"action,omitempty"`
-	Behavior           string              `json:"domain_behavior,omitempty"`
-	Matched            *DomainRule         `json:"matched_rule,omitempty"`
-	Reason             string              `json:"reason"`
-	HTTPMethods        []string            `json:"-"`
-	RequestHeaderRules []RequestHeaderRule `json:"-"`
-	MethodAllowed      bool                `json:"method_allowed,omitempty"`
+	Allowed                      bool                 `json:"allowed"`
+	Blocked                      bool                 `json:"blocked,omitempty"`
+	Host                         string               `json:"host,omitempty"`
+	ResourceID                   string               `json:"resource_id,omitempty"`
+	RuleHost                     string               `json:"rule_host,omitempty"`
+	RuleMatch                    string               `json:"rule_match,omitempty"`
+	Role                         string               `json:"role,omitempty"`
+	Action                       string               `json:"action,omitempty"`
+	Behavior                     string               `json:"domain_behavior,omitempty"`
+	Matched                      *DomainRule          `json:"matched_rule,omitempty"`
+	Reason                       string               `json:"reason"`
+	HTTPMethods                  []string             `json:"-"`
+	RequestHeaderRules           []RequestHeaderRule  `json:"-"`
+	ContentRewriteRules          []ContentRewriteRule `json:"-"`
+	AnonymousRuleMatched         bool                 `json:"anonymous_rule_matched,omitempty"`
+	AnonymousRulePattern         string               `json:"anonymous_rule_pattern,omitempty"`
+	JavaScriptTextRewriteEnabled bool                 `json:"javascript_text_rewrite_enabled,omitempty"`
+	MethodAllowed                bool                 `json:"method_allowed,omitempty"`
 }
 
 type ValidationResult struct {
@@ -226,6 +247,31 @@ func Normalize(resource Resource) (Resource, []string, []string) {
 			errs = append(errs, fmt.Sprintf("request_header_rules[%d].phase must be request or response", i))
 		}
 	}
+	for i := range resource.AnonymousURLRules {
+		resource.AnonymousURLRules[i].Pattern = strings.TrimSpace(resource.AnonymousURLRules[i].Pattern)
+		resource.AnonymousURLRules[i].Behavior = strings.ToLower(strings.TrimSpace(resource.AnonymousURLRules[i].Behavior))
+		if resource.AnonymousURLRules[i].Behavior == "" {
+			resource.AnonymousURLRules[i].Behavior = "allow_public_proxy"
+		}
+		resource.AnonymousURLRules[i].Notes = strings.TrimSpace(resource.AnonymousURLRules[i].Notes)
+		resource.AnonymousURLRules[i].Methods, errs = normalizeAnonymousMethods(resource.AnonymousURLRules[i].Methods, errs)
+		errs = append(errs, validateAnonymousURLRule(i, resource.AnonymousURLRules[i])...)
+	}
+	for i := range resource.ContentRewriteRules {
+		for j := range resource.ContentRewriteRules[i].ContentTypes {
+			resource.ContentRewriteRules[i].ContentTypes[j] = strings.ToLower(strings.TrimSpace(resource.ContentRewriteRules[i].ContentTypes[j]))
+		}
+		errs = append(errs, validateContentRewriteRule(i, resource.ContentRewriteRules[i])...)
+		warnings = append(warnings, fmt.Sprintf("content_rewrite_rules[%d] can be brittle; use narrow find/replace patterns", i))
+		if containsContentType(resource.ContentRewriteRules[i].ContentTypes, "application/json") {
+			warnings = append(warnings, fmt.Sprintf("content_rewrite_rules[%d] rewrites JSON; review API payload impact carefully", i))
+		}
+	}
+	for i := range resource.AnonymousURLRules {
+		if resource.AnonymousURLRules[i].Behavior == "allow_public_proxy" {
+			warnings = append(warnings, fmt.Sprintf("anonymous_url_rules[%d] should be narrow and reviewed carefully", i))
+		}
+	}
 
 	return resource, errs, warnings
 }
@@ -287,11 +333,36 @@ func TestURL(raw string, activeResources []Resource) TestResult {
 			continue
 		}
 		resource, _ = Validate(resource)
+		for _, rule := range resource.AnonymousURLRules {
+			rule = normalizeAnonymousRule(rule)
+			if anonymousRuleMatches(parsed, rule) {
+				matchedRule := rule
+				candidate := matchCandidate{
+					resourceID:          resource.ID,
+					rule:                DomainRule{Host: host, Match: "exact", Role: "asset", Action: actionForAnonymousBehavior(rule.Behavior), Behavior: "proxy", Reason: rule.Notes},
+					methods:             rule.Methods,
+					headerRules:         resource.RequestHeaderRules,
+					contentRewriteRules: resource.ContentRewriteRules,
+					anonymousRule:       &matchedRule,
+					jsRewrite:           boolPtrValue(resource.Compatibility.JavaScriptTextRewriting),
+				}
+				if best == nil || candidate.beats(*best) {
+					best = &candidate
+				}
+			}
+		}
 		for _, rule := range resource.Domains {
 			rule = normalizeDomainRule(rule)
 			if matches(host, rule) {
 				matched := rule
-				candidate := matchCandidate{resourceID: resource.ID, rule: matched, methods: resource.HTTPMethods, headerRules: resource.RequestHeaderRules}
+				candidate := matchCandidate{
+					resourceID:          resource.ID,
+					rule:                matched,
+					methods:             resource.HTTPMethods,
+					headerRules:         resource.RequestHeaderRules,
+					contentRewriteRules: resource.ContentRewriteRules,
+					jsRewrite:           matched.RewriteJavaScript || boolPtrValue(resource.Compatibility.JavaScriptTextRewriting),
+				}
 				if best == nil || candidate.beats(*best) {
 					best = &candidate
 				}
@@ -307,10 +378,13 @@ func TestURL(raw string, activeResources []Resource) TestResult {
 }
 
 type matchCandidate struct {
-	resourceID  string
-	rule        DomainRule
-	methods     []string
-	headerRules []RequestHeaderRule
+	resourceID          string
+	rule                DomainRule
+	methods             []string
+	headerRules         []RequestHeaderRule
+	contentRewriteRules []ContentRewriteRule
+	anonymousRule       *AnonymousURLRule
+	jsRewrite           bool
 }
 
 func (c matchCandidate) beats(other matchCandidate) bool {
@@ -327,6 +401,12 @@ func (c matchCandidate) beats(other matchCandidate) bool {
 	if cBlock != oBlock {
 		return cBlock
 	}
+	if c.anonymousRule != nil && other.anonymousRule == nil {
+		return c.rule.Action == "block"
+	}
+	if c.anonymousRule == nil && other.anonymousRule != nil {
+		return other.rule.Action != "block"
+	}
 	return c.rule.Host < other.rule.Host
 }
 
@@ -340,21 +420,28 @@ func (c matchCandidate) result(host string) TestResult {
 			reason = matched.Reason
 		}
 	}
-	return TestResult{
-		Allowed:            !blocked,
-		Blocked:            blocked,
-		Host:               host,
-		ResourceID:         c.resourceID,
-		RuleHost:           matched.Host,
-		RuleMatch:          matched.Match,
-		Role:               matched.Role,
-		Action:             matched.Action,
-		Behavior:           matched.Behavior,
-		Matched:            &matched,
-		Reason:             reason,
-		HTTPMethods:        c.methods,
-		RequestHeaderRules: c.headerRules,
+	result := TestResult{
+		Allowed:                      !blocked,
+		Blocked:                      blocked,
+		Host:                         host,
+		ResourceID:                   c.resourceID,
+		RuleHost:                     matched.Host,
+		RuleMatch:                    matched.Match,
+		Role:                         matched.Role,
+		Action:                       matched.Action,
+		Behavior:                     matched.Behavior,
+		Matched:                      &matched,
+		Reason:                       reason,
+		HTTPMethods:                  c.methods,
+		RequestHeaderRules:           c.headerRules,
+		ContentRewriteRules:          c.contentRewriteRules,
+		AnonymousRuleMatched:         c.anonymousRule != nil,
+		JavaScriptTextRewriteEnabled: c.jsRewrite,
 	}
+	if c.anonymousRule != nil {
+		result.AnonymousRulePattern = safePatternPrefix(c.anonymousRule.Pattern)
+	}
+	return result
 }
 
 func normalizeHost(host string) string {
@@ -522,4 +609,150 @@ func RequestHeaderRemovals(rules []RequestHeaderRule) []string {
 		}
 	}
 	return out
+}
+
+func normalizeAnonymousMethods(methods []string, errs []string) ([]string, []string) {
+	if len(methods) == 0 {
+		methods = []string{"GET", "HEAD"}
+	}
+	valid := map[string]bool{"GET": true, "HEAD": true}
+	seen := map[string]bool{}
+	var out []string
+	for _, method := range methods {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if !valid[method] {
+			errs = append(errs, fmt.Sprintf("anonymous_url_rules contains unsupported method %q", method))
+			continue
+		}
+		if !seen[method] {
+			out = append(out, method)
+			seen[method] = true
+		}
+	}
+	return out, errs
+}
+
+func validateAnonymousURLRule(i int, rule AnonymousURLRule) []string {
+	var errs []string
+	if rule.Pattern == "" {
+		return []string{fmt.Sprintf("anonymous_url_rules[%d].pattern is required", i)}
+	}
+	if rule.Behavior != "allow_public_proxy" && rule.Behavior != "block" {
+		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].behavior must be allow_public_proxy or block", i))
+	}
+	wildcard := strings.Contains(rule.Pattern, "*")
+	if wildcard && !strings.HasSuffix(rule.Pattern, "*") {
+		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].wildcard is only allowed at the end of the path", i))
+	}
+	parsed, err := url.Parse(strings.TrimSuffix(rule.Pattern, "*"))
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].pattern must be an HTTPS URL pattern", i))
+		return errs
+	}
+	host := normalizeHost(parsed.Hostname())
+	if host == "localhost" || host == "local" || strings.HasSuffix(host, ".local") || host == "internal" || strings.HasSuffix(host, ".internal") || net.ParseIP(host) != nil {
+		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].pattern host must not be private/internal or an IP address", i))
+	}
+	return errs
+}
+
+func validateContentRewriteRule(i int, rule ContentRewriteRule) []string {
+	var errs []string
+	if len(rule.ContentTypes) == 0 {
+		errs = append(errs, fmt.Sprintf("content_rewrite_rules[%d].content_types is required", i))
+	}
+	if rule.Find == "" {
+		errs = append(errs, fmt.Sprintf("content_rewrite_rules[%d].find is required", i))
+	}
+	if err := validateReplacementTemplate(rule.Replace); err != nil {
+		errs = append(errs, fmt.Sprintf("content_rewrite_rules[%d].replace %s", i, err.Error()))
+	}
+	return errs
+}
+
+func validateReplacementTemplate(value string) error {
+	for {
+		start := strings.Index(value, "{")
+		if start < 0 {
+			return nil
+		}
+		end := strings.Index(value[start:], "}")
+		if end < 0 {
+			return fmt.Errorf("contains an unclosed template token")
+		}
+		token := value[start+1 : start+end]
+		if token == "proxy_host_suffix" || token == "proxy_base_url" || token == "target_origin" {
+			value = value[start+end+1:]
+			continue
+		}
+		if strings.HasPrefix(token, "proxy_url:") || strings.HasPrefix(token, "proxy_http_url:") {
+			raw := strings.TrimPrefix(strings.TrimPrefix(token, "proxy_url:"), "proxy_http_url:")
+			parsed, err := url.Parse(raw)
+			if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+				return fmt.Errorf("contains invalid proxy URL template")
+			}
+			value = value[start+end+1:]
+			continue
+		}
+		return fmt.Errorf("contains unsupported template token %q", token)
+	}
+}
+
+func normalizeAnonymousRule(rule AnonymousURLRule) AnonymousURLRule {
+	rule.Pattern = strings.TrimSpace(rule.Pattern)
+	rule.Behavior = strings.ToLower(strings.TrimSpace(rule.Behavior))
+	if rule.Behavior == "" {
+		rule.Behavior = "allow_public_proxy"
+	}
+	rule.Methods, _ = normalizeAnonymousMethods(rule.Methods, nil)
+	return rule
+}
+
+func anonymousRuleMatches(target *url.URL, rule AnonymousURLRule) bool {
+	if target == nil || target.Scheme != "https" {
+		return false
+	}
+	pattern := strings.TrimSpace(rule.Pattern)
+	prefix := strings.TrimSuffix(pattern, "*")
+	parsed, err := url.Parse(prefix)
+	if err != nil || parsed.Scheme != "https" {
+		return false
+	}
+	if normalizeHost(parsed.Hostname()) != normalizeHost(target.Hostname()) {
+		return false
+	}
+	targetString := target.Scheme + "://" + target.Host + target.EscapedPath()
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(targetString, prefix)
+	}
+	return targetString == prefix
+}
+
+func actionForAnonymousBehavior(behavior string) string {
+	if behavior == "block" {
+		return "block"
+	}
+	return "proxy"
+}
+
+func safePatternPrefix(pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	if i := strings.Index(pattern, "?"); i >= 0 {
+		pattern = pattern[:i]
+	}
+	return strings.TrimSuffix(pattern, "*")
+}
+
+func boolPtrValue(value *bool) bool {
+	return value != nil && *value
+}
+
+func containsContentType(values []string, want string) bool {
+	want = strings.ToLower(want)
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
 }

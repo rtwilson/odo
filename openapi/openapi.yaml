@@ -786,6 +786,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RequestHeaderRule"
+        anonymous_url_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnonymousURLRule"
+        content_rewrite_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContentRewriteRule"
         domains:
           type: array
           items:
@@ -828,6 +836,8 @@ components:
           type: string
         notes:
           type: string
+        rewrite_javascript:
+          type: boolean
     CookiePolicy:
       type: object
       properties:
@@ -854,6 +864,36 @@ components:
         phase:
           type: string
           enum: [request, response]
+    AnonymousURLRule:
+      type: object
+      required: [pattern, behavior]
+      properties:
+        pattern:
+          type: string
+          examples: [https://cms-films.economist.com/*]
+        behavior:
+          type: string
+          enum: [allow_public_proxy, block]
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [GET, HEAD]
+        notes:
+          type: string
+    ContentRewriteRule:
+      type: object
+      required: [content_types, find, replace]
+      properties:
+        content_types:
+          type: array
+          items:
+            type: string
+        find:
+          type: string
+        replace:
+          type: string
+          description: Supports limited tokens such as {proxy_url:https://www.example.com/}, {proxy_http_url:https://www.example.com/}, {proxy_host_suffix}, {proxy_base_url}, and {target_origin}.
     ResourceCompatibility:
       type: object
       properties:
@@ -862,6 +902,8 @@ components:
         js_shim:
           type: boolean
         app_data_recovery:
+          type: boolean
+        javascript_text_rewriting:
           type: boolean
     ResourceValidationResponse:
       type: object

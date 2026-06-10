@@ -1,0 +1,107 @@
+{
+  "id": "economist",
+  "title": "The Economist",
+  "status": "active",
+  "entry_urls": [
+    "https://www.economist.com/"
+  ],
+  "http_methods": [
+    "GET",
+    "HEAD",
+    "POST"
+  ],
+  "cookie_policy": {
+    "enabled": true,
+    "jar_scope": "resource",
+    "allowed_cookie_domains": [
+      "economist.com"
+    ]
+  },
+  "request_header_rules": [
+    {
+      "name": "X-Requested-With",
+      "action": "remove",
+      "phase": "request"
+    }
+  ],
+  "domains": [
+    {
+      "host": "www.economist.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true
+    },
+    {
+      "host": "economist.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie"
+    }
+  ],
+  "anonymous_url_rules": [
+    {
+      "pattern": "https://cms-films.economist.com/*",
+      "behavior": "allow_public_proxy",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "notes": "Public CMS film assets"
+    },
+    {
+      "pattern": "https://blocked.example.com/*",
+      "behavior": "block",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "notes": "Example explicit anonymous block"
+    }
+  ],
+  "content_rewrite_rules": [
+    {
+      "content_types": [
+        "text/html",
+        "application/javascript",
+        "text/javascript",
+        "application/json"
+      ],
+      "find": "&domain=economist.com&",
+      "replace": "&domain=economist.com{proxy_host_suffix}&"
+    },
+    {
+      "content_types": [
+        "text/html",
+        "application/javascript",
+        "text/javascript"
+      ],
+      "find": "=\"economist.com\"",
+      "replace": "=\"economist.com{proxy_host_suffix}\""
+    },
+    {
+      "content_types": [
+        "text/html",
+        "application/javascript",
+        "text/javascript"
+      ],
+      "find": "http://www.economist.com/",
+      "replace": "{proxy_http_url:https://www.economist.com/}"
+    },
+    {
+      "content_types": [
+        "text/html",
+        "application/javascript",
+        "text/javascript"
+      ],
+      "find": "https://www.economist.com/",
+      "replace": "{proxy_url:https://www.economist.com/}"
+    }
+  ],
+  "compatibility": {
+    "referer_recovery": true,
+    "js_shim": true,
+    "app_data_recovery": true,
+    "javascript_text_rewriting": true
+  }
+}

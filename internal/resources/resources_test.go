@@ -81,6 +81,53 @@ func TestValidateDetailedDuplicateDomainWarning(t *testing.T) {
 	}
 }
 
+func TestValidateAnonymousURLRules(t *testing.T) {
+	base := Resource{
+		ID:        "economist",
+		Title:     "The Economist",
+		EntryURLs: []string{"https://www.economist.com/"},
+		Domains:   []DomainRule{{Host: "www.economist.com", Behavior: "proxy"}},
+	}
+	valid := base
+	valid.AnonymousURLRules = []AnonymousURLRule{{Pattern: "https://cms-films.economist.com/*"}}
+	if _, err := Validate(valid); err != nil {
+		t.Fatalf("expected valid anonymous rule: %v", err)
+	}
+
+	for _, rule := range []AnonymousURLRule{
+		{Pattern: "http://cms-films.economist.com/*"},
+		{Pattern: "https://127.0.0.1/*"},
+		{Pattern: "https://cms-films.economist.com/*", Methods: []string{"POST"}},
+	} {
+		resource := base
+		resource.AnonymousURLRules = []AnonymousURLRule{rule}
+		if _, err := Validate(resource); err == nil {
+			t.Fatalf("expected anonymous rule %#v to be rejected", rule)
+		}
+	}
+}
+
+func TestValidateContentRewriteRules(t *testing.T) {
+	resource := Resource{
+		ID:        "economist",
+		Title:     "The Economist",
+		EntryURLs: []string{"https://www.economist.com/"},
+		Domains:   []DomainRule{{Host: "www.economist.com", Behavior: "proxy"}},
+		ContentRewriteRules: []ContentRewriteRule{{
+			ContentTypes: []string{"text/html"},
+			Find:         "https://www.economist.com/",
+			Replace:      "{proxy_url:https://www.economist.com/}",
+		}},
+	}
+	if _, err := Validate(resource); err != nil {
+		t.Fatalf("expected valid content rewrite rule: %v", err)
+	}
+	resource.ContentRewriteRules[0].Replace = "{unsupported}"
+	if _, err := Validate(resource); err == nil {
+		t.Fatal("expected invalid replacement template to be rejected")
+	}
+}
+
 func TestValidateDefaultsActionBasedOnRole(t *testing.T) {
 	resource, err := Validate(Resource{
 		ID:   "roles",
@@ -270,6 +317,24 @@ func TestTestURLExplicitBlockBeatsBroaderSubdomainProxy(t *testing.T) {
 	result := TestURL("https://tracking.jstor.org/pixel", resources)
 	if result.Allowed || !result.Blocked || result.Action != "block" || result.Reason != "explicitly_blocked" {
 		t.Fatalf("expected explicit block to win, got %#v", result)
+	}
+}
+
+func TestTestURLAnonymousExplicitBlockWins(t *testing.T) {
+	resources := []Resource{{
+		ID:        "economist",
+		Title:     "The Economist",
+		Status:    "active",
+		EntryURLs: []string{"https://www.economist.com/"},
+		Domains:   []DomainRule{{Host: "www.economist.com", Behavior: "proxy"}},
+		AnonymousURLRules: []AnonymousURLRule{
+			{Pattern: "https://cms-films.economist.com/*", Behavior: "allow_public_proxy"},
+			{Pattern: "https://cms-films.economist.com/private/*", Behavior: "block"},
+		},
+	}}
+	result := TestURL("https://cms-films.economist.com/private/clip.mp4", resources)
+	if result.Allowed || !result.Blocked {
+		t.Fatalf("expected anonymous block to win, got %#v", result)
 	}
 }
 

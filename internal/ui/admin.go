@@ -118,8 +118,14 @@ func AdminHTML() string {
           </div>
           <div id="builder-domains" class="list"></div>
           <div class="toolbar"><button id="add-domain">Add Domain</button></div>
+          <h3>Anonymous URL Rules</h3>
+          <div id="builder-anonymous-rules" class="list"></div>
+          <div class="toolbar"><button id="add-anonymous-rule">Add Anonymous Rule</button></div>
           <div id="builder-headers" class="list"></div>
           <div class="toolbar"><button id="add-header-rule">Add Header Rule</button></div>
+          <h3>Content Rewrite Rules</h3>
+          <div id="builder-rewrite-rules" class="list"></div>
+          <div class="toolbar"><button id="add-rewrite-rule">Add Rewrite Rule</button></div>
           <div class="toolbar">
             <label><input id="builder-referer-recovery" type="checkbox" checked> referer recovery</label>
             <label><input id="builder-js-shim" type="checkbox" checked> JS shim</label>
@@ -217,6 +223,8 @@ func AdminHTML() string {
     const samlProviderList = document.querySelector('#saml-provider-list');
     const builderDomains = document.querySelector('#builder-domains');
     const builderHeaders = document.querySelector('#builder-headers');
+    const builderAnonymousRules = document.querySelector('#builder-anonymous-rules');
+    const builderRewriteRules = document.querySelector('#builder-rewrite-rules');
     let resources = [];
     let apiKeys = [];
     let samlProviders = [];
@@ -269,12 +277,14 @@ func AdminHTML() string {
         '<select class="domain-behavior"><option>proxy</option><option>cookie_domain</option><option>redirect_only</option><option>block</option><option>external_allow</option></select>' +
         '<label><input type="checkbox" class="domain-subdomains"> include subdomains</label>' +
         '<select class="domain-role"><option>content</option><option>asset</option><option>api</option><option>auth</option><option>redirect</option><option>cookie</option><option>unknown</option></select>' +
+        '<label><input type="checkbox" class="domain-rewrite-js"> rewrite_javascript</label>' +
         '<input class="domain-notes" placeholder="notes">' +
         '<button type="button" class="danger">Remove row</button>';
       row.querySelector('.domain-host').value = value.host || '';
       row.querySelector('.domain-behavior').value = value.behavior || 'proxy';
       row.querySelector('.domain-subdomains').checked = !!value.include_subdomains || value.match === 'subdomain';
       row.querySelector('.domain-role').value = value.role || 'content';
+      row.querySelector('.domain-rewrite-js').checked = !!value.rewrite_javascript;
       row.querySelector('.domain-notes').value = value.notes || '';
       row.querySelector('button').addEventListener('click', () => row.remove());
       builderDomains.appendChild(row);
@@ -292,6 +302,36 @@ func AdminHTML() string {
       row.querySelector('.header-phase').value = value.phase || 'request';
       row.querySelector('button').addEventListener('click', () => row.remove());
       builderHeaders.appendChild(row);
+    }
+
+    function addAnonymousRuleRow(value = {}) {
+      const row = document.createElement('div');
+      row.className = 'toolbar';
+      row.innerHTML = '<input class="anon-pattern" placeholder="https://host/path/*">' +
+        '<select class="anon-behavior"><option>allow_public_proxy</option><option>block</option></select>' +
+        '<input class="anon-methods" placeholder="GET, HEAD">' +
+        '<input class="anon-notes" placeholder="notes">' +
+        '<button type="button" class="danger">Remove Rule</button>';
+      row.querySelector('.anon-pattern').value = value.pattern || '';
+      row.querySelector('.anon-behavior').value = value.behavior || 'allow_public_proxy';
+      row.querySelector('.anon-methods').value = (value.methods || ['GET', 'HEAD']).join(', ');
+      row.querySelector('.anon-notes').value = value.notes || '';
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      builderAnonymousRules.appendChild(row);
+    }
+
+    function addRewriteRuleRow(value = {}) {
+      const row = document.createElement('div');
+      row.className = 'toolbar';
+      row.innerHTML = '<input class="rewrite-types" placeholder="text/html, application/javascript">' +
+        '<input class="rewrite-find" placeholder="Find">' +
+        '<input class="rewrite-replace" placeholder="Replace">' +
+        '<button type="button" class="danger">Remove Rule</button>';
+      row.querySelector('.rewrite-types').value = (value.content_types || ['text/html']).join(', ');
+      row.querySelector('.rewrite-find').value = value.find || '';
+      row.querySelector('.rewrite-replace').value = value.replace || '';
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      builderRewriteRules.appendChild(row);
     }
 
     function switchSection(name) {
@@ -366,6 +406,7 @@ func AdminHTML() string {
         behavior: row.querySelector('.domain-behavior').value,
         include_subdomains: row.querySelector('.domain-subdomains').checked,
         role: row.querySelector('.domain-role').value,
+        rewrite_javascript: row.querySelector('.domain-rewrite-js').checked,
         notes: row.querySelector('.domain-notes').value.trim()
       })).filter(domain => domain.host);
       const requestHeaderRules = Array.from(builderHeaders.querySelectorAll('.toolbar')).map(row => ({
@@ -373,6 +414,17 @@ func AdminHTML() string {
         action: row.querySelector('.header-action').value,
         phase: row.querySelector('.header-phase').value
       })).filter(rule => rule.name);
+      const anonymousRules = Array.from(builderAnonymousRules.querySelectorAll('.toolbar')).map(row => ({
+        pattern: row.querySelector('.anon-pattern').value.trim(),
+        behavior: row.querySelector('.anon-behavior').value,
+        methods: row.querySelector('.anon-methods').value.split(',').map(value => value.trim()).filter(Boolean),
+        notes: row.querySelector('.anon-notes').value.trim()
+      })).filter(rule => rule.pattern);
+      const rewriteRules = Array.from(builderRewriteRules.querySelectorAll('.toolbar')).map(row => ({
+        content_types: row.querySelector('.rewrite-types').value.split(',').map(value => value.trim()).filter(Boolean),
+        find: row.querySelector('.rewrite-find').value,
+        replace: row.querySelector('.rewrite-replace').value
+      })).filter(rule => rule.find);
       const entryURL = document.querySelector('#builder-entry-url').value.trim();
       const cookieDomains = document.querySelector('#builder-cookie-domains').value.split(',').map(value => value.trim()).filter(Boolean);
       return {
@@ -387,11 +439,14 @@ func AdminHTML() string {
           allowed_cookie_domains: cookieDomains
         },
         request_header_rules: requestHeaderRules,
+        anonymous_url_rules: anonymousRules,
+        content_rewrite_rules: rewriteRules,
         domains,
         compatibility: {
           referer_recovery: document.querySelector('#builder-referer-recovery').checked,
           js_shim: document.querySelector('#builder-js-shim').checked,
-          app_data_recovery: document.querySelector('#builder-app-data').checked
+          app_data_recovery: document.querySelector('#builder-app-data').checked,
+          javascript_text_rewriting: domains.some(domain => domain.rewrite_javascript)
         }
       };
     }
@@ -408,6 +463,10 @@ func AdminHTML() string {
       for (const domain of resource.domains || []) addDomainRow(domain);
       builderHeaders.textContent = '';
       for (const rule of resource.request_header_rules || []) addHeaderRuleRow(rule);
+      builderAnonymousRules.textContent = '';
+      for (const rule of resource.anonymous_url_rules || []) addAnonymousRuleRow(rule);
+      builderRewriteRules.textContent = '';
+      for (const rule of resource.content_rewrite_rules || []) addRewriteRuleRow(rule);
       if (!builderDomains.children.length) addDomainRow();
       const compatibility = resource.compatibility || {};
       document.querySelector('#builder-referer-recovery').checked = compatibility.referer_recovery !== false;
@@ -605,7 +664,9 @@ func AdminHTML() string {
       } catch (err) { show(err); }
     });
     document.querySelector('#add-domain').addEventListener('click', () => addDomainRow());
+    document.querySelector('#add-anonymous-rule').addEventListener('click', () => addAnonymousRuleRow());
     document.querySelector('#add-header-rule').addEventListener('click', () => addHeaderRuleRow());
+    document.querySelector('#add-rewrite-rule').addEventListener('click', () => addRewriteRuleRow());
     document.querySelector('#generate-json').addEventListener('click', () => {
       const resource = buildResourceConfig();
       setEditor(resource);
@@ -741,6 +802,8 @@ func AdminHTML() string {
 
     addDomainRow();
     addHeaderRuleRow({ name: 'X-Requested-With', action: 'remove', phase: 'request' });
+    addAnonymousRuleRow();
+    addRewriteRuleRow();
   </script>
 </body>
 </html>`
