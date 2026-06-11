@@ -205,8 +205,14 @@ func TestDeploymentPackagingAndDocsExist(t *testing.T) {
 	for _, path := range []string{
 		"Containerfile",
 		filepath.Join("docs", "deploy-container.md"),
+		filepath.Join("docs", "install-linux-vm.md"),
 		filepath.Join("deploy", "odo.env.example"),
 		filepath.Join("deploy", "podman", "odo.container"),
+		filepath.Join("packaging", "systemd", "odo.env.example"),
+		filepath.Join("packaging", "systemd", "odo.service"),
+		filepath.Join("scripts", "install-linux.sh"),
+		filepath.Join("scripts", "uninstall-linux.sh"),
+		"Makefile",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
 			t.Fatalf("expected %s to exist: %v", path, err)
@@ -230,6 +236,52 @@ func TestDeploymentPackagingAndDocsExist(t *testing.T) {
 	for _, want := range []string{"## Deployment", "docs/deploy-container.md", "APP_PUBLIC_URL", "persistent data volume"} {
 		if !strings.Contains(string(readme), want) {
 			t.Fatalf("expected README deployment section to contain %q", want)
+		}
+	}
+
+	for _, want := range []string{"## Installation", "docs/install-linux-vm.md", "Linux VM install", "Container install"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("expected README installation section to contain %q", want)
+		}
+	}
+
+	unit, err := os.ReadFile(filepath.Join(root, "packaging", "systemd", "odo.service"))
+	if err != nil {
+		t.Fatalf("read systemd unit: %v", err)
+	}
+	for _, want := range []string{"User=odo", "Group=odo", "EnvironmentFile=/etc/odo/odo.env", "ExecStart=/usr/local/bin/odo", "WorkingDirectory=/var/lib/odo", "StandardOutput=append:/var/log/odo/odo.log", "NoNewPrivileges=true", "ReadWritePaths=/var/lib/odo /var/log/odo"} {
+		if !strings.Contains(string(unit), want) {
+			t.Fatalf("expected systemd unit to contain %q", want)
+		}
+	}
+
+	envExample, err := os.ReadFile(filepath.Join(root, "packaging", "systemd", "odo.env.example"))
+	if err != nil {
+		t.Fatalf("read systemd env example: %v", err)
+	}
+	for _, want := range []string{"APP_ENV=production", "APP_BIND_ADDR=127.0.0.1:8080", "APP_DB_PATH=/var/lib/odo/odo.db", "APP_ACCESS_LOG_PATH=/var/log/odo/access.log", "APP_TRUST_PROXY_HEADERS=true"} {
+		if !strings.Contains(string(envExample), want) {
+			t.Fatalf("expected systemd env example to contain %q", want)
+		}
+	}
+
+	for _, path := range []string{filepath.Join("scripts", "install-linux.sh"), filepath.Join("scripts", "uninstall-linux.sh")} {
+		info, err := os.Stat(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Fatalf("expected %s to be executable, mode is %s", path, info.Mode())
+		}
+	}
+
+	installer, err := os.ReadFile(filepath.Join(root, "scripts", "install-linux.sh"))
+	if err != nil {
+		t.Fatalf("read install script: %v", err)
+	}
+	for _, want := range []string{"if [ -f \"$ENV_FILE\" ] && [ \"$FORCE\" -ne 1 ]", "Keeping existing $ENV_FILE", "Pass --force to overwrite"} {
+		if !strings.Contains(string(installer), want) {
+			t.Fatalf("expected install script no-overwrite behavior to contain %q", want)
 		}
 	}
 }

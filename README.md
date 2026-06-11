@@ -24,6 +24,12 @@ The important architectural rule is that management and configuration happen thr
 - A production HA deployment.
 - A complete audit implementation.
 
+## Installation
+
+- Local development: run `go run ./cmd/odo` and open `http://127.0.0.1:8080/admin`.
+- Linux VM install: build a binary, install the systemd unit, keep config in `/etc/odo`, data in `/var/lib/odo`, and logs in `/var/log/odo`. See [Installing Odo on a Linux VM](docs/install-linux-vm.md).
+- Container install: build the image, mount persistent data/config volumes, and put a reverse proxy in front. See [Deploying Odo with a Container](docs/deploy-container.md).
+
 ## Local Run
 
 Run without an API key for local dev. Management endpoints are unprotected in this mode, and the app logs a startup warning:
@@ -52,9 +58,9 @@ http://127.0.0.1:8080/admin
 
 ## Deployment
 
-For local development, use `go run ./cmd/odo`. For a container or Linux server behind a real FQDN, set `APP_PUBLIC_URL`, use a persistent data volume for SQLite, and keep config under a persistent config directory. Production deployments need real secrets for `APP_ADMIN_API_KEY` and `APP_KEY_HASH_SECRET`; do not expose a dev instance or `devsecret` publicly.
+For local development, use `go run ./cmd/odo`. For a Linux VM or container behind a real FQDN, set `APP_PUBLIC_URL`, use a persistent data volume for SQLite, and keep config under a persistent config directory. Production deployments need real secrets for `APP_ADMIN_API_KEY` and `APP_KEY_HASH_SECRET`; do not expose a dev instance or `devsecret` publicly.
 
-See [Deploying Odo with a Container](docs/deploy-container.md) for Podman, Quadlet, persistent volume, and reverse proxy examples.
+See [Installing Odo on a Linux VM](docs/install-linux-vm.md) for binary/systemd installs, or [Deploying Odo with a Container](docs/deploy-container.md) for Podman, Quadlet, persistent volume, and reverse proxy examples.
 
 ## API Documentation
 
@@ -84,7 +90,8 @@ See [Adding Resources in Odo](docs/resource-how-to.md) for a plain-language work
 
 Environment variables:
 
-- `APP_ADDR`, default `:8080`
+- `APP_BIND_ADDR`, preferred bind address for service installs, default `:8080`
+- `APP_ADDR`, older name for the bind address; still supported when `APP_BIND_ADDR` is unset
 - `APP_ENV`, default `development`; use `production` on servers
 - `APP_DATA_DIR`, default `./data` in development and `/var/lib/odo` in production
 - `APP_DB_PATH`, default `$APP_DATA_DIR/odo.db`; production preference is `/var/lib/odo/odo.db`

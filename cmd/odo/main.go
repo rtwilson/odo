@@ -17,7 +17,7 @@ import (
 
 func main() {
 	appEnv := normalizedAppEnv()
-	addr := env("APP_ADDR", ":8080")
+	addr := env("APP_BIND_ADDR", env("APP_ADDR", ":8080"))
 	dataDir := env("APP_DATA_DIR", defaultDataDir(appEnv))
 	dbPath := env("APP_DB_PATH", filepath.Join(dataDir, "odo.db"))
 	configDir := env("APP_CONFIG_DIR", defaultConfigDir(appEnv))

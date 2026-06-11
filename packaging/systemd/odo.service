@@ -1,0 +1,27 @@
+[Unit]
+Description=Odo library access middleware
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odo
+Group=odo
+EnvironmentFile=/etc/odo/odo.env
+WorkingDirectory=/var/lib/odo
+ExecStart=/usr/local/bin/odo
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:/var/log/odo/odo.log
+StandardError=append:/var/log/odo/odo.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/odo /var/log/odo
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
