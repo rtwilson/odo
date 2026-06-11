@@ -48,6 +48,11 @@ type Server struct {
 	proxyH     http.Handler
 }
 
+var (
+	Version = "dev"
+	Commit  = "unknown"
+)
+
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
 	accessLogger, _ := accesslog.New(accesslog.FormatPrivacy, nil)
 	return NewServerWithAccessLogger(store, configDir, adminKey, logger, accessLogger)
@@ -101,6 +106,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
 	mux.HandleFunc("POST /auth/saml/acs", s.samlACS)
 	mux.HandleFunc("GET /api/v1/health", s.health)
+	mux.HandleFunc("GET /api/v1/system", s.requireScopes(s.systemInfo, "admin"))
 	mux.HandleFunc("GET /api/v1/resources", s.listResources)
 	mux.HandleFunc("POST /api/v1/resources", s.requireScopes(s.upsertResource, "resources:write"))
 	mux.HandleFunc("POST /api/v1/resources/validate", s.requireScopes(s.validateResource, "resources:write"))
@@ -505,6 +511,24 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
+	publicURL := configuredPublicURL()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":                  Version,
+		"commit":                   Commit,
+		"app_env":                  normalizedAppEnv(),
+		"public_url":               publicURL,
+		"public_url_set":           publicURL != "",
+		"data_dir":                 configuredDataDir(),
+		"config_dir":               s.configDir,
+		"proxy_require_login":      s.proxyLoginRequired(),
+		"trust_proxy_headers":      trustProxyHeaders(),
+		"proxy_url_mode":           proxy.ProxyURLMode(),
+		"javascript_shim_enabled":  proxy.InjectJSShimEnabled(),
+		"referer_recovery_enabled": proxy.RefererRecoveryEnabled(),
 	})
 }
 
@@ -1440,10 +1464,17 @@ func keyPrefix(token string) string {
 }
 
 func publicBaseURL(r *http.Request) string {
-	if value := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/"); value != "" {
+	if value := configuredPublicURL(); value != "" {
 		return value
 	}
-	scheme := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	scheme := ""
+	host := r.Host
+	if trustProxyHeaders() {
+		scheme = firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+		if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+			host = forwardedHost
+		}
+	}
 	if scheme == "" {
 		if r.TLS != nil {
 			scheme = "https"
@@ -1451,11 +1482,73 @@ func publicBaseURL(r *http.Request) string {
 			scheme = "http"
 		}
 	}
-	host := r.Host
 	if host == "" {
 		host = "127.0.0.1:8080"
 	}
 	return scheme + "://" + host
+}
+
+func configuredPublicURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/")
+}
+
+func trustProxyHeaders() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_TRUST_PROXY_HEADERS"))) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstForwardedValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
+}
+
+func normalizedAppEnv() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "production":
+		return "production"
+	case "", "development":
+		return "development"
+	default:
+		return "development"
+	}
+}
+
+func configuredDataDir() string {
+	if value := strings.TrimSpace(os.Getenv("APP_DATA_DIR")); value != "" {
+		return value
+	}
+	if dbPath := strings.TrimSpace(os.Getenv("APP_DB_PATH")); dbPath != "" {
+		return filepathDir(dbPath)
+	}
+	if normalizedAppEnv() == "production" {
+		return "/var/lib/odo"
+	}
+	return "./data"
+}
+
+func filepathDir(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "."
+	}
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return "."
+	}
+	if idx == 0 {
+		return "/"
+	}
+	return path[:idx]
 }
 
 func spMetadataXML(provider saml.Provider) string {

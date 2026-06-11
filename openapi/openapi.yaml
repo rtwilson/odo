@@ -20,6 +20,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /api/v1/system:
+    get:
+      summary: Non-secret system information
+      operationId: getSystemInfo
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Runtime system information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemInfo"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /api/v1/resources:
     get:
       summary: List resources
@@ -913,6 +930,35 @@ components:
         time:
           type: string
           format: date-time
+    SystemInfo:
+      type: object
+      required: [version, commit, app_env, public_url_set, data_dir, config_dir, proxy_require_login, trust_proxy_headers]
+      properties:
+        version:
+          type: string
+        commit:
+          type: string
+        app_env:
+          type: string
+          enum: [development, production]
+        public_url:
+          type: string
+        public_url_set:
+          type: boolean
+        data_dir:
+          type: string
+        config_dir:
+          type: string
+        proxy_require_login:
+          type: boolean
+        trust_proxy_headers:
+          type: boolean
+        proxy_url_mode:
+          type: string
+        javascript_shim_enabled:
+          type: boolean
+        referer_recovery_enabled:
+          type: boolean
     ErrorResponse:
       type: object
       required: [error]

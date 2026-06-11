@@ -1,0 +1,16 @@
+[Unit]
+Description=Odo library access middleware
+
+[Container]
+Image=localhost/odo:latest
+ContainerName=odo
+PublishPort=127.0.0.1:8080:8080
+Volume=odo-data.volume:/var/lib/odo:Z
+Volume=/etc/odo:/etc/odo:Z
+EnvironmentFile=/etc/odo/odo.env
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

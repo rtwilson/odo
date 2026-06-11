@@ -36,6 +36,62 @@ func TestHealthDoesNotRequireAPIKey(t *testing.T) {
 	}
 }
 
+func TestSystemEndpointReturnsNonSecretRuntimeInfo(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu/")
+	t.Setenv("APP_DATA_DIR", "/var/lib/odo")
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	t.Setenv("APP_TRUST_PROXY_HEADERS", "true")
+	t.Setenv("APP_ADMIN_API_KEY", "do-not-leak")
+	t.Setenv("APP_KEY_HASH_SECRET", "also-do-not-leak")
+	server := newTestServerWithConfig(t, "secret", "/etc/odo")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected system endpoint to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode system response: %v", err)
+	}
+	if body["app_env"] != "production" || body["public_url"] != "https://access.example.edu" || body["public_url_set"] != true || body["data_dir"] != "/var/lib/odo" || body["config_dir"] != "/etc/odo" || body["proxy_require_login"] != true || body["trust_proxy_headers"] != true {
+		t.Fatalf("unexpected system response: %#v", body)
+	}
+	if strings.Contains(rec.Body.String(), "do-not-leak") || strings.Contains(rec.Body.String(), "also-do-not-leak") {
+		t.Fatalf("system endpoint exposed a secret: %s", rec.Body.String())
+	}
+}
+
+func TestPublicBaseURLIgnoresForwardedHeadersByDefault(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "")
+	t.Setenv("APP_TRUST_PROXY_HEADERS", "")
+	req := httptest.NewRequest(http.MethodGet, "http://internal.local/auth/saml/metadata", nil)
+	req.Host = "internal.local"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "access.example.edu")
+
+	if got := publicBaseURL(req); got != "http://internal.local" {
+		t.Fatalf("expected forwarded headers to be ignored by default, got %q", got)
+	}
+}
+
+func TestPublicBaseURLUsesTrustedForwardedHeadersWhenEnabled(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "")
+	t.Setenv("APP_TRUST_PROXY_HEADERS", "true")
+	req := httptest.NewRequest(http.MethodGet, "http://internal.local/auth/saml/metadata", nil)
+	req.Host = "internal.local"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "access.example.edu")
+
+	if got := publicBaseURL(req); got != "https://access.example.edu" {
+		t.Fatalf("expected trusted forwarded headers to set public base URL, got %q", got)
+	}
+}
+
 func TestRootRedirectsToAdmin(t *testing.T) {
 	server := newTestServer(t, "secret")
 
@@ -104,7 +160,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Load System Info", "app_env", "public_url", "data_dir", "trust_proxy_headers", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -141,6 +197,40 @@ func TestResourceDocumentationExistsAndReadmeLinksIt(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(string(readme)), "ezproxy") || strings.Contains(strings.ToLower(string(doc)), "ezproxy") {
 		t.Fatalf("documentation should not reference EZproxy")
+	}
+}
+
+func TestDeploymentPackagingAndDocsExist(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, path := range []string{
+		"Containerfile",
+		filepath.Join("docs", "deploy-container.md"),
+		filepath.Join("deploy", "odo.env.example"),
+		filepath.Join("deploy", "podman", "odo.container"),
+	} {
+		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+
+	containerfile, err := os.ReadFile(filepath.Join(root, "Containerfile"))
+	if err != nil {
+		t.Fatalf("read Containerfile: %v", err)
+	}
+	for _, want := range []string{"FROM golang:1.23-alpine AS build", "USER odo", "APP_DATA_DIR=/var/lib/odo", "APP_CONFIG_DIR=/etc/odo", "HEALTHCHECK", "EXPOSE 8080"} {
+		if !strings.Contains(string(containerfile), want) {
+			t.Fatalf("expected Containerfile to contain %q", want)
+		}
+	}
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	for _, want := range []string{"## Deployment", "docs/deploy-container.md", "APP_PUBLIC_URL", "persistent data volume"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("expected README deployment section to contain %q", want)
+		}
 	}
 }
 

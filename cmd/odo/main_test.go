@@ -3,7 +3,9 @@ package main
 import (
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"example.org/odo/internal/auth/local"
@@ -48,5 +50,31 @@ func TestBootstrapAdminUserCreatesInitialAdmin(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected bootstrap to create one user, got %d", count)
+	}
+}
+
+func TestProductionWarningsFlagMissingCriticalSettings(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "")
+	t.Setenv("APP_KEY_HASH_SECRET", "")
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "false")
+
+	warnings := productionWarnings("production", filepath.Join(os.TempDir(), "odo"), filepath.Join(os.TempDir(), "odo", "odo.db"), "devsecret")
+	text := strings.Join(warnings, "\n")
+	for _, want := range []string{"APP_PUBLIC_URL", "APP_KEY_HASH_SECRET", "APP_ADMIN_API_KEY", "APP_PROXY_REQUIRE_LOGIN", "temporary"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected production warnings to contain %q, got %v", want, warnings)
+		}
+	}
+}
+
+func TestRuntimeDefaultsPreferProductionPathsInProduction(t *testing.T) {
+	if got := defaultDataDir("production"); got != "/var/lib/odo" {
+		t.Fatalf("expected production data dir /var/lib/odo, got %q", got)
+	}
+	if got := defaultConfigDir("production"); got != "/etc/odo" {
+		t.Fatalf("expected production config dir /etc/odo, got %q", got)
+	}
+	if got := defaultDataDir("development"); got != "./data" {
+		t.Fatalf("expected development data dir ./data, got %q", got)
 	}
 }

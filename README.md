@@ -50,6 +50,12 @@ Open:
 http://127.0.0.1:8080/admin
 ```
 
+## Deployment
+
+For local development, use `go run ./cmd/odo`. For a container or Linux server behind a real FQDN, set `APP_PUBLIC_URL`, use a persistent data volume for SQLite, and keep config under a persistent config directory. Production deployments need real secrets for `APP_ADMIN_API_KEY` and `APP_KEY_HASH_SECRET`; do not expose a dev instance or `devsecret` publicly.
+
+See [Deploying Odo with a Container](docs/deploy-container.md) for Podman, Quadlet, persistent volume, and reverse proxy examples.
+
 ## API Documentation
 
 The current OpenAPI 3.1 spec is served by the app:
@@ -79,8 +85,10 @@ See [Adding Resources in Odo](docs/resource-how-to.md) for a plain-language work
 Environment variables:
 
 - `APP_ADDR`, default `:8080`
-- `APP_DB_PATH`, default `./data/app.db`
-- `APP_CONFIG_DIR`, default `./config`
+- `APP_ENV`, default `development`; use `production` on servers
+- `APP_DATA_DIR`, default `./data` in development and `/var/lib/odo` in production
+- `APP_DB_PATH`, default `$APP_DATA_DIR/odo.db`; production preference is `/var/lib/odo/odo.db`
+- `APP_CONFIG_DIR`, default `./config` in development and `/etc/odo` in production
 - `APP_PUBLIC_URL`, optional public base URL used for generated SAML SP metadata defaults
 - `APP_ADMIN_API_KEY`, optional bootstrap/dev fallback for creating and managing stored API keys
 - `APP_BOOTSTRAP_ADMIN_USERNAME`, optional username used to create the first local admin user when no users exist
@@ -95,6 +103,7 @@ Environment variables:
 - `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
 - `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
 - `APP_PROXY_REFERER_RECOVERY`, default `true`; recovers missed local asset/script paths when a proxied Referer identifies the upstream host
+- `APP_TRUST_PROXY_HEADERS`, default `false`; set `true` only behind a trusted reverse proxy that controls `X-Forwarded-*` headers
 
 ## API Examples
 

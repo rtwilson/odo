@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"example.org/odo/internal/accesslog"
@@ -14,9 +16,11 @@ import (
 )
 
 func main() {
+	appEnv := normalizedAppEnv()
 	addr := env("APP_ADDR", ":8080")
-	dbPath := env("APP_DB_PATH", "./data/app.db")
-	configDir := env("APP_CONFIG_DIR", "./config")
+	dataDir := env("APP_DATA_DIR", defaultDataDir(appEnv))
+	dbPath := env("APP_DB_PATH", filepath.Join(dataDir, "odo.db"))
+	configDir := env("APP_CONFIG_DIR", defaultConfigDir(appEnv))
 	adminAPIKey := os.Getenv("APP_ADMIN_API_KEY")
 	accessLogFormat := env("APP_ACCESS_LOG_FORMAT", accesslog.FormatPrivacy)
 	accessLogPath := os.Getenv("APP_ACCESS_LOG_PATH")
@@ -24,6 +28,14 @@ func main() {
 	proxyURLMode := proxy.ProxyURLMode()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	for _, warning := range productionWarnings(appEnv, dataDir, dbPath, adminAPIKey) {
+		logger.Warn(warning)
+	}
+
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		logger.Error("create data directory", "err", err, "data_dir", dataDir)
+		os.Exit(1)
+	}
 
 	store, err := db.Open(dbPath)
 	if err != nil {
@@ -60,7 +72,7 @@ func main() {
 	defer accessLogCloser.Close()
 
 	server := api.NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminAPIKey, logger, accessLogger, nil, proxy.DefaultHTTPClient(), proxyDebug)
-	logger.Info("odo listening", "addr", addr, "db", dbPath, "config_dir", configDir, "proxy_url_mode", proxyURLMode)
+	logger.Info("odo listening", "addr", addr, "app_env", appEnv, "data_dir", dataDir, "db", dbPath, "config_dir", configDir, "proxy_url_mode", proxyURLMode)
 	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
 		logger.Error("server stopped", "err", err)
 		os.Exit(1)
@@ -72,6 +84,54 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func normalizedAppEnv() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "production":
+		return "production"
+	case "", "development":
+		return "development"
+	default:
+		return "development"
+	}
+}
+
+func defaultDataDir(appEnv string) string {
+	if appEnv == "production" {
+		return "/var/lib/odo"
+	}
+	return "./data"
+}
+
+func defaultConfigDir(appEnv string) string {
+	if appEnv == "production" {
+		return "/etc/odo"
+	}
+	return "./config"
+}
+
+func productionWarnings(appEnv, dataDir, dbPath, adminAPIKey string) []string {
+	if appEnv != "production" {
+		return nil
+	}
+	var warnings []string
+	if strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")) == "" {
+		warnings = append(warnings, "APP_ENV=production but APP_PUBLIC_URL is not set")
+	}
+	if strings.TrimSpace(os.Getenv("APP_KEY_HASH_SECRET")) == "" {
+		warnings = append(warnings, "APP_ENV=production but APP_KEY_HASH_SECRET is not set")
+	}
+	if adminAPIKey == "devsecret" {
+		warnings = append(warnings, "APP_ENV=production but APP_ADMIN_API_KEY is set to devsecret")
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_PROXY_REQUIRE_LOGIN")), "false") {
+		warnings = append(warnings, "APP_ENV=production but APP_PROXY_REQUIRE_LOGIN is disabled")
+	}
+	if strings.HasPrefix(dbPath, os.TempDir()+string(os.PathSeparator)) || strings.HasPrefix(dataDir, os.TempDir()+string(os.PathSeparator)) {
+		warnings = append(warnings, "APP_ENV=production but database path appears to be temporary")
+	}
+	return warnings
 }
 
 func bootstrapAdminUser(store *db.Store, logger *slog.Logger) error {

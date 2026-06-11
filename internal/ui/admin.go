@@ -228,9 +228,11 @@ func AdminHTML() string {
           <h2>Settings / System</h2>
           <div class="toolbar">
             <button id="settings-health">Health check</button>
+            <button id="settings-system">Load System Info</button>
             <button id="settings-openapi">OpenAPI spec</button>
           </div>
           <p class="muted">Runtime configuration is controlled by environment variables. Secrets are not displayed here.</p>
+          <div id="system-info" class="table-wrap">System information not loaded.</div>
         </section>
 
         <h3 class="output-title">Output</h3>
@@ -249,6 +251,7 @@ func AdminHTML() string {
     const apiKeyTable = document.querySelector('#api-key-table');
     const userList = document.querySelector('#user-list');
     const samlProviderList = document.querySelector('#saml-provider-list');
+    const systemInfo = document.querySelector('#system-info');
     const builderDomains = document.querySelector('#builder-domains');
     const builderHeaders = document.querySelector('#builder-headers');
     const builderAnonymousRules = document.querySelector('#builder-anonymous-rules');
@@ -652,6 +655,25 @@ func AdminHTML() string {
       }
     }
 
+    function renderSystemInfo(data) {
+      const columns = ['app_env', 'public_url', 'public_url_set', 'data_dir', 'config_dir', 'proxy_require_login', 'trust_proxy_headers', 'version', 'commit'];
+      const table = document.createElement('table');
+      const tbody = document.createElement('tbody');
+      for (const column of columns) {
+        const row = document.createElement('tr');
+        const th = document.createElement('th');
+        th.textContent = column;
+        const td = document.createElement('td');
+        td.textContent = String(data[column] ?? '');
+        row.appendChild(th);
+        row.appendChild(td);
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      systemInfo.textContent = '';
+      systemInfo.appendChild(table);
+    }
+
     function showAPIKeyResponse(result) {
       const value = unwrap(result);
       if (value && value.token) {
@@ -913,6 +935,13 @@ func AdminHTML() string {
     document.querySelector('#revoke-user-sessions').addEventListener('click', () => userAction('revoke-sessions', 'Revoke all sessions for user "{id}"?'));
 
     document.querySelector('#settings-health').addEventListener('click', async () => { try { show(await api('/api/v1/health', { auth: false })); } catch (err) { show(err); } });
+    document.querySelector('#settings-system').addEventListener('click', async () => {
+      try {
+        const result = await api('/api/v1/system');
+        renderSystemInfo(unwrap(result));
+        show(result);
+      } catch (err) { show(err); }
+    });
     document.querySelector('#settings-openapi').addEventListener('click', () => window.open('/openapi.yaml', '_blank', 'noopener'));
 
     document.querySelector('#load-saml-providers').addEventListener('click', async () => { try { await loadSAMLProviders(); } catch (err) { show(err); } });
