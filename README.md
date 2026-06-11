@@ -70,6 +70,12 @@ User management is available in the Users section. Admins can create local users
 
 The Resources section includes a Resource Config Builder for authoring structured JSON resource configs. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, and export a `resource-<id>.json` file.
 
+## Adding resources
+
+Use the admin Resource Config Builder for most additions. Start with a title, entry URL, and main domain, then generate and validate the JSON before saving. Use raw JSON for advanced cases such as header rules, anonymous URL rules, content rewrite rules, or carefully reviewed compatibility settings. After saving, use Proxy Test and Diagnostics to confirm the entry URL, search pages, detail pages, downloads, and any blocked or missed hosts.
+
+See [Adding Resources in Odo](docs/resource-how-to.md) for a plain-language workflow and examples.
+
 Environment variables:
 
 - `APP_ADDR`, default `:8080`
@@ -254,26 +260,6 @@ curl -X POST http://127.0.0.1:8080/api/v1/users/user_abc123/revoke-sessions \
   -H 'Authorization: Bearer devsecret' | jq
 ```
 
-## Resource Config Builder
-
-Odo resources are JSON control-plane objects. The expanded resource config model supports entry URLs, per-resource HTTP method allowlists, cookie policy metadata, request header rules, anonymous URL rules, resource-specific content rewrite rules, compatibility hints, and domain behavior rules.
-
-Domain rules can use behaviors:
-
-- `proxy`: safe matching requests may be proxied.
-- `cookie_domain`: host/domain may be used for cookie scope metadata.
-- `redirect_only`: redirects may be allowed without proxying the host directly.
-- `block`: explicit block; this wins over broader allow/proxy rules.
-- `external_allow`: links may leave the proxy without being treated as failures.
-
-Anonymous URL rules are scoped public proxy allowances, similar in intent to EZproxy `AnonymousURL`. They still pass URL safety checks and should be narrow, such as `https://cms-films.economist.com/*`.
-
-Content rewrite rules are explicit resource-specific text substitutions for difficult vendors. They support a small set of Odo-native replacement tokens such as `{proxy_url:https://www.example.com/}`, `{proxy_http_url:https://www.example.com/}`, `{proxy_base_url}`, `{target_origin}`, and `{proxy_host_suffix}`. Use them sparingly, especially for JSON or JavaScript payloads, and validate generated JSON before saving.
-
-Request header rules can model vendor-specific behavior such as removing `X-Requested-With` from outbound proxy requests. The included JSTOR sample at `config/resources/jstor.json` shows a more complex resource profile with method expansion, cookie policy, domain behaviors, and a header removal rule. `config/resources/jstor-aluka.json` provides a second related-resource example. `config/resources/economist.json` shows anonymous URL rules and content rewrite rules for a more app-shell-heavy resource.
-
-The builder is not a full EZproxy parser and does not guarantee exact EZproxy directive compatibility.
-
 ## SAML SP Scaffolding
 
 Odo is designed to act as a SAML Service Provider for campus/Shibboleth-style identity infrastructure. Full SAML login initiation and assertion validation are future work, but the MVP includes SAML provider configuration APIs, admin UI controls, and a Service Provider metadata endpoint.
@@ -369,7 +355,7 @@ Query compatibility mode can be selected with:
 APP_PROXY_URL_MODE=query
 ```
 
-Unknown local paths now return `404` instead of redirecting to `/admin` unless referer-based recovery applies, which makes missed rewrites easier to spot during testing. Missed document navigations redirect to canonical `/odo/https/{host}/{path}` URLs, while missed assets can be silently proxied. Virtual-host mode may be added later for EZproxy-style URLs such as `www-economist-com.access.library.edu`.
+Unknown local paths now return `404` instead of redirecting to `/admin` unless referer-based recovery applies, which makes missed rewrites easier to spot during testing. Missed document navigations redirect to canonical `/odo/https/{host}/{path}` URLs, while missed assets can be silently proxied. Virtual-host mode may be added later for institution-specific host-based access URLs such as `www-economist-com.access.library.edu`.
 
 `/odo` performs a minimal safe outbound `GET`/`HEAD`/`POST` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
 

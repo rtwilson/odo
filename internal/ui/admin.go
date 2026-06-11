@@ -100,6 +100,7 @@ func AdminHTML() string {
             <div><textarea id="editor" spellcheck="false" aria-label="Resource JSON editor"></textarea></div>
           </div>
           <h3>Resource Config Builder</h3>
+          <p class="muted">Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed. See docs/resource-how-to.md for the resource how-to guide.</p>
           <div class="toolbar">
             <input id="builder-id" placeholder="Resource ID" aria-label="Resource ID">
             <input id="builder-title" placeholder="Title" aria-label="Title">

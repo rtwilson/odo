@@ -104,7 +104,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -114,6 +114,33 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 	}
 	if strings.Contains(body, `data-odo-js-shim="true"`) {
 		t.Fatalf("admin UI should not include proxy JS shim")
+	}
+}
+
+func TestResourceDocumentationExistsAndReadmeLinksIt(t *testing.T) {
+	root := filepath.Join("..", "..")
+	docPath := filepath.Join(root, "docs", "resource-how-to.md")
+	doc, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("expected docs/resource-how-to.md to exist: %v", err)
+	}
+	for _, want := range []string{"# Adding Resources in Odo", "What is an Odo resource?", "JSTOR-style example", "Economist-style example"} {
+		if !strings.Contains(string(doc), want) {
+			t.Fatalf("expected resource how-to to contain %q", want)
+		}
+	}
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	for _, want := range []string{"## Adding resources", "docs/resource-how-to.md", "Resource Config Builder", "Proxy Test and Diagnostics"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("expected README to contain %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(string(readme)), "ezproxy") || strings.Contains(strings.ToLower(string(doc)), "ezproxy") {
+		t.Fatalf("documentation should not reference EZproxy")
 	}
 }
 
