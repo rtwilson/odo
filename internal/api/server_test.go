@@ -349,7 +349,7 @@ func TestLoginResourcesAndProxyRequireLocalSession(t *testing.T) {
 		_, _ = w.Write([]byte("proxied ok"))
 	}))
 	defer upstream.Close()
-	server := newProxyFetchTestServer(t, upstream.URL)
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
 	createLocalTestUser(t, server, "alice", "correct horse battery")
 	if err := server.store.UpsertResource(resources.Resource{
 		ID:        "portal",
@@ -388,6 +388,279 @@ func TestLoginResourcesAndProxyRequireLocalSession(t *testing.T) {
 	}
 	if got := proxyRec.Header().Values("Set-Cookie"); strings.Contains(strings.Join(got, "\n"), "vendor") {
 		t.Fatalf("proxy response should not expose upstream cookies: %v", got)
+	}
+}
+
+func TestProxyLoginRedirectPreservesPathAndQuery(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServer(t, "https://upstream.example")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/stable/123456?Search=yes", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected redirect to login, got %d body %s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse redirect location: %v", err)
+	}
+	if parsed.Path != "/login" || parsed.Query().Get("next") != "/odo/https/www.jstor.org/stable/123456?Search=yes" {
+		t.Fatalf("expected login next to preserve path/query, got %q", location)
+	}
+}
+
+func TestProxyLoginRedirectPreservesQueryStyleProxyURL(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServer(t, "https://upstream.example")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https%3A%2F%2Fwww.jstor.org%2Fstable%2F123456", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected redirect to login, got %d body %s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse redirect location: %v", err)
+	}
+	if parsed.Path != "/login" || parsed.Query().Get("next") != "/odo?url=https%3A%2F%2Fwww.jstor.org%2Fstable%2F123456" {
+		t.Fatalf("expected query-style proxy URL in next, got %q", location)
+	}
+}
+
+func TestSafeNextPathValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{name: "odo", raw: "/odo/https/www.jstor.org/stable/123456", want: "/odo/https/www.jstor.org/stable/123456", ok: true},
+		{name: "resources", raw: "/resources", want: "/resources", ok: true},
+		{name: "query style", raw: "/odo?url=https%3A%2F%2Fwww.jstor.org%2Fstable%2F123456", want: "/odo?url=https%3A%2F%2Fwww.jstor.org%2Fstable%2F123456", ok: true},
+		{name: "external", raw: "https://evil.example/", want: "/resources", ok: false},
+		{name: "scheme-relative", raw: "//evil.example/path", want: "/resources", ok: false},
+		{name: "http scheme", raw: "http://evil.example", want: "/resources", ok: false},
+		{name: "admin", raw: "/admin", want: "/resources", ok: false},
+		{name: "malformed", raw: "%", want: "/resources", ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := safeNextPath(tc.raw)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("safeNextPath(%q) = %q, %v; want %q, %v", tc.raw, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestLoginPageAndPostRedirects(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
+	server := newTestServer(t, "secret")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/login?next="+url.QueryEscape("/odo/https/www.jstor.org/"), nil)
+	getRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), "Sign in to continue") || !strings.Contains(getRec.Body.String(), `name="next" value="/odo/https/www.jstor.org/"`) {
+		t.Fatalf("expected login form with hidden next, got %d body %s", getRec.Code, getRec.Body.String())
+	}
+
+	form := url.Values{}
+	form.Set("username", "alice")
+	form.Set("password", "correct horse battery")
+	form.Set("next", "/odo/https/www.jstor.org/")
+	postReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusFound || postRec.Header().Get("Location") != "/odo/https/www.jstor.org/" {
+		t.Fatalf("expected login redirect to next, got %d location %q", postRec.Code, postRec.Header().Get("Location"))
+	}
+	sessionCookie := findCookie(postRec.Result().Cookies(), browserSessionCookieName)
+	if sessionCookie == nil {
+		t.Fatalf("expected login to set session cookie")
+	}
+	if !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode || !sessionCookie.Secure || sessionCookie.Path != "/" {
+		t.Fatalf("session cookie missing security attributes: %#v", sessionCookie)
+	}
+	session, found, err := server.store.GetSession(local.SessionIDFromToken(sessionCookie.Value))
+	if err != nil || !found {
+		t.Fatalf("expected stored session, found=%v err=%v", found, err)
+	}
+	if session.SessionHash == "" || session.SessionHash == sessionCookie.Value || strings.Contains(session.SessionHash, ".") {
+		t.Fatalf("expected stored session hash, got %#v", session)
+	}
+
+	noNextForm := url.Values{}
+	noNextForm.Set("username", "alice")
+	noNextForm.Set("password", "correct horse battery")
+	noNextReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(noNextForm.Encode()))
+	noNextReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	noNextRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(noNextRec, noNextReq)
+	if noNextRec.Code != http.StatusFound || noNextRec.Header().Get("Location") != "/resources" {
+		t.Fatalf("expected login without next to redirect to /resources, got %d location %q", noNextRec.Code, noNextRec.Header().Get("Location"))
+	}
+
+	badForm := url.Values{}
+	badForm.Set("username", "missing")
+	badForm.Set("password", "wrong password")
+	badReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(badForm.Encode()))
+	badReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusUnauthorized || !strings.Contains(badRec.Body.String(), "invalid username or password") || strings.Contains(strings.ToLower(badRec.Body.String()), "not found") {
+		t.Fatalf("expected generic invalid login response, got %d body %s", badRec.Code, badRec.Body.String())
+	}
+}
+
+func TestUnauthenticatedProxyFetchGetsJSONLoginRequired(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServer(t, "https://upstream.example")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/data.json", nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode login required response: %v", err)
+	}
+	if body["error"] != "login_required" || body["login_url"] != "/login" || body["reason"] != "proxy access requires login" {
+		t.Fatalf("unexpected login required response: %#v", body)
+	}
+}
+
+func TestProxyLoginRequiredAccessLogIsPrivacySafe(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	var buf bytes.Buffer
+	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, &buf)
+	if err != nil {
+		t.Fatalf("create access logger: %v", err)
+	}
+	server := newProxyFetchTestServerWithAccessLog(t, "https://upstream.example", accessLogger)
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/stable/123456?token=secret", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+
+	logs := buf.String()
+	for _, want := range []string{"decision=login_required", "route=/odo", "target_host=www.jstor.org", "resource_id=jstor", "next_path=/odo/https/www.jstor.org/stable/123456"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("expected privacy access log to contain %q, got:\n%s", want, logs)
+		}
+	}
+	if strings.Contains(logs, "token=secret") || strings.Contains(logs, "stable/123456?") {
+		t.Fatalf("login-required access log should not include query/full URL, got:\n%s", logs)
+	}
+}
+
+func TestProxyRequireLoginFalseAllowsDevProxyAccess(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "false")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("dev proxied ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/", nil)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "dev proxied ok") {
+		t.Fatalf("expected dev proxy access, got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAnonymousURLRuleBypassesProxyLoginForMatchingAsset(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("public asset"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:     "economist",
+		Title:  "Economist",
+		Status: "active",
+		Domains: []resources.DomainRule{
+			{Host: "www.economist.com", Match: "exact", Action: "proxy"},
+		},
+		AnonymousURLRules: []resources.AnonymousURLRule{
+			{Pattern: "https://cms-films.economist.com/*", Behavior: "allow_public_proxy", Methods: []string{"GET", "HEAD"}},
+		},
+	}); err != nil {
+		t.Fatalf("upsert anonymous resource: %v", err)
+	}
+
+	assetReq := httptest.NewRequest(http.MethodGet, "/odo/https/cms-films.economist.com/trailer.js", nil)
+	assetRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(assetRec, assetReq)
+	if assetRec.Code != http.StatusOK || !strings.Contains(assetRec.Body.String(), "public asset") {
+		t.Fatalf("expected anonymous asset through proxy, got %d body %s", assetRec.Code, assetRec.Body.String())
+	}
+
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/system", nil)
+	apiRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous URL rules should not bypass admin APIs, got %d body %s", apiRec.Code, apiRec.Body.String())
+	}
+}
+
+func TestResourcesPageRequiresLoginAndLogoutRevokesSession(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("proxied after login"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	resourcesReq := httptest.NewRequest(http.MethodGet, "/resources", nil)
+	resourcesRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(resourcesRec, resourcesReq)
+	if resourcesRec.Code != http.StatusFound || resourcesRec.Header().Get("Location") != "/login?next=%2Fresources" {
+		t.Fatalf("expected unauthenticated resources redirect, got %d location %q", resourcesRec.Code, resourcesRec.Header().Get("Location"))
+	}
+
+	cookie := loginTestUser(t, server, "alice", "correct horse battery", "/resources")
+	logoutReq := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	logoutReq.AddCookie(cookie)
+	logoutRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusFound || logoutRec.Header().Get("Location") != "/login" {
+		t.Fatalf("expected logout redirect to login, got %d location %q", logoutRec.Code, logoutRec.Header().Get("Location"))
+	}
+	cleared := findCookie(logoutRec.Result().Cookies(), browserSessionCookieName)
+	if cleared == nil || cleared.MaxAge >= 0 {
+		t.Fatalf("expected logout to clear session cookie, got %#v", cleared)
+	}
+
+	proxyReq := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/", nil)
+	proxyReq.Header.Set("Accept", "text/html")
+	proxyReq.AddCookie(cookie)
+	proxyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusFound || !strings.HasPrefix(proxyRec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("expected logged-out proxy request to redirect to login, got %d location %q", proxyRec.Code, proxyRec.Header().Get("Location"))
 	}
 }
 
@@ -2213,6 +2486,15 @@ func loginTestUser(t *testing.T, server *Server, username, password, next string
 		}
 	}
 	t.Fatalf("login did not set %s cookie; headers=%v", browserSessionCookieName, rec.Header())
+	return nil
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
 	return nil
 }
 

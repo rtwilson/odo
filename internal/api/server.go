@@ -280,8 +280,8 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	next := safeNextPath(r.URL.Query().Get("next"))
-	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}</style></head><body><main><h1>odo login</h1><form method="post" action="/login?next=%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form></main></body></html>`, htmlEscape(url.QueryEscape(next)))
+	next, _ := safeNextPath(r.URL.Query().Get("next"))
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}</style></head><body><main><h1>odo login</h1><p>Sign in to continue</p><form method="post" action="/login"><input type="hidden" name="next" value="%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form></main></body></html>`, htmlEscape(next))
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
@@ -308,8 +308,13 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.MarkUserLogin(user.ID)
+	next := r.Form.Get("next")
+	if next == "" {
+		next = r.URL.Query().Get("next")
+	}
+	next, _ = safeNextPath(next)
 	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
-	http.Redirect(w, r, safeNextPath(r.URL.Query().Get("next")), http.StatusFound)
+	http.Redirect(w, r, next, http.StatusFound)
 }
 
 func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
@@ -455,12 +460,41 @@ func (s *Server) requireProxySession(next http.Handler) http.HandlerFunc {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if isDocumentRequest(r) {
+		s.markProxyLoginRequired(r)
+		if isDocumentNavigation(r) {
 			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 			return
 		}
-		writeError(w, http.StatusUnauthorized, "login required")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error":     "login_required",
+			"login_url": "/login",
+			"reason":    "proxy access requires login",
+		})
 	}
+}
+
+func (s *Server) markProxyLoginRequired(r *http.Request) {
+	metadata := accesslog.MetadataFrom(r.Context())
+	if metadata == nil {
+		return
+	}
+	metadata.Route = proxy.PublicProxyPath
+	metadata.Decision = "login_required"
+	metadata.DenialReason = "proxy access requires login"
+	metadata.NextPath = r.URL.Path
+	target, err := proxy.ParseProxyRequest(r)
+	if err != nil {
+		return
+	}
+	validatedTarget, result := s.proxyTarget(r.Context(), target.String())
+	if validatedTarget != nil {
+		metadata.TargetHost = strings.ToLower(strings.TrimSuffix(validatedTarget.Hostname(), "."))
+	} else if target.Hostname() != "" {
+		metadata.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	}
+	metadata.ResourceID = result.ResourceID
+	metadata.RuleHost = result.RuleHost
+	metadata.RuleMatch = result.RuleMatch
 }
 
 func (s *Server) proxyRequestAllowedAnonymously(r *http.Request) bool {
@@ -472,19 +506,37 @@ func (s *Server) proxyRequestAllowedAnonymously(r *http.Request) bool {
 	return result.Allowed && result.AnonymousRuleMatched
 }
 
-func isDocumentRequest(r *http.Request) bool {
-	return r.Method == http.MethodGet && strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+func isDocumentNavigation(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	dest := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")))
+	if dest != "" && dest != "document" {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")))
+	if mode != "" && mode != "navigate" {
+		return false
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return accept == "" || strings.Contains(accept, "text/html")
 }
 
-func safeNextPath(raw string) string {
+func safeNextPath(raw string) (string, bool) {
 	if raw == "" {
-		return "/resources"
+		return "/resources", false
+	}
+	if strings.Contains(raw, "://") {
+		return "/resources", false
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.IsAbs() || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
-		return "/resources"
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+		return "/resources", false
 	}
-	return parsed.RequestURI()
+	if parsed.Path == "/admin" || strings.HasPrefix(parsed.Path, "/admin/") {
+		return "/resources", false
+	}
+	return parsed.RequestURI(), true
 }
 
 func htmlEscape(value string) string {

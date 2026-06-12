@@ -34,6 +34,7 @@ type Metadata struct {
 	RuleMatch      string
 	Decision       string
 	DenialReason   string
+	NextPath       string
 	UpstreamStatus int
 	RateLimited    bool
 	Recovered      bool
@@ -65,6 +66,7 @@ type Entry struct {
 	RuleMatch      string `json:"rule_match,omitempty"`
 	Decision       string `json:"decision,omitempty"`
 	DenialReason   string `json:"denial_reason,omitempty"`
+	NextPath       string `json:"next_path,omitempty"`
 	UpstreamStatus int    `json:"upstream_status,omitempty"`
 	RateLimited    bool   `json:"rate_limited,omitempty"`
 	Recovered      bool   `json:"recovered_from_referer,omitempty"`
@@ -173,6 +175,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		RuleMatch:      metadata.RuleMatch,
 		Decision:       metadata.Decision,
 		DenialReason:   metadata.DenialReason,
+		NextPath:       metadata.NextPath,
 		UpstreamStatus: metadata.UpstreamStatus,
 		RateLimited:    metadata.RateLimited,
 		Recovered:      metadata.Recovered,
@@ -245,6 +248,7 @@ func privacyLine(e Entry) string {
 	parts = appendIf(parts, "rule_match", e.RuleMatch)
 	parts = appendIf(parts, "decision", e.Decision)
 	parts = appendIf(parts, "denial_reason", e.DenialReason)
+	parts = appendIf(parts, "next_path", e.NextPath)
 	if e.RateLimited {
 		parts = append(parts, "rate_limited=true")
 	}

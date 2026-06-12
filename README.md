@@ -257,6 +257,14 @@ Once local users exist, `/odo` proxy access requires login by default. For local
 APP_PROXY_REQUIRE_LOGIN=false go run ./cmd/odo
 ```
 
+## Login and return-to-resource flow
+
+Users can click Odo resource links directly, such as `/odo/https/www.jstor.org/stable/123456`. If they are not logged in, Odo sends browser navigation requests to `/login` with a safe local `next` path. After a successful login, the user returns to the original proxied URL, including the original path and query string.
+
+Fetch/API-style proxy requests receive a JSON `login_required` response instead of an HTML redirect. This keeps scripts and app data calls from accidentally receiving a login page as data.
+
+Use `APP_PROXY_REQUIRE_LOGIN=false` only for local proxy testing. `anonymous_url_rules` remain narrow exceptions for public vendor assets and still pass the normal URL safety and resource checks.
+
 Create a user through the management API:
 
 ```sh
