@@ -362,7 +362,7 @@ func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
-	targetURL, err := proxy.ParseProxyRequest(r)
+	targetURL, _, _, err := proxy.ParseProxyRequest(r)
 	if err != nil {
 		http.Redirect(w, r, proxy.PublicProxyPath, http.StatusMovedPermanently)
 		return
@@ -482,7 +482,7 @@ func (s *Server) markProxyLoginRequired(r *http.Request) {
 	metadata.Decision = "login_required"
 	metadata.DenialReason = "proxy access requires login"
 	metadata.NextPath = r.URL.Path
-	target, err := proxy.ParseProxyRequest(r)
+	target, _, _, err := proxy.ParseProxyRequest(r)
 	if err != nil {
 		return
 	}
@@ -498,7 +498,7 @@ func (s *Server) markProxyLoginRequired(r *http.Request) {
 }
 
 func (s *Server) proxyRequestAllowedAnonymously(r *http.Request) bool {
-	target, err := proxy.ParseProxyRequest(r)
+	target, _, _, err := proxy.ParseProxyRequest(r)
 	if err != nil {
 		return false
 	}

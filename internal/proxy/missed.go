@@ -230,8 +230,11 @@ func RecoverTargetFromReferer(r *http.Request) (*url.URL, string, error) {
 		return nil, "", errMissedRewrite("referer is invalid")
 	}
 	proxyReq := &http.Request{URL: refURL}
-	base, err := ParseProxyRequest(proxyReq)
+	base, _, ok, err := ParseProxyRequest(proxyReq)
 	if err != nil {
+		return nil, "", errMissedRewrite("referer is not proxied")
+	}
+	if !ok {
 		return nil, "", errMissedRewrite("referer is not proxied")
 	}
 	target := &url.URL{

@@ -74,7 +74,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		session := sessions.GetOrCreate(r, w)
 
-		parsedTarget, parseErr := ParseProxyRequest(r)
+		parsedTarget, parsedMode, _, parseErr := ParseProxyRequest(r)
 		rawURL := ""
 		var target *url.URL
 		var result resources.TestResult
@@ -88,7 +88,10 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		if target != nil {
 			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
 		}
-		diagnostics.ProxyURLMode = ProxyURLMode()
+		diagnostics.ProxyURLMode = parsedMode
+		if diagnostics.ProxyURLMode == "" {
+			diagnostics.ProxyURLMode = ProxyURLMode()
+		}
 		diagnostics.ResourceID = result.ResourceID
 		diagnostics.MatchedDomain = result.RuleHost
 		diagnostics.DomainBehavior = result.Behavior

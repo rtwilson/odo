@@ -106,7 +106,9 @@ Environment variables:
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
-- `APP_PROXY_URL_MODE`, default `path`; use `query` to generate `/odo?url=...` compatibility links
+- `APP_PROXY_URL_MODE`, default `path`; use `query` for `/odo?url=...` compatibility links or `dual` to build path links while accepting both path and query forms
+- `APP_VIRTUAL_HOST_BASE_DOMAIN`, reserved for future virtual-host proxy mode and not active yet
+- `APP_VIRTUAL_HOST_ENCODING`, reserved for future virtual-host proxy mode and not active yet
 - `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
 - `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
 - `APP_PROXY_REFERER_RECOVERY`, default `true`; recovers missed local asset/script paths when a proxied Referer identifies the upstream host
@@ -378,6 +380,18 @@ Query compatibility mode can be selected with:
 ```sh
 APP_PROXY_URL_MODE=query
 ```
+
+Dual mode builds path-mode URLs while continuing to accept older query-mode URLs:
+
+```sh
+APP_PROXY_URL_MODE=dual
+```
+
+### Proxy URL modes
+
+Path mode is the default and recommended MVP mode. Query mode is available for compatibility and development. Virtual-host mode is planned for better compatibility with difficult sites that need vendor-like browser origins, but it is not implemented yet. Do not deploy virtual-host mode until wildcard DNS and wildcard TLS are configured and Odo has host-based proxy routing support.
+
+See [Future Virtual-Host Proxying](docs/virtual-host-proxying.md) for the design notes and migration plan.
 
 Unknown local paths now return `404` instead of redirecting to `/admin` unless referer-based recovery applies, which makes missed rewrites easier to spot during testing. Missed document navigations redirect to canonical `/odo/https/{host}/{path}` URLs, while missed assets can be silently proxied. Virtual-host mode may be added later for institution-specific host-based access URLs such as `www-economist-com.access.library.edu`.
 

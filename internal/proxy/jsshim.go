@@ -47,14 +47,18 @@ func BuildJSShim(targetOrigin, targetBase string) string {
 	return `<script ` + jsShimMarker + `>
 (function(){
   "use strict";
-  var targetOrigin = ` + string(originJSON) + `;
-  var targetBase = ` + string(baseJSON) + `;
+	var targetOrigin = ` + string(originJSON) + `;
+	var targetBase = ` + string(baseJSON) + `;
   var proxyPrefix = "/odo/";
+  var proxyURLMode = "` + ProxyURLMode() + `";
   function blockedScheme(value) {
     return /^(data|blob|mailto|tel|javascript):/i.test(String(value || ""));
   }
   function buildProxyURL(url) {
-    return "/odo/https/" + url.host + url.pathname + url.search + url.hash;
+    if (proxyURLMode === "query") {
+      return "/odo?url=" + encodeURIComponent(url.href);
+    }
+    return proxyPrefix + "https/" + url.host + url.pathname + url.search + url.hash;
   }
   function rewriteURL(input) {
     if (input == null || blockedScheme(input)) return input;

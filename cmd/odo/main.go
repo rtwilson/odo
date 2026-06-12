@@ -28,6 +28,9 @@ func main() {
 	proxyURLMode := proxy.ProxyURLMode()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	if warning := proxy.ProxyURLModeWarning(os.Getenv("APP_PROXY_URL_MODE")); warning != "" {
+		logger.Warn(warning)
+	}
 	for _, warning := range productionWarnings(appEnv, dataDir, dbPath, adminAPIKey) {
 		logger.Warn(warning)
 	}

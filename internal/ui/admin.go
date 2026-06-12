@@ -417,8 +417,7 @@ func AdminHTML() string {
     }
 
     function proxyURL(raw) {
-      const target = new URL(raw);
-      return '/odo/https/' + target.host + target.pathname + target.search;
+      return '/odo?url=' + encodeURIComponent(new URL(raw).href);
     }
 
     function summarizeMissedRewrites(data) {
