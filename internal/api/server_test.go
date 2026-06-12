@@ -153,6 +153,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 	server := newTestServer(t, "secret")
 
 	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -160,7 +161,7 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Load System Info", "app_env", "public_url", "data_dir", "trust_proxy_headers", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "optional override mode", "session-summary", "Logout", "data-scopes=\"resources:read resources:write\"", "X-Odo-CSRF", "/api/v1/session/me", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Load System Info", "app_env", "public_url", "data_dir", "trust_proxy_headers", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
@@ -170,6 +171,214 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 	}
 	if strings.Contains(body, `data-odo-js-shim="true"`) {
 		t.Fatalf("admin UI should not include proxy JS shim")
+	}
+}
+
+func TestAuthContextDerivesScopesForAPIKeysAndUsers(t *testing.T) {
+	server := newTestServer(t, "secret")
+	token, keyID := createTestAPIKey(t, server, "secret", []string{"resources:read"})
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/session/me", nil)
+	apiReq.Header.Set("Authorization", "Bearer "+token)
+	apiRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusOK {
+		t.Fatalf("expected API key session me 200, got %d body %s", apiRec.Code, apiRec.Body.String())
+	}
+	if !strings.Contains(apiRec.Body.String(), `"subject_type":"api_key"`) || !strings.Contains(apiRec.Body.String(), keyID) || strings.Contains(apiRec.Body.String(), token) || strings.Contains(apiRec.Body.String(), "key_hash") {
+		t.Fatalf("unexpected API key session response: %s", apiRec.Body.String())
+	}
+
+	adminUser := createLocalTestUserWithRoles(t, server, "adminuser", "correct horse battery", []string{"admin"})
+	adminAuth := authContextForUser(adminUser, "csrf")
+	if !hasRequiredScope(adminAuth.Scopes, []string{"admin"}) || !adminAuth.IsAdminLike {
+		t.Fatalf("expected legacy admin role to map to admin scope, got %#v", adminAuth)
+	}
+	regular := createLocalTestUser(t, server, "regular", "correct horse battery")
+	regularAuth := authContextForUser(regular, "csrf")
+	if regularAuth.IsAdminLike || len(regularAuth.Scopes) != 0 {
+		t.Fatalf("expected regular user to have no admin scopes, got %#v", regularAuth)
+	}
+	resourceAdmin := createLocalTestUserWithRoles(t, server, "resourceadmin", "correct horse battery", []string{"resource_admin"})
+	resourceAuth := authContextForUser(resourceAdmin, "csrf")
+	for _, scope := range []string{"resources:read", "resources:write", "config:read", "config:write", "diagnostics:read"} {
+		if !hasRequiredScope(resourceAuth.Scopes, []string{scope}) {
+			t.Fatalf("expected resource_admin to include %s, got %#v", scope, resourceAuth.Scopes)
+		}
+	}
+}
+
+func TestAdminPageRequiresAdminLikeSession(t *testing.T) {
+	server := newTestServer(t, "secret")
+	createLocalTestUser(t, server, "patron", "correct horse battery")
+	createLocalTestUserWithRoles(t, server, "resourceadmin", "correct horse battery", []string{"resource_admin"})
+	createLocalTestUserWithRoles(t, server, "super", "correct horse battery", []string{"super_admin"})
+
+	anonReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	anonRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(anonRec, anonReq)
+	if anonRec.Code != http.StatusFound || anonRec.Header().Get("Location") != "/login?next=%2Fadmin" {
+		t.Fatalf("expected unauthenticated admin redirect, got %d location %q", anonRec.Code, anonRec.Header().Get("Location"))
+	}
+
+	regularCookie := loginTestUser(t, server, "patron", "correct horse battery", "/resources")
+	regularReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	regularReq.AddCookie(regularCookie)
+	regularRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(regularRec, regularReq)
+	if regularRec.Code != http.StatusForbidden || !strings.Contains(regularRec.Body.String(), "Admin access denied") {
+		t.Fatalf("expected regular user admin 403, got %d body %s", regularRec.Code, regularRec.Body.String())
+	}
+
+	resourceCookie := loginTestUser(t, server, "resourceadmin", "correct horse battery", "/admin")
+	resourceReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	resourceReq.AddCookie(resourceCookie)
+	resourceRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(resourceRec, resourceReq)
+	if resourceRec.Code != http.StatusOK || !strings.Contains(resourceRec.Body.String(), "odo admin") {
+		t.Fatalf("expected resource_admin admin UI, got %d body %s", resourceRec.Code, resourceRec.Body.String())
+	}
+
+	superCookie := loginTestUser(t, server, "super", "correct horse battery", "/admin")
+	superReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	superReq.AddCookie(superCookie)
+	superRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(superRec, superReq)
+	if superRec.Code != http.StatusOK {
+		t.Fatalf("expected super_admin admin UI, got %d body %s", superRec.Code, superRec.Body.String())
+	}
+}
+
+func TestSessionAuthenticatedAdminAPIsRequireScopesAndCSRF(t *testing.T) {
+	server := newTestServer(t, "secret")
+	createLocalTestUserWithRoles(t, server, "resourceadmin", "correct horse battery", []string{"resource_admin"})
+	createLocalTestUserWithRoles(t, server, "support", "correct horse battery", []string{"support_staff"})
+	createLocalTestUser(t, server, "patron", "correct horse battery")
+
+	resourceCookie, csrf := loginTestUserWithCSRF(t, server, "resourceadmin", "correct horse battery", "/admin")
+	payload := `{"id":"session-resource","title":"Session Resource","status":"active","entry_urls":["https://www.jstor.org/"],"domains":[{"host":"www.jstor.org","match":"exact","role":"content","action":"proxy"}]}`
+	noCSRFReq := httptest.NewRequest(http.MethodPost, "/api/v1/resources", strings.NewReader(payload))
+	noCSRFReq.Header.Set("Content-Type", "application/json")
+	noCSRFReq.AddCookie(resourceCookie)
+	noCSRFRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(noCSRFRec, noCSRFReq)
+	if noCSRFRec.Code != http.StatusForbidden || !strings.Contains(noCSRFRec.Body.String(), "csrf") {
+		t.Fatalf("expected missing CSRF to fail, got %d body %s", noCSRFRec.Code, noCSRFRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/resources", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Odo-CSRF", csrf)
+	req.AddCookie(resourceCookie)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected resource_admin with CSRF to write resource, got %d body %s", rec.Code, rec.Body.String())
+	}
+
+	apiKeyReq := httptest.NewRequest(http.MethodPost, "/api/v1/resources", strings.NewReader(strings.ReplaceAll(payload, "session-resource", "api-key-resource")))
+	apiKeyReq.Header.Set("Content-Type", "application/json")
+	apiKeyReq.Header.Set("Authorization", "Bearer secret")
+	apiKeyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(apiKeyRec, apiKeyReq)
+	if apiKeyRec.Code != http.StatusOK {
+		t.Fatalf("expected bearer API key write without CSRF, got %d body %s", apiKeyRec.Code, apiKeyRec.Body.String())
+	}
+	events, err := server.store.ListAuditEvents(20)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if !auditEventsContain(events, "csrf_failure") || !auditEventsContain(events, "admin_api_call_by_user") || !auditEventsContain(events, "admin_api_call_by_api_key") {
+		t.Fatalf("expected csrf/user/api-key audit events, got %#v", events)
+	}
+
+	keyReq := httptest.NewRequest(http.MethodGet, "/api/v1/api-keys", nil)
+	keyReq.AddCookie(resourceCookie)
+	keyRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(keyRec, keyReq)
+	if keyRec.Code != http.StatusForbidden {
+		t.Fatalf("expected resource_admin to be unable to manage API keys, got %d body %s", keyRec.Code, keyRec.Body.String())
+	}
+
+	supportCookie := loginTestUser(t, server, "support", "correct horse battery", "/admin")
+	diagReq := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/proxy/recent", nil)
+	diagReq.AddCookie(supportCookie)
+	diagRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(diagRec, diagReq)
+	if diagRec.Code != http.StatusOK {
+		t.Fatalf("expected support_staff diagnostics read, got %d body %s", diagRec.Code, diagRec.Body.String())
+	}
+	supportWriteReq := httptest.NewRequest(http.MethodPost, "/api/v1/resources", strings.NewReader(strings.ReplaceAll(payload, "session-resource", "support-resource")))
+	supportWriteReq.Header.Set("Content-Type", "application/json")
+	supportWriteReq.AddCookie(supportCookie)
+	supportWriteRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(supportWriteRec, supportWriteReq)
+	if supportWriteRec.Code != http.StatusForbidden {
+		t.Fatalf("expected support_staff resource write forbidden, got %d body %s", supportWriteRec.Code, supportWriteRec.Body.String())
+	}
+
+	regularCookie := loginTestUser(t, server, "patron", "correct horse battery", "/resources")
+	regularReq := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/proxy/recent", nil)
+	regularReq.AddCookie(regularCookie)
+	regularRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(regularRec, regularReq)
+	if regularRec.Code != http.StatusForbidden {
+		t.Fatalf("expected regular user admin API forbidden, got %d body %s", regularRec.Code, regularRec.Body.String())
+	}
+}
+
+func TestRoleChangesRequireAdminScopeAndProtectLastAdmin(t *testing.T) {
+	server := newTestServer(t, "secret")
+	super := createLocalTestUserWithRoles(t, server, "super", "correct horse battery", []string{"super_admin"})
+	createLocalTestUserWithRoles(t, server, "security", "correct horse battery", []string{"security_admin"})
+	patron := createLocalTestUser(t, server, "patron", "correct horse battery")
+
+	securityCookie, securityCSRF := loginTestUserWithCSRF(t, server, "security", "correct horse battery", "/admin")
+	roleReq := httptest.NewRequest(http.MethodPatch, "/api/v1/users/"+patron.ID, strings.NewReader(`{"roles":["viewer"]}`))
+	roleReq.Header.Set("Content-Type", "application/json")
+	roleReq.Header.Set("X-Odo-CSRF", securityCSRF)
+	roleReq.AddCookie(securityCookie)
+	roleRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(roleRec, roleReq)
+	if roleRec.Code != http.StatusForbidden {
+		t.Fatalf("expected non-admin role change forbidden, got %d body %s", roleRec.Code, roleRec.Body.String())
+	}
+
+	removeLastReq := httptest.NewRequest(http.MethodPatch, "/api/v1/users/"+super.ID, strings.NewReader(`{"roles":["viewer"]}`))
+	removeLastReq.Header.Set("Content-Type", "application/json")
+	removeLastReq.Header.Set("Authorization", "Bearer secret")
+	removeLastRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(removeLastRec, removeLastReq)
+	if removeLastRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected removing last admin to fail, got %d body %s", removeLastRec.Code, removeLastRec.Body.String())
+	}
+}
+
+func TestSessionMeForUserAndAnonymous(t *testing.T) {
+	server := newTestServer(t, "secret")
+	createLocalTestUserWithRoles(t, server, "viewer", "correct horse battery", []string{"viewer"})
+
+	anonReq := httptest.NewRequest(http.MethodGet, "/api/v1/session/me", nil)
+	anonRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(anonRec, anonReq)
+	if anonRec.Code != http.StatusOK || !strings.Contains(anonRec.Body.String(), `"authenticated":false`) {
+		t.Fatalf("expected unauthenticated session response, got %d body %s", anonRec.Code, anonRec.Body.String())
+	}
+
+	cookie := loginTestUser(t, server, "viewer", "correct horse battery", "/admin")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/session/me", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected user session me 200, got %d body %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{`"subject_type":"user"`, `"username":"viewer"`, `"roles":["viewer"]`, `"system:read"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected session me to contain %q, got %s", want, rec.Body.String())
+		}
+	}
+	if strings.Contains(rec.Body.String(), "password_hash") || strings.Contains(rec.Body.String(), "session_hash") {
+		t.Fatalf("session me exposed sensitive fields: %s", rec.Body.String())
 	}
 }
 
@@ -450,7 +659,7 @@ func TestSafeNextPathValidation(t *testing.T) {
 		{name: "external", raw: "https://evil.example/", want: "/resources", ok: false},
 		{name: "scheme-relative", raw: "//evil.example/path", want: "/resources", ok: false},
 		{name: "http scheme", raw: "http://evil.example", want: "/resources", ok: false},
-		{name: "admin", raw: "/admin", want: "/resources", ok: false},
+		{name: "admin", raw: "/admin", want: "/admin", ok: true},
 		{name: "malformed", raw: "%", want: "/resources", ok: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1774,6 +1983,7 @@ func TestGetResourceReturnsExistingResource(t *testing.T) {
 	upsertTestResource(t, server, "jstor")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources/jstor", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -1793,6 +2003,7 @@ func TestGetResourceReturns404ForMissingResource(t *testing.T) {
 	server := newTestServer(t, "secret")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources/missing", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -2440,6 +2651,10 @@ func newTestServerWithConfigAccessLogResolverAndClient(t *testing.T, adminKey, c
 }
 
 func createLocalTestUser(t *testing.T, server *Server, username, password string) db.User {
+	return createLocalTestUserWithRoles(t, server, username, password, []string{"user"})
+}
+
+func createLocalTestUserWithRoles(t *testing.T, server *Server, username, password string, roles []string) db.User {
 	t.Helper()
 	hash, err := local.HashPassword(password)
 	if err != nil {
@@ -2455,7 +2670,7 @@ func createLocalTestUser(t *testing.T, server *Server, username, password string
 		Username:     username,
 		PasswordHash: hash,
 		Status:       "active",
-		Roles:        []string{"user"},
+		Roles:        roles,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -2466,6 +2681,11 @@ func createLocalTestUser(t *testing.T, server *Server, username, password string
 }
 
 func loginTestUser(t *testing.T, server *Server, username, password, next string) *http.Cookie {
+	cookie, _ := loginTestUserWithCSRF(t, server, username, password, next)
+	return cookie
+}
+
+func loginTestUserWithCSRF(t *testing.T, server *Server, username, password, next string) (*http.Cookie, string) {
 	t.Helper()
 	form := url.Values{}
 	form.Set("username", username)
@@ -2477,16 +2697,18 @@ func loginTestUser(t *testing.T, server *Server, username, password, next string
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected login redirect, got %d body %s", rec.Code, rec.Body.String())
 	}
-	for _, cookie := range rec.Result().Cookies() {
-		if cookie.Name == browserSessionCookieName {
-			if !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
-				t.Fatalf("login session cookie missing security attributes: %#v", cookie)
-			}
-			return cookie
-		}
+	sessionCookie := findCookie(rec.Result().Cookies(), browserSessionCookieName)
+	if sessionCookie == nil {
+		t.Fatalf("login did not set %s cookie; headers=%v", browserSessionCookieName, rec.Header())
 	}
-	t.Fatalf("login did not set %s cookie; headers=%v", browserSessionCookieName, rec.Header())
-	return nil
+	if !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("login session cookie missing security attributes: %#v", sessionCookie)
+	}
+	csrf := findCookie(rec.Result().Cookies(), csrfCookieName)
+	if csrf == nil || csrf.Value == "" || csrf.HttpOnly {
+		t.Fatalf("login did not set usable CSRF cookie; cookies=%v", rec.Result().Cookies())
+	}
+	return sessionCookie, csrf.Value
 }
 
 func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
@@ -2496,6 +2718,15 @@ func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+func auditEventsContain(events []db.AuditEvent, event string) bool {
+	for _, item := range events {
+		if item.Event == event {
+			return true
+		}
+	}
+	return false
 }
 
 func publicTestResolver(ctx context.Context, host string) ([]net.IPAddr, error) {

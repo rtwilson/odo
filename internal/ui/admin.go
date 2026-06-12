@@ -55,20 +55,22 @@ func AdminHTML() string {
 
     <section class="topbar" aria-label="Global admin controls">
       <input id="api-key" type="password" placeholder="Admin API Key" aria-label="Admin API Key">
-      <span class="muted">Used only in this page runtime for protected API calls.</span>
+      <span id="session-summary" class="muted">Loading current session...</span>
+      <form method="post" action="/logout"><button>Logout</button></form>
+      <span class="muted">Admin API Key is optional override mode and is used only in this page runtime.</span>
     </section>
 
     <div class="layout">
       <nav aria-label="Admin sections">
         <button class="nav-button active" data-section="dashboard">Dashboard</button>
-        <button class="nav-button" data-section="resources">Resources</button>
-        <button class="nav-button" data-section="config">Config</button>
-        <button class="nav-button" data-section="proxy">Proxy Test</button>
-        <button class="nav-button" data-section="diagnostics">Diagnostics / Logs</button>
-        <button class="nav-button" data-section="api-keys">API Keys</button>
-        <button class="nav-button" data-section="users">Users</button>
-        <button class="nav-button" data-section="auth">Auth / SAML</button>
-        <button class="nav-button" data-section="settings">Settings / System</button>
+        <button class="nav-button" data-section="resources" data-scopes="resources:read resources:write">Resources</button>
+        <button class="nav-button" data-section="config" data-scopes="config:read config:write">Config</button>
+        <button class="nav-button" data-section="proxy" data-scopes="resources:read diagnostics:read">Proxy Test</button>
+        <button class="nav-button" data-section="diagnostics" data-scopes="diagnostics:read logs:read">Diagnostics / Logs</button>
+        <button class="nav-button" data-section="api-keys" data-scopes="api_keys:read api_keys:write">API Keys</button>
+        <button class="nav-button" data-section="users" data-scopes="users:read users:write">Users</button>
+        <button class="nav-button" data-section="auth" data-scopes="auth:read auth:write">Auth / SAML</button>
+        <button class="nav-button" data-section="settings" data-scopes="system:read">Settings / System</button>
       </nav>
 
       <div>
@@ -264,6 +266,7 @@ func AdminHTML() string {
     let selectedAPIKeyId = '';
     let selectedUserId = '';
     let selectedSAMLProviderId = '';
+    let currentSession = { authenticated: false, scopes: [] };
 
     const template = {
       id: 'new-resource',
@@ -389,9 +392,13 @@ func AdminHTML() string {
 
     function adminHeaders(extra = {}, needsAuth = true) {
       const apiKey = document.querySelector('#api-key').value.trim();
+      const method = (extra['X-Odo-Method'] || '').toUpperCase();
+      const unsafe = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+      const csrf = document.cookie.split('; ').find(row => row.startsWith('odo_csrf='));
       return {
         'Content-Type': 'application/json',
         ...(needsAuth && apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {}),
+        ...(needsAuth && !apiKey && unsafe && csrf ? { 'X-Odo-CSRF': decodeURIComponent(csrf.split('=')[1]) } : {}),
         ...extra
       };
     }
@@ -399,10 +406,9 @@ func AdminHTML() string {
     async function api(path, options = {}) {
       const method = options.method || 'GET';
       const needsAuth = options.auth !== false;
-      const headers = adminHeaders(options.headers, needsAuth);
-      if (needsAuth && !headers.Authorization) {
-        show({ message: 'Authorization is missing. Enter an Admin API Key for protected requests.', method, url: path });
-      }
+      const extraHeaders = { ...(options.headers || {}), 'X-Odo-Method': method };
+      const headers = adminHeaders(extraHeaders, needsAuth);
+      delete headers['X-Odo-Method'];
       const response = await fetch(path, { ...options, method, headers });
       const text = await response.text();
       let body = text;
@@ -414,6 +420,36 @@ func AdminHTML() string {
 
     function unwrap(result) {
       return result && Object.prototype.hasOwnProperty.call(result, 'body') ? result.body : result;
+    }
+
+    function hasScope(scope) {
+      const scopes = currentSession.scopes || [];
+      return scopes.includes('admin') || scopes.includes(scope);
+    }
+
+    function hasAnyScope(scopesText) {
+      if (!scopesText) return true;
+      return scopesText.split(/\s+/).filter(Boolean).some(hasScope);
+    }
+
+    function applyPermissions() {
+      for (const button of document.querySelectorAll('.nav-button[data-scopes]')) {
+        button.hidden = !hasAnyScope(button.dataset.scopes);
+      }
+      document.querySelector('#session-summary').textContent = currentSession.authenticated
+        ? ((currentSession.display_name || currentSession.username || currentSession.name || currentSession.subject_type) + ' | roles: ' + (currentSession.roles || []).join(', ') + ' | scopes: ' + (currentSession.scopes || []).join(', '))
+        : 'Not signed in';
+    }
+
+    async function loadSession() {
+      try {
+        const result = await api('/api/v1/session/me', { auth: false });
+        currentSession = unwrap(result) || { authenticated: false, scopes: [] };
+        applyPermissions();
+      } catch (err) {
+        currentSession = { authenticated: false, scopes: [] };
+        applyPermissions();
+      }
     }
 
     function proxyURL(raw) {
@@ -683,7 +719,7 @@ func AdminHTML() string {
     }
 
     async function loadResources() {
-      const result = await api('/api/v1/resources', { auth: false });
+      const result = await api('/api/v1/resources');
       const data = unwrap(result);
       resources = data.resources || [];
       renderResources();
@@ -813,7 +849,6 @@ func AdminHTML() string {
       try {
         show(await api('/api/v1/rules/test-url', {
           method: 'POST',
-          auth: false,
           body: JSON.stringify({ url: document.querySelector('#url').value })
         }));
       } catch (err) { show(err); }
@@ -974,6 +1009,7 @@ func AdminHTML() string {
     addHeaderRuleRow({ name: 'X-Requested-With', action: 'remove', phase: 'request' });
     addAnonymousRuleRow();
     addRewriteRuleRow();
+    loadSession();
   </script>
 </body>
 </html>`

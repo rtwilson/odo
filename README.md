@@ -82,6 +82,24 @@ User management is available in the Users section. Admins can create local users
 
 The Resources section includes a Resource Config Builder for authoring structured JSON resource configs. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, and export a `resource-<id>.json` file.
 
+## Admin access
+
+API keys are still supported for scripts, automation, and control-plane integrations. Human admins can also sign in at `/login` with a local account and use `/admin` through their browser session without pasting an API key. The Admin API Key field remains available as an optional override/testing mode and is not stored in browser storage.
+
+Local user roles determine which admin sections are available. Backend scopes enforce permissions even if a UI section is hidden. Regular `user` accounts use `/resources`, not `/admin`.
+
+Initial role mapping:
+
+- `super_admin` or legacy `admin`: `admin`
+- `systems_admin`: resources, config, diagnostics, logs, and system read access
+- `resource_admin`: resources/config write and diagnostics read
+- `support_staff`: resources, diagnostics, and logs read
+- `security_admin`: user management plus logs and diagnostics read
+- `viewer`: resources/config/diagnostics/system read
+- `user`: no admin scopes
+
+When the admin UI uses a browser session for unsafe API calls, it sends `X-Odo-CSRF`. Bearer API-key requests do not require CSRF.
+
 ## Adding resources
 
 Use the admin Resource Config Builder for most additions. Start with a title, entry URL, and main domain, then generate and validate the JSON before saving. Use raw JSON for advanced cases such as header rules, anonymous URL rules, content rewrite rules, or carefully reviewed compatibility settings. After saving, use Proxy Test and Diagnostics to confirm the entry URL, search pages, detail pages, downloads, and any blocked or missed hosts.
@@ -238,7 +256,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/revoke \
   -H 'Authorization: Bearer odo_live_...' | jq
 ```
 
-Initial scopes are `admin`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `auth:read`, and `auth:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
+Initial API key scopes are `admin`, `api_keys:read`, `api_keys:write`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `auth:read`, `auth:write`, `system:read`, `users:read`, and `users:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
 
 ## Local Users and Browser Sessions
 

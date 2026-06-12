@@ -3,7 +3,7 @@ info:
   title: odo API
   version: 0.1.0
   summary: API-first library access middleware/proxy MVP
-  description: Management and configuration for odo happen through documented JSON APIs. The admin UI uses these same APIs.
+  description: Management and configuration for odo happen through documented JSON APIs. Protected APIs accept either Authorization Bearer API keys or authenticated browser sessions with derived scopes. Unsafe session-authenticated requests require X-Odo-CSRF.
 servers:
   - url: http://127.0.0.1:8080
 security: []
@@ -37,6 +37,21 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/session/me:
+    get:
+      summary: Current authenticated subject
+      operationId: getSessionMe
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+        - {}
+      responses:
+        "200":
+          description: Current user, API key, or anonymous session state. Does not expose password hashes, session hashes, API key hashes, or full tokens.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionMe"
   /api/v1/resources:
     get:
       summary: List resources
@@ -897,6 +912,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: API key
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: odo_session
   responses:
     Error:
       description: Error response
@@ -930,6 +949,34 @@ components:
         time:
           type: string
           format: date-time
+    SessionMe:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated:
+          type: boolean
+        subject_type:
+          type: string
+          enum: [api_key, user, anonymous]
+        id:
+          type: string
+        name:
+          type: string
+          description: API key display name when authenticated with a bearer token.
+        username:
+          type: string
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        is_admin_like:
+          type: boolean
     SystemInfo:
       type: object
       required: [version, commit, app_env, public_url_set, data_dir, config_dir, proxy_require_login, trust_proxy_headers]
@@ -1231,7 +1278,7 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, auth:read, auth:write]
+            enum: [admin, api_keys:read, api_keys:write, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, auth:read, auth:write, system:read, users:read, users:write]
           examples:
             - [config:write, config:read]
         expires_at:
@@ -1325,7 +1372,7 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, staff, user, test]
+            enum: [admin, super_admin, systems_admin, resource_admin, support_staff, security_admin, viewer, user, staff, test]
         created_at:
           type: string
           format: date-time
@@ -1360,7 +1407,7 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, staff, user, test]
+            enum: [admin, super_admin, systems_admin, resource_admin, support_staff, security_admin, viewer, user, staff, test]
         status:
           type: string
           enum: [active, disabled, locked]
@@ -1375,7 +1422,7 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, staff, user, test]
+            enum: [admin, super_admin, systems_admin, resource_admin, support_staff, security_admin, viewer, user, staff, test]
         status:
           type: string
           enum: [active, disabled, locked]

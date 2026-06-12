@@ -53,6 +53,19 @@ var (
 	Commit  = "unknown"
 )
 
+type AuthContext struct {
+	SubjectType     string   `json:"subject_type"`
+	SubjectID       string   `json:"id,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	DisplayName     string   `json:"display_name,omitempty"`
+	Username        string   `json:"username,omitempty"`
+	Scopes          []string `json:"scopes,omitempty"`
+	Roles           []string `json:"roles,omitempty"`
+	IsAuthenticated bool     `json:"authenticated"`
+	IsAdminLike     bool     `json:"is_admin_like,omitempty"`
+	csrfToken       string
+}
+
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
 	accessLogger, _ := accesslog.New(accesslog.FormatPrivacy, nil)
 	return NewServerWithAccessLogger(store, configDir, adminKey, logger, accessLogger)
@@ -106,42 +119,43 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
 	mux.HandleFunc("POST /auth/saml/acs", s.samlACS)
 	mux.HandleFunc("GET /api/v1/health", s.health)
-	mux.HandleFunc("GET /api/v1/system", s.requireScopes(s.systemInfo, "admin"))
-	mux.HandleFunc("GET /api/v1/resources", s.listResources)
+	mux.HandleFunc("GET /api/v1/session/me", s.sessionMe)
+	mux.HandleFunc("GET /api/v1/system", s.requireScopes(s.systemInfo, "system:read"))
+	mux.HandleFunc("GET /api/v1/resources", s.requireScopes(s.listResources, "resources:read"))
 	mux.HandleFunc("POST /api/v1/resources", s.requireScopes(s.upsertResource, "resources:write"))
 	mux.HandleFunc("POST /api/v1/resources/validate", s.requireScopes(s.validateResource, "resources:write"))
-	mux.HandleFunc("GET /api/v1/resources/{id}", s.getResource)
+	mux.HandleFunc("GET /api/v1/resources/{id}", s.requireScopes(s.getResource, "resources:read"))
 	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireScopes(s.putResource, "resources:write"))
 	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireScopes(s.deleteResource, "resources:write"))
 	mux.HandleFunc("POST /api/v1/config/validate", s.requireScopes(s.validateConfig, "config:write"))
 	mux.HandleFunc("POST /api/v1/config/import", s.requireScopes(s.importConfig, "config:write"))
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireScopes(s.listConfigRevisions, "config:read"))
 	mux.HandleFunc("GET /api/v1/config/revisions/{id}", s.requireScopes(s.getConfigRevision, "config:read"))
-	mux.HandleFunc("POST /api/v1/rules/test-url", s.testURL)
+	mux.HandleFunc("POST /api/v1/rules/test-url", s.requireScopes(s.testURL, "resources:read", "diagnostics:read"))
 	mux.HandleFunc("POST /api/v1/proxy/test-fetch", s.requireScopes(s.proxyTestFetch, "diagnostics:read"))
 	mux.HandleFunc("GET /api/v1/logs/access/recent", s.requireScopes(s.recentAccessLogs, "logs:read"))
 	mux.HandleFunc("GET /api/v1/diagnostics/proxy/recent", s.requireScopes(s.recentProxyDiagnostics, "diagnostics:read"))
 	mux.HandleFunc("GET /api/v1/diagnostics/missed-rewrites/recent", s.requireScopes(s.recentMissedRewrites, "diagnostics:read"))
-	mux.HandleFunc("POST /api/v1/api-keys", s.requireScopes(s.createAPIKey, "auth:write"))
-	mux.HandleFunc("GET /api/v1/api-keys", s.requireScopes(s.listAPIKeys, "auth:write"))
-	mux.HandleFunc("GET /api/v1/api-keys/{id}", s.requireScopes(s.getAPIKey, "auth:write"))
-	mux.HandleFunc("POST /api/v1/api-keys/{id}/rotate", s.requireScopes(s.rotateAPIKey, "auth:write"))
-	mux.HandleFunc("POST /api/v1/api-keys/{id}/revoke", s.requireScopes(s.revokeAPIKey, "auth:write"))
-	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", s.requireScopes(s.deleteAPIKey, "auth:write"))
+	mux.HandleFunc("POST /api/v1/api-keys", s.requireScopes(s.createAPIKey, "api_keys:write"))
+	mux.HandleFunc("GET /api/v1/api-keys", s.requireScopes(s.listAPIKeys, "api_keys:read", "api_keys:write"))
+	mux.HandleFunc("GET /api/v1/api-keys/{id}", s.requireScopes(s.getAPIKey, "api_keys:read", "api_keys:write"))
+	mux.HandleFunc("POST /api/v1/api-keys/{id}/rotate", s.requireScopes(s.rotateAPIKey, "api_keys:write"))
+	mux.HandleFunc("POST /api/v1/api-keys/{id}/revoke", s.requireScopes(s.revokeAPIKey, "api_keys:write"))
+	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", s.requireScopes(s.deleteAPIKey, "api_keys:write"))
 	mux.HandleFunc("GET /api/v1/auth/saml/providers", s.requireScopes(s.listSAMLProviders, "auth:read"))
 	mux.HandleFunc("POST /api/v1/auth/saml/providers", s.requireScopes(s.upsertSAMLProvider, "auth:write"))
 	mux.HandleFunc("GET /api/v1/auth/saml/providers/{id}", s.requireScopes(s.getSAMLProvider, "auth:read"))
 	mux.HandleFunc("DELETE /api/v1/auth/saml/providers/{id}", s.requireScopes(s.deleteSAMLProvider, "auth:write"))
-	mux.HandleFunc("GET /api/v1/users", s.requireScopes(s.listUsers, "admin"))
-	mux.HandleFunc("POST /api/v1/users", s.requireScopes(s.createUser, "admin"))
-	mux.HandleFunc("GET /api/v1/users/{id}", s.requireScopes(s.getUser, "admin"))
-	mux.HandleFunc("PATCH /api/v1/users/{id}", s.requireScopes(s.patchUser, "admin"))
-	mux.HandleFunc("POST /api/v1/users/{id}/set-password", s.requireScopes(s.setUserPassword, "admin"))
-	mux.HandleFunc("POST /api/v1/users/{id}/disable", s.requireScopes(s.disableUser, "admin"))
-	mux.HandleFunc("POST /api/v1/users/{id}/enable", s.requireScopes(s.enableUser, "admin"))
-	mux.HandleFunc("POST /api/v1/users/{id}/lock", s.requireScopes(s.lockUser, "admin"))
-	mux.HandleFunc("POST /api/v1/users/{id}/unlock", s.requireScopes(s.unlockUser, "admin"))
-	mux.HandleFunc("POST /api/v1/users/{id}/revoke-sessions", s.requireScopes(s.revokeUserSessions, "admin"))
+	mux.HandleFunc("GET /api/v1/users", s.requireScopes(s.listUsers, "users:read", "users:write"))
+	mux.HandleFunc("POST /api/v1/users", s.requireScopes(s.createUser, "users:write"))
+	mux.HandleFunc("GET /api/v1/users/{id}", s.requireScopes(s.getUser, "users:read", "users:write"))
+	mux.HandleFunc("PATCH /api/v1/users/{id}", s.requireScopes(s.patchUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/set-password", s.requireScopes(s.setUserPassword, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/disable", s.requireScopes(s.disableUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/enable", s.requireScopes(s.enableUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/lock", s.requireScopes(s.lockUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/unlock", s.requireScopes(s.unlockUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/revoke-sessions", s.requireScopes(s.revokeUserSessions, "users:write"))
 	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
@@ -269,8 +283,35 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
+	auth, status, message := s.authorizeRequest(r, "resources:read", "config:read", "diagnostics:read", "logs:read", "system:read", "api_keys:read", "api_keys:write", "users:read", "users:write", "auth:read", "auth:write")
+	if status != 0 {
+		if status == http.StatusUnauthorized {
+			http.Redirect(w, r, "/login?next="+url.QueryEscape("/admin"), http.StatusFound)
+			return
+		}
+		writeAdminForbidden(w, message)
+		return
+	}
+	if !auth.IsAuthenticated {
+		http.Redirect(w, r, "/login?next="+url.QueryEscape("/admin"), http.StatusFound)
+		return
+	}
+	if !auth.IsAdminLike {
+		_ = s.store.Audit("admin_ui_login_denied_insufficient_role", fmt.Sprintf(`{"subject_type":%q,"subject_id":%q}`, auth.SubjectType, auth.SubjectID))
+		writeAdminForbidden(w, "admin access requires an admin or staff role")
+		return
+	}
+	if auth.SubjectType == "user" {
+		http.SetCookie(w, csrfCookie(auth.csrfToken))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(ui.AdminHTML()))
+}
+
+func writeAdminForbidden(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>odo admin forbidden</title></head><body><main><h1>Admin access denied</h1><p>%s</p><p><a href="/resources">Go to resources</a></p></main></body></html>`, htmlEscape(message))
 }
 
 func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +354,14 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		next = r.URL.Query().Get("next")
 	}
 	next, _ = safeNextPath(next)
+	if next == "/admin" && !authContextForUser(user, csrfTokenForSessionToken(token)).IsAdminLike {
+		_ = s.store.Audit("admin_ui_login_denied_insufficient_role", fmt.Sprintf(`{"subject_type":"user","subject_id":%q}`, user.ID))
+		next = "/resources"
+	} else if next == "/admin" {
+		_ = s.store.Audit("admin_ui_login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q}`, user.ID))
+	}
 	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
+	http.SetCookie(w, csrfCookie(csrfTokenForSessionToken(token)))
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
@@ -371,6 +419,7 @@ func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 const browserSessionCookieName = "odo_session"
+const csrfCookieName = "odo_csrf"
 
 func newBrowserSession(userID string, r *http.Request) (string, db.Session, error) {
 	idPart, err := local.NewToken("", 16)
@@ -411,6 +460,20 @@ func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 	}
 }
 
+func csrfCookie(token string) *http.Cookie {
+	return &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+func csrfTokenForSessionToken(token string) string {
+	return local.HashToken("csrf:" + token)
+}
+
 func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
 	cookie, err := r.Cookie(browserSessionCookieName)
 	if err != nil || cookie.Value == "" {
@@ -436,6 +499,18 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
 		metadata.SessionID = session.ID
 	}
 	return user, session, true
+}
+
+func (s *Server) currentUserAuth(r *http.Request) (AuthContext, bool) {
+	cookie, err := r.Cookie(browserSessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return AuthContext{}, false
+	}
+	user, _, ok := s.currentUser(r)
+	if !ok {
+		return AuthContext{}, false
+	}
+	return authContextForUser(user, csrfTokenForSessionToken(cookie.Value)), true
 }
 
 func (s *Server) proxyLoginRequired() bool {
@@ -533,9 +608,6 @@ func safeNextPath(raw string) (string, bool) {
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
 		return "/resources", false
 	}
-	if parsed.Path == "/admin" || strings.HasPrefix(parsed.Path, "/admin/") {
-		return "/resources", false
-	}
 	return parsed.RequestURI(), true
 }
 
@@ -582,6 +654,22 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 		"javascript_shim_enabled":  proxy.InjectJSShimEnabled(),
 		"referer_recovery_enabled": proxy.RefererRecoveryEnabled(),
 	})
+}
+
+func (s *Server) sessionMe(w http.ResponseWriter, r *http.Request) {
+	auth, status, message := s.authorizeRequest(r)
+	if status != 0 && status != http.StatusUnauthorized {
+		writeError(w, status, message)
+		return
+	}
+	if !auth.IsAuthenticated {
+		writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+		return
+	}
+	if auth.SubjectType == "user" {
+		http.SetCookie(w, csrfCookie(auth.csrfToken))
+	}
+	writeJSON(w, http.StatusOK, auth)
 }
 
 func (s *Server) listResources(w http.ResponseWriter, r *http.Request) {
@@ -876,6 +964,10 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if len(req.Roles) > 0 && !s.requestHasAdminScope(r) {
+		writeError(w, http.StatusForbidden, "admin scope is required to set roles")
+		return
+	}
 	user, err := s.newStoredUser(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -929,9 +1021,17 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		existing.DisplayName = strings.TrimSpace(*req.DisplayName)
 	}
 	if len(req.Roles) > 0 {
+		if !s.requestHasAdminScope(r) {
+			writeError(w, http.StatusForbidden, "admin scope is required to change roles")
+			return
+		}
 		roles, err := validateUserRoles(req.Roles)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if hasSuperAdminRole(existing.Roles) && !hasSuperAdminRole(roles) && s.activeSuperAdminCount() <= 1 {
+			writeError(w, http.StatusBadRequest, "cannot remove the last admin account")
 			return
 		}
 		existing.Roles = roles
@@ -1022,7 +1122,23 @@ func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status string) {
-	user, found, err := s.store.SetUserStatus(strings.TrimSpace(r.PathValue("id")), status)
+	id := strings.TrimSpace(r.PathValue("id"))
+	if status == "disabled" || status == "locked" {
+		existing, found, err := s.store.GetUser(id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if hasSuperAdminRole(existing.Roles) && s.activeSuperAdminCount() <= 1 {
+			writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
+			return
+		}
+	}
+	user, found, err := s.store.SetUserStatus(id, status)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1033,6 +1149,35 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 	}
 	_ = s.store.Audit("user_status_set", fmt.Sprintf(`{"id":%q,"status":%q}`, user.ID, status))
 	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) requestHasAdminScope(r *http.Request) bool {
+	auth, status, _ := s.authorizeRequest(r, "admin")
+	return status == 0 && auth.IsAuthenticated
+}
+
+func (s *Server) activeSuperAdminCount() int {
+	users, err := s.store.ListUsers()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, user := range users {
+		if user.Status == "active" && hasSuperAdminRole(user.Roles) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasSuperAdminRole(roles []string) bool {
+	for _, role := range roles {
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "admin", "super_admin":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) newStoredUser(req userCreateRequest) (db.User, error) {
@@ -1420,57 +1565,106 @@ func (s *Server) requireAdminAPIKey(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) requireScopes(next http.HandlerFunc, scopes ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth, status, message := s.authenticateBearer(r, scopes...)
+		auth, status, message := s.authorizeRequest(r, scopes...)
 		if status != 0 {
+			if status == http.StatusForbidden && auth.SubjectType == "user" && unsafeMethod(r.Method) && message == "csrf token is invalid or missing" {
+				_ = s.store.Audit("csrf_failure", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"path":%q}`, auth.SubjectID, r.URL.Path))
+			}
 			writeError(w, status, message)
 			return
 		}
-		if !auth {
+		if !auth.IsAuthenticated {
 			next(w, r)
 			return
+		}
+		if auth.SubjectType == "user" {
+			_ = s.store.Audit("admin_api_call_by_user", fmt.Sprintf(`{"subject_id":%q,"path":%q,"method":%q}`, auth.SubjectID, r.URL.Path, r.Method))
+		} else if auth.SubjectType == "api_key" {
+			_ = s.store.Audit("admin_api_call_by_api_key", fmt.Sprintf(`{"subject_id":%q,"path":%q,"method":%q}`, auth.SubjectID, r.URL.Path, r.Method))
 		}
 		next(w, r)
 	}
 }
 
-func (s *Server) authenticateBearer(r *http.Request, requiredScopes ...string) (bool, int, string) {
+func (s *Server) authorizeRequest(r *http.Request, requiredScopes ...string) (AuthContext, int, string) {
+	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
+		return s.authenticateBearerToken(token, requiredScopes...)
+	}
+	if auth, ok := s.currentUserAuth(r); ok {
+		if !hasRequiredScope(auth.Scopes, requiredScopes) {
+			return auth, http.StatusForbidden, "insufficient scope"
+		}
+		if unsafeMethod(r.Method) && r.Header.Get("X-Odo-CSRF") != auth.csrfToken {
+			return auth, http.StatusForbidden, "csrf token is invalid or missing"
+		}
+		return auth, 0, ""
+	}
 	storedCount, err := s.store.CountAPIKeys()
 	if err != nil {
-		return false, http.StatusInternalServerError, err.Error()
+		return anonymousAuthContext(), http.StatusInternalServerError, err.Error()
 	}
 	if storedCount == 0 && s.adminKey == "" {
-		return false, 0, ""
+		return anonymousAuthContext(), 0, ""
 	}
-	token := bearerToken(r.Header.Get("Authorization"))
-	if token == "" {
-		return false, http.StatusUnauthorized, "missing bearer token"
-	}
+	return anonymousAuthContext(), http.StatusUnauthorized, "missing bearer token"
+}
+
+func (s *Server) authenticateBearerToken(token string, requiredScopes ...string) (AuthContext, int, string) {
 	if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
-		return true, 0, ""
+		auth := AuthContext{
+			SubjectType:     "api_key",
+			SubjectID:       "bootstrap",
+			Name:            "Bootstrap admin API key",
+			Scopes:          []string{"admin"},
+			IsAuthenticated: true,
+			IsAdminLike:     true,
+		}
+		return auth, 0, ""
 	}
 	key, found, err := s.store.GetAPIKeyByHash(s.hashAPIToken(token))
 	if err != nil {
-		return false, http.StatusInternalServerError, err.Error()
+		return anonymousAuthContext(), http.StatusInternalServerError, err.Error()
 	}
 	if !found {
-		return false, http.StatusForbidden, "invalid bearer token"
+		return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token"
 	}
 	if key.Status != "active" || key.RevokedAt != "" {
-		return false, http.StatusForbidden, "invalid bearer token"
+		return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token"
 	}
 	if key.ExpiresAt != "" {
 		expiresAt, err := time.Parse(time.RFC3339, key.ExpiresAt)
 		if err != nil || time.Now().UTC().After(expiresAt) {
-			return false, http.StatusForbidden, "invalid bearer token"
+			return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token"
 		}
 	}
-	if !hasRequiredScope(key.Scopes, requiredScopes) {
-		return false, http.StatusForbidden, "insufficient scope"
+	auth := AuthContext{
+		SubjectType:     "api_key",
+		SubjectID:       key.ID,
+		Name:            key.Name,
+		Scopes:          key.Scopes,
+		IsAuthenticated: true,
+		IsAdminLike:     hasRequiredScope(key.Scopes, nil),
+	}
+	if !hasRequiredScope(auth.Scopes, requiredScopes) {
+		return auth, http.StatusForbidden, "insufficient scope"
 	}
 	if err := s.store.MarkAPIKeyUsed(key.ID); err != nil {
-		return false, http.StatusInternalServerError, err.Error()
+		return auth, http.StatusInternalServerError, err.Error()
 	}
-	return true, 0, ""
+	return auth, 0, ""
+}
+
+func anonymousAuthContext() AuthContext {
+	return AuthContext{SubjectType: "anonymous", IsAuthenticated: false}
+}
+
+func unsafeMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 func bearerToken(header string) string {
@@ -1628,6 +1822,8 @@ func boolXML(value bool) string {
 
 var validAPIKeyScopes = map[string]bool{
 	"admin":            true,
+	"api_keys:read":    true,
+	"api_keys:write":   true,
 	"resources:read":   true,
 	"resources:write":  true,
 	"config:read":      true,
@@ -1636,6 +1832,9 @@ var validAPIKeyScopes = map[string]bool{
 	"logs:read":        true,
 	"auth:read":        true,
 	"auth:write":       true,
+	"system:read":      true,
+	"users:read":       true,
+	"users:write":      true,
 }
 
 func validateAPIKeyScopes(scopes []string) ([]string, error) {
@@ -1658,10 +1857,16 @@ func validateAPIKeyScopes(scopes []string) ([]string, error) {
 }
 
 var validUserRoles = map[string]bool{
-	"admin": true,
-	"staff": true,
-	"user":  true,
-	"test":  true,
+	"admin":          true,
+	"super_admin":    true,
+	"systems_admin":  true,
+	"resource_admin": true,
+	"support_staff":  true,
+	"security_admin": true,
+	"viewer":         true,
+	"user":           true,
+	"staff":          true,
+	"test":           true,
 }
 
 func validateUserRoles(roles []string) ([]string, error) {
@@ -1694,6 +1899,51 @@ func validateUserStatus(status string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown user status %q", status)
 	}
+}
+
+func authContextForUser(user db.User, csrfToken string) AuthContext {
+	scopes := scopesForRoles(user.Roles)
+	return AuthContext{
+		SubjectType:     "user",
+		SubjectID:       user.ID,
+		DisplayName:     displayUser(user),
+		Username:        user.Username,
+		Roles:           user.Roles,
+		Scopes:          scopes,
+		IsAuthenticated: true,
+		IsAdminLike:     hasRequiredScope(scopes, []string{"resources:read", "config:read", "diagnostics:read", "logs:read", "system:read", "api_keys:read", "api_keys:write", "users:read", "users:write", "auth:read", "auth:write"}),
+		csrfToken:       csrfToken,
+	}
+}
+
+func scopesForRoles(roles []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(scopes ...string) {
+		for _, scope := range scopes {
+			if !seen[scope] {
+				out = append(out, scope)
+				seen[scope] = true
+			}
+		}
+	}
+	for _, role := range roles {
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "admin", "super_admin":
+			add("admin")
+		case "systems_admin":
+			add("resources:read", "resources:write", "config:read", "config:write", "diagnostics:read", "logs:read", "system:read")
+		case "resource_admin":
+			add("resources:read", "resources:write", "config:read", "config:write", "diagnostics:read")
+		case "support_staff":
+			add("resources:read", "diagnostics:read", "logs:read")
+		case "security_admin":
+			add("users:read", "users:write", "logs:read", "diagnostics:read")
+		case "viewer":
+			add("resources:read", "config:read", "diagnostics:read", "system:read")
+		}
+	}
+	return out
 }
 
 func hasRequiredScope(granted, required []string) bool {
