@@ -29,8 +29,19 @@ func AdminHTML() string {
     button.danger { background: #6b2f35; border-color: #9b3f49; }
     button.danger:hover { background: #7d3840; }
     input { min-width: min(560px, 100%); }
+    label { color: #c5d0db; }
+    .field { display: inline-grid; gap: 4px; }
     textarea { width: 100%; min-height: 340px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; resize: vertical; }
     pre, .list, .table-wrap { overflow: auto; background: #181d22; border: 1px solid #2b3138; border-radius: 8px; padding: 12px; line-height: 1.45; }
+    .card-list { display: grid; gap: 12px; }
+    .resource-card { overflow-wrap: anywhere; background: #181d22; border: 1px solid #2b3138; border-radius: 8px; padding: 14px; }
+    .resource-card.active { border-color: #5fb982; box-shadow: inset 4px 0 0 #5fb982; }
+    .resource-card h4 { margin: 0 0 8px; font-size: 17px; letter-spacing: 0; }
+    .resource-summary { display: grid; gap: 4px; margin: 0 0 10px; }
+    .resource-summary div { overflow-wrap: anywhere; }
+    .resource-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: #cfe4ff; }
     .section { display: none; }
     .section.active { display: block; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0 16px; }
@@ -39,8 +50,8 @@ func AdminHTML() string {
     .resource-item, .api-key-row, .user-row { display: block; width: 100%; text-align: left; margin-bottom: 8px; background: #1f262d; border-color: #303943; }
     .resource-item.active, .api-key-row.active, .user-row.active { background: #2c704f; border-color: #3f946a; }
     .sample { display: block; width: 100%; text-align: left; margin: 6px 0 10px; background: #222a32; border-color: #39424d; color: #cfe4ff; }
-    table { width: 100%; border-collapse: collapse; min-width: 860px; }
-    th, td { border-bottom: 1px solid #2b3138; padding: 8px; text-align: left; vertical-align: top; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #2b3138; padding: 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { color: #c5d0db; font-weight: 600; }
     .output-title { margin-top: 22px; }
     @media (max-width: 860px) { .layout, .workspace { grid-template-columns: 1fr; } nav { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -98,17 +109,18 @@ func AdminHTML() string {
             <button id="export-filtered-json">Export Filtered JSON</button>
           </div>
           <h3>Resource List</h3>
+          <p class="muted">The built-in admin UI is intentionally simple. Advanced customization and automation should use the documented JSON APIs.</p>
           <div class="toolbar">
-            <input id="resource-search" placeholder="Search title, ID, entry URL, domain, tag, or notes" aria-label="Resource search">
-            <select id="resource-status-filter" aria-label="Status filter"><option value="all">all statuses</option><option value="active">active</option><option value="disabled">disabled</option><option value="inactive">inactive</option></select>
-            <select id="resource-behavior-filter" aria-label="Behavior filter"><option value="all">all rule types</option><option value="proxy">has proxy domains</option><option value="anonymous">has anonymous URL rules</option><option value="rewrite">has content rewrite rules</option><option value="headers">has request header rules</option><option value="cookies">has cookie policy</option></select>
-            <select id="resource-complexity-filter" aria-label="Complexity filter"><option value="all">all complexity</option><option value="simple">simple</option><option value="advanced">advanced</option></select>
-            <select id="resource-tag-filter" aria-label="Tag filter"><option value="all">all tags</option></select>
-            <select id="resource-sort" aria-label="Sort resources"><option value="title">title</option><option value="id">id</option><option value="status">status</option><option value="updated_at">updated_at</option><option value="domain_count">domain count</option><option value="complexity">complexity</option></select>
-            <select id="resource-order" aria-label="Sort order"><option value="asc">asc</option><option value="desc">desc</option></select>
+            <label class="field">Search resources<input id="resource-search" placeholder="Search title, ID, entry URL, domain, tag, or notes"></label>
+            <label class="field">Status<select id="resource-status-filter"><option value="all">all statuses</option><option value="active">active</option><option value="disabled">disabled</option><option value="inactive">inactive</option></select></label>
+            <label class="field">Rule type<select id="resource-behavior-filter"><option value="all">all rule types</option><option value="proxy">has proxy domains</option><option value="anonymous">has anonymous URL rules</option><option value="rewrite">has content rewrite rules</option><option value="headers">has request header rules</option><option value="cookies">has cookie policy</option></select></label>
+            <label class="field">Complexity<select id="resource-complexity-filter"><option value="all">all complexity</option><option value="simple">simple</option><option value="advanced">advanced</option></select></label>
+            <label class="field">Tag<select id="resource-tag-filter"><option value="all">all tags</option></select></label>
+            <label class="field">Sort by<select id="resource-sort"><option value="title">title</option><option value="id">id</option><option value="status">status</option><option value="updated_at">updated_at</option><option value="domain_count">domain count</option><option value="complexity">complexity</option></select></label>
+            <label class="field">Sort order<select id="resource-order"><option value="asc">asc</option><option value="desc">desc</option></select></label>
           </div>
           <div class="workspace">
-            <aside><div id="resource-list" class="table-wrap">No resources loaded.</div></aside>
+            <aside><div id="resource-list" class="card-list">No resources loaded.</div></aside>
             <div>
               <div id="resource-detail" class="table-wrap">Select a resource to inspect domains, rules, compatibility, and actions.</div>
               <h3>Raw JSON Editor</h3>
@@ -117,7 +129,7 @@ func AdminHTML() string {
           </div>
           <h3>Proxy Test</h3>
           <div class="toolbar">
-            <input id="url" value="https://www.jstor.org/stable/example" aria-label="Target URL">
+            <label class="field">Target URL<input id="url" value="https://www.jstor.org/stable/example"></label>
             <button id="test">Test Rule</button>
             <button id="open-proxy">Open Through Proxy</button>
             <button id="fetch-proxy">Fetch Through Proxy</button>
@@ -128,9 +140,9 @@ func AdminHTML() string {
           <h3>Resource Config Builder</h3>
           <p class="muted">Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed. See docs/resource-how-to.md for the resource how-to guide.</p>
           <div class="toolbar">
-            <input id="builder-id" placeholder="Resource ID" aria-label="Resource ID">
-            <input id="builder-title" placeholder="Title" aria-label="Title">
-            <input id="builder-entry-url" placeholder="https://www.jstor.org/" aria-label="Entry URL">
+            <label class="field">Resource ID<input id="builder-id" placeholder="jstor"></label>
+            <label class="field">Title<input id="builder-title" placeholder="JSTOR"></label>
+            <label class="field">Entry URL<input id="builder-entry-url" placeholder="https://www.jstor.org/"></label>
           </div>
           <div class="toolbar">
             <label><input type="checkbox" class="builder-method" value="GET" checked> GET</label>
@@ -755,36 +767,50 @@ func AdminHTML() string {
         return;
       }
       resourceList.textContent = '';
-      const table = document.createElement('table');
-      const thead = document.createElement('thead');
-      const headRow = document.createElement('tr');
-      for (const column of ['Title', 'ID', 'Status', 'Entry URL', 'Main domains', 'Tags', 'Updated at', 'Complexity', 'Actions']) {
-        const th = document.createElement('th');
-        th.textContent = column;
-        headRow.appendChild(th);
-      }
-      thead.appendChild(headRow);
-      table.appendChild(thead);
-      const tbody = document.createElement('tbody');
       for (const resource of items) {
-        const row = document.createElement('tr');
-        if (resource.id === selectedResourceId) row.className = 'active';
-        const values = [
-          resourceTitle(resource),
-          resource.id || '',
-          resource.status || 'active',
-          firstEntryURL(resource),
-          (resource.domains || []).slice(0, 3).map(domain => domain.host).join(', '),
-          (resource.tags || []).join(', '),
-          resource.updated_at || '',
-          resourceComplexity(resource)
-        ];
-        for (const value of values) {
-          const td = document.createElement('td');
-          td.textContent = value;
-          row.appendChild(td);
-        }
-        const actions = document.createElement('td');
+        const card = document.createElement('article');
+        card.className = 'resource-card' + (resource.id === selectedResourceId ? ' active' : '');
+        const title = document.createElement('h4');
+        title.textContent = resourceTitle(resource) || 'Untitled resource';
+        const summary = document.createElement('div');
+        summary.className = 'resource-summary';
+        const addSummary = (label, value) => {
+          const item = document.createElement('div');
+          const strong = document.createElement('strong');
+          strong.textContent = label + ': ';
+          item.appendChild(strong);
+          item.appendChild(document.createTextNode(value || 'none'));
+          summary.appendChild(item);
+        };
+        addSummary('ID', resource.id || '');
+        addSummary('Status', resource.status || 'active');
+        addSummary('Entry URL', firstEntryURL(resource));
+        addSummary('Main domains', (resource.domains || []).slice(0, 3).map(domain => domain.host).join(', '));
+        addSummary('Tags', (resource.tags || []).join(', '));
+        addSummary('Complexity', resourceComplexity(resource));
+        const details = document.createElement('details');
+        const detailsSummary = document.createElement('summary');
+        detailsSummary.textContent = 'Details';
+        const detailList = document.createElement('div');
+        detailList.className = 'resource-summary';
+        const addDetail = (label, value) => {
+          const item = document.createElement('div');
+          const strong = document.createElement('strong');
+          strong.textContent = label + ': ';
+          item.appendChild(strong);
+          item.appendChild(document.createTextNode(value || 'none'));
+          detailList.appendChild(item);
+        };
+        addDetail('All domains', (resource.domains || []).map(domain => domain.host + ' (' + domainBehavior(domain) + ')').join(', '));
+        addDetail('Updated at', resource.updated_at || '');
+        addDetail('HTTP methods', summarizeList(resource.http_methods || ['GET', 'HEAD', 'POST'], 'default'));
+        addDetail('Request header rules', String((resource.request_header_rules || []).length));
+        addDetail('Anonymous URL rules', String((resource.anonymous_url_rules || []).length));
+        addDetail('Content rewrite rules', String((resource.content_rewrite_rules || []).length));
+        details.appendChild(detailsSummary);
+        details.appendChild(detailList);
+        const actions = document.createElement('div');
+        actions.className = 'resource-actions';
         const select = document.createElement('button');
         select.textContent = 'Select';
         select.addEventListener('click', () => setEditor(resource));
@@ -812,11 +838,12 @@ func AdminHTML() string {
         del.disabled = !hasScope('resources:write');
         del.addEventListener('click', async () => { setEditor(resource); document.querySelector('#delete-resource').click(); });
         for (const button of [select, edit, builder, validate, test, open, exportButton, del]) actions.appendChild(button);
-        row.appendChild(actions);
-        tbody.appendChild(row);
+        card.appendChild(title);
+        card.appendChild(summary);
+        card.appendChild(details);
+        card.appendChild(actions);
+        resourceList.appendChild(card);
       }
-      table.appendChild(tbody);
-      resourceList.appendChild(table);
       if (!selectedResourceId && items[0]) setEditor(items[0]);
     }
 

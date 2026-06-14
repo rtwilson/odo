@@ -41,6 +41,8 @@ For most resources, start in `/admin` on the Resources tab with the Resource Con
 8. If validation passes, select **Save as Resource**.
 9. Use the integrated **Proxy Test** area in the Resources tab and **Diagnostics** to test the entry URL and a few real pages.
 
+The built-in admin UI is intentionally simple. Advanced customization, bulk updates, and automation should use the documented JSON APIs, and sites can build their own local tools on top of those endpoints.
+
 Simple generic example:
 
 ```json

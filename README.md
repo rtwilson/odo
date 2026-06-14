@@ -74,13 +74,15 @@ http://127.0.0.1:8080/openapi.yaml
 
 Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Diagnostics / Logs, API Keys, Users, Auth / SAML, and Settings / System.
 
+The built-in admin UI is intentionally minimal: plain, readable, and focused on common sysadmin and library-staff tasks. All key operations use the documented `/api/v1` JSON endpoints, so sites can build their own custom UI, scripts, or automation against the same API instead of customizing the bundled page.
+
 Enter an `APP_ADMIN_API_KEY` bootstrap token or stored API key in the global Admin API Key field for protected actions. The key is kept only in the page runtime and is not stored in browser storage. Resources can still be created, edited, and deleted using a raw JSON editor.
 
 API key management is available in the API Keys section. Newly created or rotated tokens are shown once with a copy warning and are not persisted by the UI. The UI uses the same documented `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
 
 User management is available in the Users section. Admins can create local users, update roles/status, set passwords, lock/disable users, and revoke sessions through the same `/api/v1/users` endpoints used by scripts. Password hashes are never displayed.
 
-The Resources section includes search, sort, filters, a resource detail panel, raw JSON editing, the Resource Config Builder, export controls, and integrated Proxy Test controls. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, export a `resource-<id>.json` file, or export the currently filtered resources as JSON.
+The Resources section includes search, sort, filters, readable resource list rows, resource details, raw JSON editing, the Resource Config Builder, export controls, and integrated Proxy Test controls. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, export a `resource-<id>.json` file, or export the currently filtered resources as JSON.
 
 ## Admin access
 
