@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -20,9 +21,6 @@ func NormalizeAndValidateTargetURL(raw string) (*url.URL, error) {
 	if err != nil {
 		return nil, errMalformedTargetURL
 	}
-	if parsed.Scheme != "https" {
-		return nil, errors.New("target URL must use HTTPS")
-	}
 	if parsed.User != nil {
 		return nil, errors.New("target URL must not include userinfo")
 	}
@@ -31,6 +29,12 @@ func NormalizeAndValidateTargetURL(raw string) (*url.URL, error) {
 	}
 	if parsed.Host == "" || parsed.Hostname() == "" {
 		return nil, errMalformedTargetURL
+	}
+	if allowDevelopmentLocalHTTP(parsed) {
+		return parsed, nil
+	}
+	if parsed.Scheme != "https" {
+		return nil, errors.New("target URL must use HTTPS")
 	}
 	port := parsed.Port()
 	if port != "" && port != "443" {
@@ -68,10 +72,27 @@ func NormalizeAndValidateTargetURL(raw string) (*url.URL, error) {
 	return parsed, nil
 }
 
+func allowDevelopmentLocalHTTP(parsed *url.URL) bool {
+	if parsed == nil || parsed.Scheme != "http" {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) != "development" {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_PROXY_ALLOW_LOCAL_HTTP"))) != "true" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(parsed.Hostname()), "."))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 func ValidateTargetURL(ctx context.Context, raw string, lookup IPLookupFunc) (*url.URL, error) {
 	parsed, err := NormalizeAndValidateTargetURL(raw)
 	if err != nil {
 		return nil, err
+	}
+	if allowDevelopmentLocalHTTP(parsed) {
+		return parsed, nil
 	}
 	if lookup == nil {
 		return parsed, nil

@@ -737,6 +737,20 @@ func (s *Store) TouchSession(id string) error {
 	return err
 }
 
+func (s *Store) CountOpenSessions(now time.Time) (int, error) {
+	row := s.db.QueryRow(`SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > ?`, now.UTC().Format(time.RFC3339))
+	var count int
+	err := row.Scan(&count)
+	return count, err
+}
+
+func (s *Store) CountActiveSessionsSince(since time.Time, now time.Time) (int, error) {
+	row := s.db.QueryRow(`SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > ? AND last_seen_at >= ?`, now.UTC().Format(time.RFC3339), since.UTC().Format(time.RFC3339))
+	var count int
+	err := row.Scan(&count)
+	return count, err
+}
+
 func (s *Store) RevokeSession(id string) error {
 	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), id)
 	return err

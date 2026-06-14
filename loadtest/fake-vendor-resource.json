@@ -1,0 +1,53 @@
+{
+  "id": "fake-vendor",
+  "title": "Fake Vendor Load Test",
+  "status": "active",
+  "description": "Development-only resource for local Odo load testing. Requires APP_ENV=development, APP_PROXY_URL_MODE=query, and APP_PROXY_ALLOW_LOCAL_HTTP=true.",
+  "tags": ["loadtest", "development"],
+  "entry_urls": ["http://127.0.0.1:9090/"],
+  "http_methods": ["GET", "HEAD", "POST"],
+  "cookie_policy": {
+    "enabled": true,
+    "jar_scope": "resource",
+    "allowed_cookie_domains": ["127.0.0.1"]
+  },
+  "domains": [
+    {
+      "host": "127.0.0.1",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy",
+      "rewrite_javascript": true,
+      "notes": "Loopback fake vendor. Development load tests only."
+    }
+  ],
+  "anonymous_url_rules": [
+    {
+      "pattern": "http://127.0.0.1:9090/api/*",
+      "behavior": "allow_public_proxy",
+      "methods": ["GET"],
+      "notes": "Allow fake vendor dynamic API calls during local load tests."
+    }
+  ],
+  "content_rewrite_rules": [
+    {
+      "content_types": ["text/html", "application/javascript", "text/css"],
+      "find": "http://127.0.0.1:9090",
+      "replace": "proxy_http_url:http://127.0.0.1:9090"
+    }
+  ],
+  "compatibility": {
+    "referer_recovery": true,
+    "js_shim": true,
+    "app_data_recovery": true,
+    "javascript_text_rewriting": true
+  },
+  "sample_urls": [
+    "http://127.0.0.1:9090/",
+    "http://127.0.0.1:9090/section/science",
+    "http://127.0.0.1:9090/article/123",
+    "http://127.0.0.1:9090/api/search?q=test",
+    "http://127.0.0.1:9090/redirect-to-article"
+  ]
+}

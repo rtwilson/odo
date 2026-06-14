@@ -37,6 +37,23 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/system/runtime:
+    get:
+      summary: Non-secret runtime metrics
+      operationId: getSystemRuntime
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Runtime counters for local operations and load testing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemRuntime"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /api/v1/session/me:
     get:
       summary: Current authenticated subject
@@ -1006,6 +1023,29 @@ components:
           type: boolean
         referer_recovery_enabled:
           type: boolean
+    SystemRuntime:
+      type: object
+      required: [goroutines, memory_alloc_bytes, memory_sys_bytes, open_sessions, active_sessions_recent, resource_count, uptime_seconds]
+      properties:
+        goroutines:
+          type: integer
+        memory_alloc_bytes:
+          type: integer
+          format: int64
+        memory_sys_bytes:
+          type: integer
+          format: int64
+        open_sessions:
+          type: integer
+        active_sessions_recent:
+          type: integer
+        proxy_cookie_jar_sessions:
+          type: integer
+        resource_count:
+          type: integer
+        uptime_seconds:
+          type: integer
+          format: int64
     ErrorResponse:
       type: object
       required: [error]

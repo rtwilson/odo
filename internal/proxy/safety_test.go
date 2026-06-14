@@ -37,6 +37,26 @@ func TestNormalizeAndValidateTargetURLAllowsHTTPSHostname(t *testing.T) {
 	}
 }
 
+func TestNormalizeAndValidateTargetURLAllowsLocalHTTPOnlyInDevelopment(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_PROXY_ALLOW_LOCAL_HTTP", "true")
+	parsed, err := NormalizeAndValidateTargetURL("http://127.0.0.1:9090/article/123")
+	if err != nil {
+		t.Fatalf("expected development local HTTP target to be valid: %v", err)
+	}
+	if parsed.String() != "http://127.0.0.1:9090/article/123" {
+		t.Fatalf("expected target to be preserved, got %q", parsed.String())
+	}
+}
+
+func TestNormalizeAndValidateTargetURLRejectsLocalHTTPWithoutDevelopmentAllowance(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_PROXY_ALLOW_LOCAL_HTTP", "true")
+	if _, err := NormalizeAndValidateTargetURL("http://127.0.0.1:9090/"); err == nil {
+		t.Fatal("expected local HTTP target to be rejected outside development")
+	}
+}
+
 func TestValidateTargetURLRejectsPrivateResolvedIPs(t *testing.T) {
 	tests := []string{
 		"127.0.0.1",

@@ -71,6 +71,13 @@ func (s *SessionStore) GetOrCreate(r *http.Request, w http.ResponseWriter) Sessi
 	return SessionInfo{ID: id, Jar: jar, Created: true}
 }
 
+func (s *SessionStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(time.Now())
+	return len(s.sessions)
+}
+
 func (s *SessionStore) cleanupLocked(now time.Time) {
 	if !s.lastCleanup.IsZero() && now.Sub(s.lastCleanup) < time.Minute {
 		return

@@ -66,6 +66,34 @@ func TestSystemEndpointReturnsNonSecretRuntimeInfo(t *testing.T) {
 	}
 }
 
+func TestSystemRuntimeEndpointRequiresSystemScopeAndReturnsSafeMetrics(t *testing.T) {
+	server := newTestServer(t, "secret")
+
+	anonReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/runtime", nil)
+	anonRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(anonRec, anonReq)
+	if anonRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected runtime endpoint to require auth, got %d", anonRec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system/runtime", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected runtime endpoint to return 200, got %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"goroutines", "memory_alloc_bytes", "memory_sys_bytes", "open_sessions", "active_sessions_recent", "resource_count", "uptime_seconds"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected runtime response to contain %q, got %s", want, body)
+		}
+	}
+	if strings.Contains(body, "secret") || strings.Contains(body, "session_hash") || strings.Contains(body, "password_hash") {
+		t.Fatalf("runtime endpoint exposed sensitive data: %s", body)
+	}
+}
+
 func TestPublicBaseURLIgnoresForwardedHeadersByDefault(t *testing.T) {
 	t.Setenv("APP_PUBLIC_URL", "")
 	t.Setenv("APP_TRUST_PROXY_HEADERS", "")
@@ -409,6 +437,34 @@ func TestResourceDocumentationExistsAndReadmeLinksIt(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(string(readme)), "ezproxy") || strings.Contains(strings.ToLower(string(doc)), "ezproxy") {
 		t.Fatalf("documentation should not reference EZproxy")
+	}
+}
+
+func TestLoadtestDocsAndFakeVendorResourceExist(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_PROXY_ALLOW_LOCAL_HTTP", "true")
+	root := filepath.Join("..", "..")
+
+	readme, err := os.ReadFile(filepath.Join(root, "loadtest", "README.md"))
+	if err != nil {
+		t.Fatalf("expected loadtest/README.md to exist: %v", err)
+	}
+	for _, want := range []string{"Do not load-test real vendor sites", "go run ./loadtest/fake-vendor", "k6 run loadtest/k6/smoke.js", "/api/v1/system/runtime", "SQLite"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("expected loadtest README to contain %q", want)
+		}
+	}
+
+	payload, err := os.ReadFile(filepath.Join(root, "loadtest", "fake-vendor-resource.json"))
+	if err != nil {
+		t.Fatalf("expected fake vendor resource config to exist: %v", err)
+	}
+	var resource resources.Resource
+	if err := json.Unmarshal(payload, &resource); err != nil {
+		t.Fatalf("decode fake vendor resource: %v", err)
+	}
+	if _, err := resources.Validate(resource); err != nil {
+		t.Fatalf("expected fake vendor resource to validate: %v", err)
 	}
 }
 

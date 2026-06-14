@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type Server struct {
 	proxyDiag  *proxy.DiagnosticsStore
 	missedDiag *proxy.MissedRewriteStore
 	proxyH     http.Handler
+	startedAt  time.Time
 }
 
 var (
@@ -102,6 +104,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		proxyDebug: proxyDebug,
 		proxyDiag:  proxy.NewDiagnosticsStore(200),
 		missedDiag: proxy.NewMissedRewriteStore(200),
+		startedAt:  time.Now().UTC(),
 	}
 }
 
@@ -121,6 +124,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/session/me", s.sessionMe)
 	mux.HandleFunc("GET /api/v1/system", s.requireScopes(s.systemInfo, "system:read"))
+	mux.HandleFunc("GET /api/v1/system/runtime", s.requireScopes(s.systemRuntime, "system:read"))
 	mux.HandleFunc("GET /api/v1/resources", s.requireScopes(s.listResources, "resources:read"))
 	mux.HandleFunc("POST /api/v1/resources", s.requireScopes(s.upsertResource, "resources:write"))
 	mux.HandleFunc("POST /api/v1/resources/validate", s.requireScopes(s.validateResource, "resources:write"))
@@ -653,6 +657,31 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 		"proxy_url_mode":           proxy.ProxyURLMode(),
 		"javascript_shim_enabled":  proxy.InjectJSShimEnabled(),
 		"referer_recovery_enabled": proxy.RefererRecoveryEnabled(),
+	})
+}
+
+func (s *Server) systemRuntime(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	openSessions, _ := s.store.CountOpenSessions(now)
+	activeSessions, _ := s.store.CountActiveSessionsSince(now.Add(-15*time.Minute), now)
+	items, err := s.store.ListResources()
+	resourceCount := 0
+	if err == nil {
+		resourceCount = len(items)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"goroutines":                runtime.NumGoroutine(),
+		"memory_alloc_bytes":        mem.Alloc,
+		"memory_sys_bytes":          mem.Sys,
+		"open_sessions":             openSessions,
+		"active_sessions_recent":    activeSessions,
+		"proxy_cookie_jar_sessions": s.sessions.Count(),
+		"resource_count":            resourceCount,
+		"uptime_seconds":            int64(now.Sub(s.startedAt).Seconds()),
 	})
 }
 

@@ -127,6 +127,7 @@ Environment variables:
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
 - `APP_PROXY_URL_MODE`, default `path`; use `query` for `/odo?url=...` compatibility links or `dual` to build path links while accepting both path and query forms
+- `APP_PROXY_ALLOW_LOCAL_HTTP`, default `false`; development-only loopback HTTP allowance for `loadtest/` fake vendor runs, never for production
 - `APP_VIRTUAL_HOST_BASE_DOMAIN`, reserved for future virtual-host proxy mode and not active yet
 - `APP_VIRTUAL_HOST_ENCODING`, reserved for future virtual-host proxy mode and not active yet
 - `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
@@ -428,6 +429,10 @@ Odo injects a small JavaScript shim into proxied HTML pages by default. The shim
 ```sh
 APP_PROXY_INJECT_JS_SHIM=false
 ```
+
+## Local load testing
+
+See [Local Load Testing](loadtest/README.md) for the fake vendor server, sample resource config, k6 smoke/idle/active/spike/soak scripts, runtime metrics endpoint, and SQLite/session notes. The load-test setup is local-only and must not be used against real vendor sites.
 
 ## Domain Rules
 

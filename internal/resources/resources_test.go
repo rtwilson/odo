@@ -265,6 +265,25 @@ func TestValidateAcceptsAndNormalizesTags(t *testing.T) {
 	}
 }
 
+func TestValidateAndTestURLAllowLocalHTTPOnlyForDevelopmentLoadTests(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_PROXY_ALLOW_LOCAL_HTTP", "true")
+	resource, err := Validate(Resource{
+		ID:        "fake-vendor",
+		Title:     "Fake Vendor",
+		Status:    "active",
+		EntryURLs: []string{"http://127.0.0.1:9090/"},
+		Domains:   []DomainRule{{Host: "127.0.0.1", Match: "exact", Role: "content", Action: "proxy"}},
+	})
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	result := TestURL("http://127.0.0.1:9090/article/123", []Resource{resource})
+	if !result.Allowed || result.ResourceID != "fake-vendor" {
+		t.Fatalf("expected local development load-test URL to be allowed, got %#v", result)
+	}
+}
+
 func TestTestURLMatchesExactAndSubdomainRules(t *testing.T) {
 	resources := []Resource{
 		{

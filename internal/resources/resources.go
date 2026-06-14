@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -306,17 +307,19 @@ func validateDomainRule(i int, rule DomainRule) []string {
 	if strings.Contains(rule.Host, "*") {
 		errs = append(errs, fmt.Sprintf("domains[%d].host must not contain wildcards", i))
 	}
-	if rule.Host == "localhost" {
-		errs = append(errs, fmt.Sprintf("domains[%d].host must not be localhost", i))
-	}
-	if rule.Host == "local" || strings.HasSuffix(rule.Host, ".local") {
-		errs = append(errs, fmt.Sprintf("domains[%d].host must not use .local", i))
-	}
-	if rule.Host == "internal" || strings.HasSuffix(rule.Host, ".internal") {
-		errs = append(errs, fmt.Sprintf("domains[%d].host must not use .internal", i))
-	}
-	if net.ParseIP(rule.Host) != nil {
-		errs = append(errs, fmt.Sprintf("domains[%d].host must not be an IP address", i))
+	if !allowDevelopmentLocalHTTPHost(rule.Host) {
+		if rule.Host == "localhost" {
+			errs = append(errs, fmt.Sprintf("domains[%d].host must not be localhost", i))
+		}
+		if rule.Host == "local" || strings.HasSuffix(rule.Host, ".local") {
+			errs = append(errs, fmt.Sprintf("domains[%d].host must not use .local", i))
+		}
+		if rule.Host == "internal" || strings.HasSuffix(rule.Host, ".internal") {
+			errs = append(errs, fmt.Sprintf("domains[%d].host must not use .internal", i))
+		}
+		if net.ParseIP(rule.Host) != nil {
+			errs = append(errs, fmt.Sprintf("domains[%d].host must not be an IP address", i))
+		}
 	}
 	if rule.Match != "exact" && rule.Match != "subdomain" {
 		errs = append(errs, fmt.Sprintf("domains[%d].match must be exact or subdomain", i))
@@ -338,7 +341,7 @@ func TestURL(raw string, activeResources []Resource) TestResult {
 	if err != nil || parsed.Hostname() == "" {
 		return TestResult{Allowed: false, Reason: "url is invalid"}
 	}
-	if parsed.Scheme != "https" {
+	if parsed.Scheme != "https" && !allowDevelopmentLocalHTTPURL(parsed) {
 		return TestResult{Allowed: false, Reason: "only HTTPS URLs are allowed"}
 	}
 
@@ -462,6 +465,24 @@ func (c matchCandidate) result(host string) TestResult {
 
 func normalizeHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
+func allowDevelopmentLocalHTTPURL(parsed *url.URL) bool {
+	if parsed == nil || parsed.Scheme != "http" {
+		return false
+	}
+	return allowDevelopmentLocalHTTPHost(parsed.Hostname())
+}
+
+func allowDevelopmentLocalHTTPHost(host string) bool {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) != "development" {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_PROXY_ALLOW_LOCAL_HTTP"))) != "true" {
+		return false
+	}
+	host = normalizeHost(host)
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func matches(host string, rule DomainRule) bool {
@@ -661,12 +682,12 @@ func validateAnonymousURLRule(i int, rule AnonymousURLRule) []string {
 		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].wildcard is only allowed at the end of the path", i))
 	}
 	parsed, err := url.Parse(strings.TrimSuffix(rule.Pattern, "*"))
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && !allowDevelopmentLocalHTTPURL(parsed)) {
 		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].pattern must be an HTTPS URL pattern", i))
 		return errs
 	}
 	host := normalizeHost(parsed.Hostname())
-	if host == "localhost" || host == "local" || strings.HasSuffix(host, ".local") || host == "internal" || strings.HasSuffix(host, ".internal") || net.ParseIP(host) != nil {
+	if !allowDevelopmentLocalHTTPHost(host) && (host == "localhost" || host == "local" || strings.HasSuffix(host, ".local") || host == "internal" || strings.HasSuffix(host, ".internal") || net.ParseIP(host) != nil) {
 		errs = append(errs, fmt.Sprintf("anonymous_url_rules[%d].pattern host must not be private/internal or an IP address", i))
 	}
 	return errs
