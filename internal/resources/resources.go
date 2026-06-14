@@ -24,6 +24,7 @@ type Resource struct {
 	Domains             []DomainRule         `json:"domains"`
 	Compatibility       Compatibility        `json:"compatibility,omitempty"`
 	SampleURLs          []string             `json:"sample_urls,omitempty"`
+	Tags                []string             `json:"tags,omitempty"`
 }
 
 type DomainRule struct {
@@ -177,6 +178,7 @@ func Normalize(resource Resource) (Resource, []string, []string) {
 	if len(resource.SampleURLs) == 0 {
 		resource.SampleURLs = append(resource.SampleURLs, resource.EntryURLs...)
 	}
+	resource.Tags = normalizeTags(resource.Tags)
 	legacyShape := len(resource.EntryURLs) == 0 && len(resource.SampleURLs) == 0 && resource.Title == resource.Name
 
 	resource.HTTPMethods, errs = normalizeHTTPMethods(resource.HTTPMethods, errs)
@@ -274,6 +276,20 @@ func Normalize(resource Resource) (Resource, []string, []string) {
 	}
 
 	return resource, errs, warnings
+}
+
+func normalizeTags(tags []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" || seen[tag] {
+			continue
+		}
+		out = append(out, tag)
+		seen[tag] = true
+	}
+	return out
 }
 
 func validateDomainRule(i int, rule DomainRule) []string {

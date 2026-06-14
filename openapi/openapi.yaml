@@ -1078,6 +1078,11 @@ components:
           items:
             type: string
             format: uri
+        tags:
+          type: array
+          description: Optional lowercase labels for searching and filtering resource collections.
+          items:
+            type: string
     DomainRule:
       type: object
       required: [host]

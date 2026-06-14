@@ -65,7 +65,6 @@ func AdminHTML() string {
         <button class="nav-button active" data-section="dashboard">Dashboard</button>
         <button class="nav-button" data-section="resources" data-scopes="resources:read resources:write">Resources</button>
         <button class="nav-button" data-section="config" data-scopes="config:read config:write">Config</button>
-        <button class="nav-button" data-section="proxy" data-scopes="resources:read diagnostics:read">Proxy Test</button>
         <button class="nav-button" data-section="diagnostics" data-scopes="diagnostics:read logs:read">Diagnostics / Logs</button>
         <button class="nav-button" data-section="api-keys" data-scopes="api_keys:read api_keys:write">API Keys</button>
         <button class="nav-button" data-section="users" data-scopes="users:read users:write">Users</button>
@@ -96,11 +95,36 @@ func AdminHTML() string {
             <button id="new-resource">New Resource</button>
             <button id="save-resource">Save Resource</button>
             <button id="delete-resource" class="danger">Delete Resource</button>
+            <button id="export-filtered-json">Export Filtered JSON</button>
+          </div>
+          <h3>Resource List</h3>
+          <div class="toolbar">
+            <input id="resource-search" placeholder="Search title, ID, entry URL, domain, tag, or notes" aria-label="Resource search">
+            <select id="resource-status-filter" aria-label="Status filter"><option value="all">all statuses</option><option value="active">active</option><option value="disabled">disabled</option><option value="inactive">inactive</option></select>
+            <select id="resource-behavior-filter" aria-label="Behavior filter"><option value="all">all rule types</option><option value="proxy">has proxy domains</option><option value="anonymous">has anonymous URL rules</option><option value="rewrite">has content rewrite rules</option><option value="headers">has request header rules</option><option value="cookies">has cookie policy</option></select>
+            <select id="resource-complexity-filter" aria-label="Complexity filter"><option value="all">all complexity</option><option value="simple">simple</option><option value="advanced">advanced</option></select>
+            <select id="resource-tag-filter" aria-label="Tag filter"><option value="all">all tags</option></select>
+            <select id="resource-sort" aria-label="Sort resources"><option value="title">title</option><option value="id">id</option><option value="status">status</option><option value="updated_at">updated_at</option><option value="domain_count">domain count</option><option value="complexity">complexity</option></select>
+            <select id="resource-order" aria-label="Sort order"><option value="asc">asc</option><option value="desc">desc</option></select>
           </div>
           <div class="workspace">
-            <aside><div id="resource-list" class="list">No resources loaded.</div></aside>
-            <div><textarea id="editor" spellcheck="false" aria-label="Resource JSON editor"></textarea></div>
+            <aside><div id="resource-list" class="table-wrap">No resources loaded.</div></aside>
+            <div>
+              <div id="resource-detail" class="table-wrap">Select a resource to inspect domains, rules, compatibility, and actions.</div>
+              <h3>Raw JSON Editor</h3>
+              <textarea id="editor" spellcheck="false" aria-label="Resource JSON editor"></textarea>
+            </div>
           </div>
+          <h3>Proxy Test</h3>
+          <div class="toolbar">
+            <input id="url" value="https://www.jstor.org/stable/example" aria-label="Target URL">
+            <button id="test">Test Rule</button>
+            <button id="open-proxy">Open Through Proxy</button>
+            <button id="fetch-proxy">Fetch Through Proxy</button>
+            <button id="resource-missed-rewrites">Load Missed Rewrites</button>
+          </div>
+          <p class="muted">Proxy Test shows matched resource ID, matched domain rule, behavior, role, allowed/denied decision, denial reason, proxy_url, and fetch status when available.</p>
+          <div id="resource-test-output" class="table-wrap">Select a resource or enter a target URL to test proxy matching.</div>
           <h3>Resource Config Builder</h3>
           <p class="muted">Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed. See docs/resource-how-to.md for the resource how-to guide.</p>
           <div class="toolbar">
@@ -151,16 +175,6 @@ func AdminHTML() string {
             <button id="validate">Validate Config</button>
             <button id="import">Import Config</button>
             <button id="revisions">Load Config Revisions</button>
-          </div>
-        </section>
-
-        <section id="section-proxy" class="section">
-          <h2>Proxy Test</h2>
-          <div class="toolbar">
-            <input id="url" value="https://www.jstor.org/stable/example" aria-label="Target URL">
-            <button id="test">Test Rule</button>
-            <button id="open-proxy">Open Through Proxy</button>
-            <button id="fetch-proxy">Fetch Through Proxy</button>
           </div>
         </section>
 
@@ -250,6 +264,15 @@ func AdminHTML() string {
     const userEditor = document.querySelector('#user-editor');
     const samlEditor = document.querySelector('#saml-editor');
     const resourceList = document.querySelector('#resource-list');
+    const resourceDetail = document.querySelector('#resource-detail');
+    const resourceTestOutput = document.querySelector('#resource-test-output');
+    const resourceSearch = document.querySelector('#resource-search');
+    const resourceStatusFilter = document.querySelector('#resource-status-filter');
+    const resourceBehaviorFilter = document.querySelector('#resource-behavior-filter');
+    const resourceComplexityFilter = document.querySelector('#resource-complexity-filter');
+    const resourceTagFilter = document.querySelector('#resource-tag-filter');
+    const resourceSort = document.querySelector('#resource-sort');
+    const resourceOrder = document.querySelector('#resource-order');
     const apiKeyTable = document.querySelector('#api-key-table');
     const userList = document.querySelector('#user-list');
     const samlProviderList = document.querySelector('#saml-provider-list');
@@ -273,6 +296,7 @@ func AdminHTML() string {
       name: 'New Resource',
       status: 'active',
       description: '',
+      tags: ['test'],
       domains: [
         { host: 'example.com', match: 'exact', role: 'content', action: 'proxy' }
       ],
@@ -436,6 +460,11 @@ func AdminHTML() string {
       for (const button of document.querySelectorAll('.nav-button[data-scopes]')) {
         button.hidden = !hasAnyScope(button.dataset.scopes);
       }
+      const canWriteResources = hasScope('resources:write');
+      for (const id of ['new-resource', 'save-resource', 'delete-resource', 'save-builder-resource']) {
+        const el = document.querySelector('#' + id);
+        if (el) el.disabled = !canWriteResources;
+      }
       document.querySelector('#session-summary').textContent = currentSession.authenticated
         ? ((currentSession.display_name || currentSession.username || currentSession.name || currentSession.subject_type) + ' | roles: ' + (currentSession.roles || []).join(', ') + ' | scopes: ' + (currentSession.scopes || []).join(', '))
         : 'Not signed in';
@@ -473,7 +502,160 @@ func AdminHTML() string {
     function setEditor(value) {
       editor.value = JSON.stringify(value, null, 2);
       selectedResourceId = value.id || '';
+      const entry = firstEntryURL(value);
+      if (entry) document.querySelector('#url').value = entry;
+      renderResourceDetail(value);
       renderResources();
+    }
+
+    function selectedResource() {
+      return resources.find(resource => resource.id === selectedResourceId) || null;
+    }
+
+    function firstEntryURL(resource) {
+      return ((resource || {}).entry_urls || (resource || {}).sample_urls || [''])[0] || '';
+    }
+
+    function resourceTitle(resource) {
+      return resource.title || resource.name || resource.id || '';
+    }
+
+    function domainBehavior(domain) {
+      return domain.behavior || domain.action || (domain.role === 'blocked' ? 'block' : 'proxy');
+    }
+
+    function resourceComplexity(resource) {
+      const methods = resource.http_methods || ['GET', 'HEAD', 'POST'];
+      const behaviors = new Set((resource.domains || []).map(domainBehavior));
+      const basicHeaderRules = (resource.request_header_rules || []).filter(rule => rule.name !== 'X-Requested-With' || rule.action !== 'remove');
+      const advanced = (resource.anonymous_url_rules || []).length ||
+        (resource.content_rewrite_rules || []).length ||
+        basicHeaderRules.length ||
+        (resource.domains || []).length > 2 ||
+        behaviors.size > 1 ||
+        methods.some(method => !['GET', 'HEAD', 'POST'].includes(method));
+      return advanced ? 'advanced' : 'simple';
+    }
+
+    function resourceSearchText(resource) {
+      return [
+        resourceTitle(resource),
+        resource.id,
+        ...(resource.entry_urls || []),
+        ...((resource.domains || []).map(domain => [domain.host, domain.notes, domain.role, domain.behavior].join(' '))),
+        ...(resource.tags || []),
+        resource.description || ''
+      ].join(' ').toLowerCase();
+    }
+
+    function filteredResources() {
+      const search = resourceSearch.value.trim().toLowerCase();
+      const status = resourceStatusFilter.value;
+      const behavior = resourceBehaviorFilter.value;
+      const complexity = resourceComplexityFilter.value;
+      const tag = resourceTagFilter.value;
+      let items = resources.filter(resource => {
+        if (search && !resourceSearchText(resource).includes(search)) return false;
+        if (status !== 'all' && (resource.status || 'active') !== status) return false;
+        if (tag !== 'all' && !(resource.tags || []).includes(tag)) return false;
+        if (complexity !== 'all' && resourceComplexity(resource) !== complexity) return false;
+        if (behavior === 'proxy' && !(resource.domains || []).some(domain => domainBehavior(domain) === 'proxy')) return false;
+        if (behavior === 'anonymous' && !(resource.anonymous_url_rules || []).length) return false;
+        if (behavior === 'rewrite' && !(resource.content_rewrite_rules || []).length) return false;
+        if (behavior === 'headers' && !(resource.request_header_rules || []).length) return false;
+        if (behavior === 'cookies' && !(resource.cookie_policy || {}).enabled) return false;
+        return true;
+      });
+      const sort = resourceSort.value;
+      const dir = resourceOrder.value === 'desc' ? -1 : 1;
+      items = items.slice().sort((a, b) => {
+        const av = sort === 'title' ? resourceTitle(a).toLowerCase() :
+          sort === 'id' ? (a.id || '') :
+          sort === 'status' ? (a.status || 'active') :
+          sort === 'updated_at' ? (a.updated_at || '') :
+          sort === 'domain_count' ? (a.domains || []).length :
+          resourceComplexity(a);
+        const bv = sort === 'title' ? resourceTitle(b).toLowerCase() :
+          sort === 'id' ? (b.id || '') :
+          sort === 'status' ? (b.status || 'active') :
+          sort === 'updated_at' ? (b.updated_at || '') :
+          sort === 'domain_count' ? (b.domains || []).length :
+          resourceComplexity(b);
+        return av < bv ? -1 * dir : av > bv ? 1 * dir : 0;
+      });
+      return items;
+    }
+
+    function refreshTagFilter() {
+      const current = resourceTagFilter.value;
+      const tags = Array.from(new Set(resources.flatMap(resource => resource.tags || []))).sort();
+      resourceTagFilter.textContent = '';
+      const all = document.createElement('option');
+      all.value = 'all';
+      all.textContent = 'all tags';
+      resourceTagFilter.appendChild(all);
+      for (const tag of tags) {
+        const option = document.createElement('option');
+        option.value = tag;
+        option.textContent = tag;
+        resourceTagFilter.appendChild(option);
+      }
+      resourceTagFilter.value = tags.includes(current) ? current : 'all';
+    }
+
+    function summarizeList(items, emptyText) {
+      return items && items.length ? items.join(', ') : emptyText;
+    }
+
+    function renderResourceDetail(resource) {
+      if (!resource) {
+        resourceDetail.textContent = 'Select a resource to inspect domains, rules, compatibility, and actions.';
+        return;
+      }
+      const groups = {};
+      for (const domain of resource.domains || []) {
+        const behavior = domainBehavior(domain);
+        groups[behavior] = groups[behavior] || [];
+        groups[behavior].push(domain.host + (domain.include_subdomains || domain.match === 'subdomain' ? ' + subdomains' : '') + (domain.role ? ' (' + domain.role + ')' : ''));
+      }
+      const table = document.createElement('table');
+      const rows = [
+        ['title', resourceTitle(resource)],
+        ['id', resource.id || ''],
+        ['status', resource.status || 'active'],
+        ['tags', summarizeList(resource.tags || [], 'none')],
+        ['entry URLs', summarizeList(resource.entry_urls || resource.sample_urls || [], 'none')],
+        ['domains by behavior', Object.entries(groups).map(([key, value]) => key + ': ' + value.join(', ')).join(' | ') || 'none'],
+        ['HTTP methods', summarizeList(resource.http_methods || ['GET', 'HEAD', 'POST'], 'default')],
+        ['cookie policy', (resource.cookie_policy || {}).enabled ? 'enabled; domains: ' + summarizeList((resource.cookie_policy || {}).allowed_cookie_domains || [], 'resource') : 'disabled'],
+        ['request header rules', String((resource.request_header_rules || []).length)],
+        ['anonymous URL rules', String((resource.anonymous_url_rules || []).length)],
+        ['content rewrite rules', String((resource.content_rewrite_rules || []).length)],
+        ['compatibility flags', JSON.stringify(resource.compatibility || {})],
+        ['complexity', resourceComplexity(resource)]
+      ];
+      for (const [label, value] of rows) {
+        const tr = document.createElement('tr');
+        const th = document.createElement('th');
+        const td = document.createElement('td');
+        th.textContent = label;
+        td.textContent = value;
+        tr.appendChild(th);
+        tr.appendChild(td);
+        table.appendChild(tr);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'toolbar';
+      actions.innerHTML = '<button id="detail-open">Open first entry URL through proxy</button><button id="detail-test">Test first entry URL</button><button id="detail-validate">Validate resource</button><button id="detail-load-builder">Load into Builder</button><button id="detail-edit-json">Edit raw JSON</button><button id="detail-export">Export JSON</button>';
+      resourceDetail.textContent = '';
+      resourceDetail.appendChild(table);
+      resourceDetail.appendChild(actions);
+      actions.querySelector('#detail-open').addEventListener('click', () => { const entry = firstEntryURL(resource); if (entry) window.open(proxyURL(entry), '_blank', 'noopener'); });
+      actions.querySelector('#detail-test').addEventListener('click', async () => { const entry = firstEntryURL(resource); if (entry) { document.querySelector('#url').value = entry; await testRule(); } });
+      actions.querySelector('#detail-validate').addEventListener('click', async () => validateResource(resource));
+      actions.querySelector('#detail-load-builder').addEventListener('click', () => { loadBuilder(resource); show('Resource loaded into builder.'); });
+      actions.querySelector('#detail-edit-json').addEventListener('click', () => setEditor(resource));
+      actions.querySelector('#detail-export').addEventListener('click', () => downloadJSON('resource-' + (resource.id || 'selected') + '.json', resource));
     }
 
     function buildResourceConfig() {
@@ -508,6 +690,7 @@ func AdminHTML() string {
         id: document.querySelector('#builder-id').value.trim(),
         title: document.querySelector('#builder-title').value.trim(),
         status: 'active',
+        tags: [],
         entry_urls: entryURL ? [entryURL] : [],
         http_methods: methods,
         cookie_policy: {
@@ -561,29 +744,80 @@ func AdminHTML() string {
     }
 
     function renderResources() {
+      refreshTagFilter();
+      const items = filteredResources();
       if (!resources.length) {
         resourceList.textContent = 'No resources loaded.';
         return;
       }
-      resourceList.textContent = '';
-      for (const resource of resources) {
-        const button = document.createElement('button');
-        button.className = 'resource-item' + (resource.id === selectedResourceId ? ' active' : '');
-        button.textContent = resource.id + ' - ' + resource.name;
-        button.addEventListener('click', () => setEditor(resource));
-        resourceList.appendChild(button);
-        for (const sampleURL of resource.sample_urls || []) {
-          const sample = document.createElement('button');
-          sample.className = 'sample';
-          sample.textContent = sampleURL;
-          sample.addEventListener('click', () => {
-            document.querySelector('#url').value = sampleURL;
-            setEditor(resource);
-            show({ selected_sample_url: sampleURL });
-          });
-          resourceList.appendChild(sample);
-        }
+      if (!items.length) {
+        resourceList.textContent = 'No resources match the current search and filters.';
+        return;
       }
+      resourceList.textContent = '';
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      for (const column of ['Title', 'ID', 'Status', 'Entry URL', 'Main domains', 'Tags', 'Updated at', 'Complexity', 'Actions']) {
+        const th = document.createElement('th');
+        th.textContent = column;
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const resource of items) {
+        const row = document.createElement('tr');
+        if (resource.id === selectedResourceId) row.className = 'active';
+        const values = [
+          resourceTitle(resource),
+          resource.id || '',
+          resource.status || 'active',
+          firstEntryURL(resource),
+          (resource.domains || []).slice(0, 3).map(domain => domain.host).join(', '),
+          (resource.tags || []).join(', '),
+          resource.updated_at || '',
+          resourceComplexity(resource)
+        ];
+        for (const value of values) {
+          const td = document.createElement('td');
+          td.textContent = value;
+          row.appendChild(td);
+        }
+        const actions = document.createElement('td');
+        const select = document.createElement('button');
+        select.textContent = 'Select';
+        select.addEventListener('click', () => setEditor(resource));
+        const edit = document.createElement('button');
+        edit.textContent = 'Edit JSON';
+        edit.addEventListener('click', () => setEditor(resource));
+        const builder = document.createElement('button');
+        builder.textContent = 'Load into Builder';
+        builder.addEventListener('click', () => { setEditor(resource); loadBuilder(resource); show('Resource loaded into builder.'); });
+        const validate = document.createElement('button');
+        validate.textContent = 'Validate';
+        validate.addEventListener('click', () => validateResource(resource));
+        const test = document.createElement('button');
+        test.textContent = 'Test';
+        test.addEventListener('click', async () => { setEditor(resource); const entry = firstEntryURL(resource); if (entry) document.querySelector('#url').value = entry; await testRule(); });
+        const open = document.createElement('button');
+        open.textContent = 'Open';
+        open.addEventListener('click', () => { const entry = firstEntryURL(resource); if (entry) window.open(proxyURL(entry), '_blank', 'noopener'); });
+        const exportButton = document.createElement('button');
+        exportButton.textContent = 'Export';
+        exportButton.addEventListener('click', () => downloadJSON('resource-' + (resource.id || 'selected') + '.json', resource));
+        const del = document.createElement('button');
+        del.textContent = 'Delete';
+        del.className = 'danger';
+        del.disabled = !hasScope('resources:write');
+        del.addEventListener('click', async () => { setEditor(resource); document.querySelector('#delete-resource').click(); });
+        for (const button of [select, edit, builder, validate, test, open, exportButton, del]) actions.appendChild(button);
+        row.appendChild(actions);
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      resourceList.appendChild(table);
+      if (!selectedResourceId && items[0]) setEditor(items[0]);
     }
 
     function selectAPIKey(key) {
@@ -726,6 +960,45 @@ func AdminHTML() string {
       show(result);
     }
 
+    async function validateResource(resource) {
+      try { show(await api('/api/v1/resources/validate', { method: 'POST', body: JSON.stringify(resource) })); } catch (err) { show(err); }
+    }
+
+    function downloadJSON(filename, value) {
+      const json = JSON.stringify(value, null, 2);
+      const blob = new Blob([json + '\n'], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      show(json);
+    }
+
+    async function testRule() {
+      const target = document.querySelector('#url').value.trim();
+      const result = await api('/api/v1/rules/test-url', {
+        method: 'POST',
+        body: JSON.stringify({ url: target })
+      });
+      const body = unwrap(result) || {};
+      const enriched = { ...body, proxy_url: target ? proxyURL(target) : '', selected_resource_id: selectedResourceId || '' };
+      resourceTestOutput.textContent = JSON.stringify(enriched, null, 2);
+      show({ ...result, body: enriched });
+    }
+
+    async function fetchThroughProxy() {
+      const target = document.querySelector('#url').value.trim();
+      const result = await api('/api/v1/proxy/test-fetch', {
+        method: 'POST',
+        body: JSON.stringify({ url: target })
+      });
+      const body = unwrap(result) || {};
+      const enriched = { ...body, proxy_url: target ? proxyURL(target) : '', selected_resource_id: selectedResourceId || '' };
+      resourceTestOutput.textContent = JSON.stringify(enriched, null, 2);
+      show({ ...result, body: enriched });
+    }
+
     async function loadConfigRevisions() {
       show(await api('/api/v1/config/revisions'));
     }
@@ -812,7 +1085,7 @@ func AdminHTML() string {
     });
     document.querySelector('#validate-json').addEventListener('click', async () => {
       const resource = parseJSONEditor(editor, 'resource') || buildResourceConfig();
-      try { show(await api('/api/v1/resources/validate', { method: 'POST', body: JSON.stringify(resource) })); } catch (err) { show(err); }
+      await validateResource(resource);
     });
     document.querySelector('#save-builder-resource').addEventListener('click', async () => {
       const resource = buildResourceConfig();
@@ -825,14 +1098,7 @@ func AdminHTML() string {
     });
     document.querySelector('#export-json').addEventListener('click', () => {
       const resource = parseJSONEditor(editor, 'resource') || buildResourceConfig();
-      const json = JSON.stringify(resource, null, 2);
-      const blob = new Blob([json + '\n'], { type: 'application/json' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = 'resource-' + (resource.id || 'new-resource') + '.json';
-      link.click();
-      URL.revokeObjectURL(link.href);
-      show(json);
+      downloadJSON('resource-' + (resource.id || 'new-resource') + '.json', resource);
     });
     document.querySelector('#load-existing-builder').addEventListener('click', () => {
       const resource = parseJSONEditor(editor, 'resource');
@@ -846,12 +1112,7 @@ func AdminHTML() string {
     document.querySelector('#revisions').addEventListener('click', async () => { try { await loadConfigRevisions(); } catch (err) { show(err); } });
 
     document.querySelector('#test').addEventListener('click', async () => {
-      try {
-        show(await api('/api/v1/rules/test-url', {
-          method: 'POST',
-          body: JSON.stringify({ url: document.querySelector('#url').value })
-        }));
-      } catch (err) { show(err); }
+      try { await testRule(); } catch (err) { show(err); }
     });
     document.querySelector('#open-proxy').addEventListener('click', () => {
       const target = document.querySelector('#url').value.trim();
@@ -859,13 +1120,14 @@ func AdminHTML() string {
       try { window.open(proxyURL(target), '_blank', 'noopener'); } catch (err) { show({ error: 'target URL is invalid', detail: err.message }); }
     });
     document.querySelector('#fetch-proxy').addEventListener('click', async () => {
-      try {
-        show(await api('/api/v1/proxy/test-fetch', {
-          method: 'POST',
-          body: JSON.stringify({ url: document.querySelector('#url').value })
-        }));
-      } catch (err) { show(err); }
+      try { await fetchThroughProxy(); } catch (err) { show(err); }
     });
+    document.querySelector('#resource-missed-rewrites').addEventListener('click', async () => { try { await loadMissedRewrites(); } catch (err) { show(err); } });
+    document.querySelector('#export-filtered-json').addEventListener('click', () => downloadJSON('resources-export.json', filteredResources()));
+    for (const control of [resourceSearch, resourceStatusFilter, resourceBehaviorFilter, resourceComplexityFilter, resourceTagFilter, resourceSort, resourceOrder]) {
+      control.addEventListener('input', renderResources);
+      control.addEventListener('change', renderResources);
+    }
 
     document.querySelector('#access-logs').addEventListener('click', async () => { try { await loadAccessLogs(); } catch (err) { show(err); } });
     document.querySelector('#proxy-diagnostics').addEventListener('click', async () => { try { await loadProxyDiagnostics(); } catch (err) { show(err); } });

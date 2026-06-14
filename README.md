@@ -72,7 +72,7 @@ http://127.0.0.1:8080/openapi.yaml
 
 ## Admin UI
 
-Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Proxy Test, Diagnostics / Logs, API Keys, Users, Auth / SAML, and Settings / System.
+Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Diagnostics / Logs, API Keys, Users, Auth / SAML, and Settings / System.
 
 Enter an `APP_ADMIN_API_KEY` bootstrap token or stored API key in the global Admin API Key field for protected actions. The key is kept only in the page runtime and is not stored in browser storage. Resources can still be created, edited, and deleted using a raw JSON editor.
 
@@ -80,7 +80,7 @@ API key management is available in the API Keys section. Newly created or rotate
 
 User management is available in the Users section. Admins can create local users, update roles/status, set passwords, lock/disable users, and revoke sessions through the same `/api/v1/users` endpoints used by scripts. Password hashes are never displayed.
 
-The Resources section includes a Resource Config Builder for authoring structured JSON resource configs. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, and export a `resource-<id>.json` file.
+The Resources section includes search, sort, filters, a resource detail panel, raw JSON editing, the Resource Config Builder, export controls, and integrated Proxy Test controls. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, export a `resource-<id>.json` file, or export the currently filtered resources as JSON.
 
 ## Admin access
 
@@ -102,7 +102,7 @@ When the admin UI uses a browser session for unsafe API calls, it sends `X-Odo-C
 
 ## Adding resources
 
-Use the admin Resource Config Builder for most additions. Start with a title, entry URL, and main domain, then generate and validate the JSON before saving. Use raw JSON for advanced cases such as header rules, anonymous URL rules, content rewrite rules, or carefully reviewed compatibility settings. After saving, use Proxy Test and Diagnostics to confirm the entry URL, search pages, detail pages, downloads, and any blocked or missed hosts.
+Use the admin Resource Config Builder for most additions. Start with a title, entry URL, and main domain, then generate and validate the JSON before saving. Use raw JSON for advanced cases such as header rules, anonymous URL rules, content rewrite rules, tags, or carefully reviewed compatibility settings. After saving, use the integrated Proxy Test in the Resources tab and Diagnostics to confirm the entry URL, search pages, detail pages, downloads, and any blocked or missed hosts. Use search, status/type/complexity filters, tags, and sorting to manage large collections and find complex resources.
 
 See [Adding Resources in Odo](docs/resource-how-to.md) for a plain-language workflow and examples.
 
@@ -330,7 +330,7 @@ A sample provider config lives at `config/auth/saml/campus-shibboleth.json`. The
 
 ## Admin Troubleshooting Tools
 
-The admin UI includes a Proxy Test panel that can test rule matching, open a target through `/odo`, or fetch a bounded body preview through the protected `/api/v1/proxy/test-fetch` endpoint.
+The Resources tab includes an integrated Proxy Test panel that can test rule matching, open a target through `/odo`, or fetch a bounded body preview through the protected `/api/v1/proxy/test-fetch` endpoint. Selecting a resource prefills the test URL from its first entry URL.
 
 Recent access logs are privacy-filtered and available through the admin UI. Proxy diagnostics are also exposed from the UI for checking blocked hosts, rewrite counts, and upstream status as those diagnostics grow. These tools are intended to make the access layer easier to understand and troubleshoot without exposing full target URLs, cookies, or authorization headers.
 

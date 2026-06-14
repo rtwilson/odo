@@ -1,6 +1,9 @@
 package resources
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateDefaultsAndNormalizesResource(t *testing.T) {
 	resource, err := Validate(Resource{
@@ -243,6 +246,22 @@ func TestValidateRejectsInvalidResources(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsAndNormalizesTags(t *testing.T) {
+	resource, err := Validate(Resource{
+		ID:        "economist",
+		Title:     "The Economist",
+		EntryURLs: []string{"https://www.economist.com/"},
+		Tags:      []string{" Newspaper ", "complex", "newspaper", ""},
+		Domains:   []DomainRule{{Host: "www.economist.com", Behavior: "proxy"}},
+	})
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if got := strings.Join(resource.Tags, ","); got != "newspaper,complex" {
+		t.Fatalf("expected normalized tags, got %#v", resource.Tags)
 	}
 }
 

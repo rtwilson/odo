@@ -161,10 +161,13 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		t.Fatalf("expected admin to return 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "optional override mode", "session-summary", "Logout", "data-scopes=\"resources:read resources:write\"", "X-Odo-CSRF", "/api/v1/session/me", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Access Logs", "Load Proxy Diagnostics", "Load Missed Rewrites", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Load System Info", "app_env", "public_url", "data_dir", "trust_proxy_headers", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
+	for _, want := range []string{"Dashboard", "Resources", "Config", "Proxy Test", "Diagnostics", "API Keys", "Users", "Auth", "Settings", "Load Resources", "Save Resource", "Delete Resource", "New Resource", "Admin API Key", "optional override mode", "session-summary", "Logout", "data-scopes=\"resources:read resources:write\"", "X-Odo-CSRF", "/api/v1/session/me", "Resource List", "resource-search", "resource-status-filter", "resource-behavior-filter", "resource-complexity-filter", "resource-tag-filter", "resource-sort", "resource-order", "resource-detail", "Raw JSON Editor", "Export Filtered JSON", "Title", "Main domains", "Tags", "Updated at", "Complexity", "Test Rule", "Open Through Proxy", "Fetch Through Proxy", "Load Missed Rewrites", "matched domain rule", "proxy_url", "Load Access Logs", "Load Proxy Diagnostics", "Load API Keys", "New API Key", "Create API Key", "Rotate Selected Key", "Revoke Selected Key", "Delete Selected Key", "Load Users", "New User", "Create User", "Update User", "Set Password", "Revoke Sessions", "Load SAML Providers", "New SAML Provider", "Save SAML Provider", "Delete SAML Provider", "Open SP Metadata", "Load System Info", "app_env", "public_url", "data_dir", "trust_proxy_headers", "Resource Config Builder", "Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed.", "docs/resource-how-to.md", "Add Domain", "Anonymous URL Rules", "Add Anonymous Rule", "Content Rewrite Rules", "Add Rewrite Rule", "rewrite_javascript", "Generate JSON", "Validate JSON", "Save as Resource", "Export JSON"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
+	}
+	if strings.Contains(body, `data-section="proxy"`) || strings.Contains(body, `id="section-proxy"`) {
+		t.Fatalf("standalone Proxy Test navigation/section should be folded into Resources")
 	}
 	if !strings.Contains(body, "/api/v1/api-keys") {
 		t.Fatalf("expected admin JS to reference /api/v1/api-keys")
@@ -399,7 +402,7 @@ func TestResourceDocumentationExistsAndReadmeLinksIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read README.md: %v", err)
 	}
-	for _, want := range []string{"## Adding resources", "docs/resource-how-to.md", "Resource Config Builder", "Proxy Test and Diagnostics"} {
+	for _, want := range []string{"## Adding resources", "docs/resource-how-to.md", "Resource Config Builder", "integrated Proxy Test in the Resources tab"} {
 		if !strings.Contains(string(readme), want) {
 			t.Fatalf("expected README to contain %q", want)
 		}

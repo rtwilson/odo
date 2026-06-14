@@ -29,7 +29,7 @@ Use a test account or staff account when possible. Keep the first version small,
 
 ## Quick add: simple resource
 
-For most resources, start in `/admin` with the Resource Config Builder:
+For most resources, start in `/admin` on the Resources tab with the Resource Config Builder:
 
 1. Open `/admin`.
 2. Go to **Resources**.
@@ -39,7 +39,7 @@ For most resources, start in `/admin` with the Resource Config Builder:
 6. Select **Generate JSON**.
 7. Select **Validate JSON**.
 8. If validation passes, select **Save as Resource**.
-9. Use **Proxy Test** and **Diagnostics** to test the entry URL and a few real pages.
+9. Use the integrated **Proxy Test** area in the Resources tab and **Diagnostics** to test the entry URL and a few real pages.
 
 Simple generic example:
 
@@ -99,6 +99,7 @@ Simple generic example:
 - `content_rewrite_rules`: Explicit text substitutions for difficult pages or scripts.
 - `compatibility`: Odo browser compatibility flags.
 - `sample_urls`: Optional URLs that are useful for testing.
+- `tags`: Optional labels, such as `database`, `newspaper`, `media`, `test`, or `complex`, for searching and filtering large collections.
 
 ## Domain behaviors
 
@@ -253,7 +254,7 @@ Useful replacement tokens include:
 
 After saving, test in this order:
 
-1. Use **Proxy Test** with the entry URL.
+1. Use the Resources tab **Proxy Test** area with the entry URL.
 2. Open the entry URL through Odo.
 3. Try a search.
 4. Open a detail page, article page, or media page.
@@ -299,6 +300,8 @@ Use these defaults unless testing shows a reason to change them:
 8. Add one domain or rule at a time.
 9. Validate and save after each change.
 10. Export JSON when the resource is working so it can be reviewed or kept with other configuration.
+
+For large collections, use Resources tab search, status filters, rule-type filters, complexity filters, tags, and sort controls to find related or complex resources. You can export either the selected resource or the currently filtered resource set as JSON.
 
 ## JSTOR-style example
 
