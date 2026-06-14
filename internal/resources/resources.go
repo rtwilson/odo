@@ -396,6 +396,52 @@ func TestURL(raw string, activeResources []Resource) TestResult {
 	return TestResult{Allowed: false, Reason: "no active resource domain rule matched"}
 }
 
+func AnonymousURLRuleResult(raw string, method string, activeResources []Resource) TestResult {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return TestResult{Allowed: false, Reason: "url is invalid"}
+	}
+	if parsed.Scheme != "https" && !allowDevelopmentLocalHTTPURL(parsed) {
+		return TestResult{Allowed: false, Reason: "only HTTPS URLs are allowed"}
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = "GET"
+	}
+	host := normalizeHost(parsed.Hostname())
+	for _, resource := range activeResources {
+		if resource.Status != "active" {
+			continue
+		}
+		resource, _ = Validate(resource)
+		for _, rule := range resource.AnonymousURLRules {
+			rule = normalizeAnonymousRule(rule)
+			if rule.Behavior != "allow_public_proxy" || !anonymousRuleMatches(parsed, rule) {
+				continue
+			}
+			methodAllowed := false
+			for _, allowed := range rule.Methods {
+				if method == allowed {
+					methodAllowed = true
+					break
+				}
+			}
+			if !methodAllowed {
+				return TestResult{Allowed: false, Host: host, ResourceID: resource.ID, Reason: "method not allowed by anonymous_url_rule"}
+			}
+			candidate := matchCandidate{
+				resourceID:    resource.ID,
+				rule:          DomainRule{Host: host, Match: "exact", Role: "asset", Action: "proxy", Behavior: "proxy", Reason: rule.Notes},
+				methods:       rule.Methods,
+				anonymousRule: &rule,
+				jsRewrite:     boolPtrValue(resource.Compatibility.JavaScriptTextRewriting),
+			}
+			return candidate.result(host)
+		}
+	}
+	return TestResult{Allowed: false, Host: host, Reason: "no anonymous_url_rule matched"}
+}
+
 type matchCandidate struct {
 	resourceID          string
 	rule                DomainRule

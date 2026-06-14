@@ -705,6 +705,84 @@ func TestProxyLoginRedirectPreservesQueryStyleProxyURL(t *testing.T) {
 	}
 }
 
+func TestProxyLoginRequiredForResourceEntryURLAndRootPaths(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("umn proxied ok"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:        "umn",
+		Title:     "UMN Libraries",
+		Status:    "active",
+		EntryURLs: []string{"https://www.lib.umn.edu/"},
+		Domains:   []resources.DomainRule{{Host: "www.lib.umn.edu", Match: "exact", Role: "content", Action: "proxy"}},
+	}); err != nil {
+		t.Fatalf("upsert UMN resource: %v", err)
+	}
+
+	for _, path := range []string{"/odo/https/www.lib.umn.edu/", "/odo/https/www.lib.umn.edu", "/odo/https/www.lib.umn.edu/some/page"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html")
+		rec := httptest.NewRecorder()
+		server.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("expected unauthenticated %s to redirect to login, got %d body %s", path, rec.Code, rec.Body.String())
+		}
+		location := rec.Header().Get("Location")
+		parsed, err := url.Parse(location)
+		if err != nil {
+			t.Fatalf("parse redirect location: %v", err)
+		}
+		if parsed.Path != "/login" || parsed.Query().Get("next") != path {
+			t.Fatalf("expected login next %q, got location %q", path, location)
+		}
+	}
+
+	cookie := loginTestUser(t, server, "alice", "correct horse battery", "/resources")
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.lib.umn.edu/", nil)
+	req.Header.Set("Accept", "text/html")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "umn proxied ok") {
+		t.Fatalf("expected authenticated entry URL access, got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyLoginRequiredForQueryStyleEntryURL(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServerWithAdmin(t, "https://upstream.example", "secret")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:        "umn",
+		Title:     "UMN Libraries",
+		Status:    "active",
+		EntryURLs: []string{"https://www.lib.umn.edu/"},
+		Domains:   []resources.DomainRule{{Host: "www.lib.umn.edu", Match: "exact", Role: "content", Action: "proxy"}},
+	}); err != nil {
+		t.Fatalf("upsert UMN resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/odo?url=https%3A%2F%2Fwww.lib.umn.edu%2F", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected query-style entry URL to redirect to login, got %d body %s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse redirect location: %v", err)
+	}
+	if parsed.Path != "/login" || parsed.Query().Get("next") != "/odo?url=https%3A%2F%2Fwww.lib.umn.edu%2F" {
+		t.Fatalf("expected query-style next to be preserved, got %q", location)
+	}
+}
+
 func TestSafeNextPathValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -720,6 +798,9 @@ func TestSafeNextPathValidation(t *testing.T) {
 		{name: "http scheme", raw: "http://evil.example", want: "/resources", ok: false},
 		{name: "admin", raw: "/admin", want: "/admin", ok: true},
 		{name: "malformed", raw: "%", want: "/resources", ok: false},
+		{name: "backslash", raw: `/\evil`, want: "/resources", ok: false},
+		{name: "control", raw: "/odo/https/www.jstor.org/\n", want: "/resources", ok: false},
+		{name: "unknown local path", raw: "/unknown", want: "/resources", ok: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := safeNextPath(tc.raw)
@@ -779,6 +860,33 @@ func TestLoginPageAndPostRedirects(t *testing.T) {
 		t.Fatalf("expected login without next to redirect to /resources, got %d location %q", noNextRec.Code, noNextRec.Header().Get("Location"))
 	}
 
+	queryNext := "/odo?url=https%3A%2F%2Fwww.jstor.org%2Fstable%2F123456"
+	queryForm := url.Values{}
+	queryForm.Set("username", "alice")
+	queryForm.Set("password", "correct horse battery")
+	queryForm.Set("next", queryNext)
+	queryReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(queryForm.Encode()))
+	queryReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	queryRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(queryRec, queryReq)
+	if queryRec.Code != http.StatusFound || queryRec.Header().Get("Location") != queryNext {
+		t.Fatalf("expected login to preserve query-style /odo next, got %d location %q", queryRec.Code, queryRec.Header().Get("Location"))
+	}
+
+	for _, unsafeNext := range []string{"https://evil.example/", "//evil.example/path"} {
+		badNextForm := url.Values{}
+		badNextForm.Set("username", "alice")
+		badNextForm.Set("password", "correct horse battery")
+		badNextForm.Set("next", unsafeNext)
+		badNextReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(badNextForm.Encode()))
+		badNextReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		badNextRec := httptest.NewRecorder()
+		server.Routes().ServeHTTP(badNextRec, badNextReq)
+		if badNextRec.Code != http.StatusFound || badNextRec.Header().Get("Location") != "/resources" {
+			t.Fatalf("expected unsafe next %q to fall back to /resources, got %d location %q", unsafeNext, badNextRec.Code, badNextRec.Header().Get("Location"))
+		}
+	}
+
 	badForm := url.Values{}
 	badForm.Set("username", "missing")
 	badForm.Set("password", "wrong password")
@@ -788,6 +896,147 @@ func TestLoginPageAndPostRedirects(t *testing.T) {
 	server.Routes().ServeHTTP(badRec, badReq)
 	if badRec.Code != http.StatusUnauthorized || !strings.Contains(badRec.Body.String(), "invalid username or password") || strings.Contains(strings.ToLower(badRec.Body.String()), "not found") {
 		t.Fatalf("expected generic invalid login response, got %d body %s", badRec.Code, badRec.Body.String())
+	}
+}
+
+func TestSessionPersistOnRestartConfiguration(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_SESSION_PERSIST_ON_RESTART", "true")
+	store, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("open temp store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate temp store: %v", err)
+	}
+	accessLogger, _ := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server1 := NewServerWithAccessLoggerResolverAndHTTPClient(store, t.TempDir(), "secret", logger, accessLogger, publicTestResolver, proxy.DefaultHTTPClient())
+	createLocalTestUser(t, server1, "alice", "correct horse battery")
+	cookie := loginTestUser(t, server1, "alice", "correct horse battery", "/resources")
+
+	server2 := NewServerWithAccessLoggerResolverAndHTTPClient(store, t.TempDir(), "secret", logger, accessLogger, publicTestResolver, proxy.DefaultHTTPClient())
+	req := httptest.NewRequest(http.MethodGet, "/resources", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	server2.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected persistent session to survive simulated restart, got %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestSessionPersistDisabledRejectsAfterRestart(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_SESSION_PERSIST_ON_RESTART", "false")
+	store, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("open temp store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate temp store: %v", err)
+	}
+	accessLogger, _ := accesslog.New(accesslog.FormatPrivacy, io.Discard)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server1 := NewServerWithAccessLoggerResolverAndHTTPClient(store, t.TempDir(), "secret", logger, accessLogger, publicTestResolver, proxy.DefaultHTTPClient())
+	createLocalTestUser(t, server1, "alice", "correct horse battery")
+	cookie := loginTestUser(t, server1, "alice", "correct horse battery", "/resources")
+
+	server2 := NewServerWithAccessLoggerResolverAndHTTPClient(store, t.TempDir(), "secret", logger, accessLogger, publicTestResolver, proxy.DefaultHTTPClient())
+	req := httptest.NewRequest(http.MethodGet, "/resources", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	server2.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("expected non-persistent session to be rejected after simulated restart, got %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+	events, err := store.ListAuditEvents(10)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if !auditEventsContain(events, "session_rejected_restart_generation") {
+		t.Fatalf("expected restart generation rejection audit event, got %#v", events)
+	}
+}
+
+func TestSessionExpiryRevocationIdleTimeoutAndTouchThrottle(t *testing.T) {
+	t.Setenv("APP_SESSION_PERSIST_ON_RESTART", "true")
+	t.Setenv("APP_SESSION_TTL_MINUTES", "480")
+	t.Setenv("APP_SESSION_IDLE_TIMEOUT_MINUTES", "60")
+	server := newTestServer(t, "secret")
+	user := createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	makeCookie := func(session db.Session, token string) *http.Cookie {
+		if err := server.store.CreateSession(session); err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		return &http.Cookie{Name: browserSessionCookieName, Value: token, Path: "/"}
+	}
+	requestResources := func(cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/resources", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		server.Routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	expiredToken, expiredSession, err := server.newBrowserSession(user.ID, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("new expired session: %v", err)
+	}
+	expiredSession.ExpiresAt = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	expiredCookie := makeCookie(expiredSession, expiredToken)
+	if rec := requestResources(expiredCookie); rec.Code != http.StatusFound {
+		t.Fatalf("expected expired session redirect, got %d", rec.Code)
+	}
+
+	revokedToken, revokedSession, err := server.newBrowserSession(user.ID, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("new revoked session: %v", err)
+	}
+	revokedCookie := makeCookie(revokedSession, revokedToken)
+	if err := server.store.RevokeSession(revokedSession.ID); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+	if rec := requestResources(revokedCookie); rec.Code != http.StatusFound {
+		t.Fatalf("expected revoked session redirect, got %d", rec.Code)
+	}
+
+	idleToken, idleSession, err := server.newBrowserSession(user.ID, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("new idle session: %v", err)
+	}
+	idleSession.LastSeenAt = time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	idleCookie := makeCookie(idleSession, idleToken)
+	if rec := requestResources(idleCookie); rec.Code != http.StatusFound {
+		t.Fatalf("expected idle session redirect, got %d", rec.Code)
+	}
+
+	freshToken, freshSession, err := server.newBrowserSession(user.ID, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("new fresh session: %v", err)
+	}
+	freshCookie := makeCookie(freshSession, freshToken)
+	if rec := requestResources(freshCookie); rec.Code != http.StatusOK {
+		t.Fatalf("expected fresh session success, got %d", rec.Code)
+	}
+	got, found, err := server.store.GetSession(freshSession.ID)
+	if err != nil || !found {
+		t.Fatalf("get fresh session: found=%v err=%v", found, err)
+	}
+	if got.LastSeenAt != freshSession.LastSeenAt {
+		t.Fatalf("expected last_seen_at touch to be throttled, before %q after %q", freshSession.LastSeenAt, got.LastSeenAt)
+	}
+
+	events, err := server.store.ListAuditEvents(20)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, want := range []string{"session_rejected_expired", "session_rejected_revoked", "session_rejected_idle_timeout"} {
+		if !auditEventsContain(events, want) {
+			t.Fatalf("expected audit event %q, got %#v", want, events)
+		}
 	}
 }
 
@@ -1511,6 +1760,66 @@ func TestRecoveredRequestUsesSameResourcePolicy(t *testing.T) {
 	events := server.missedDiag.Recent()
 	if len(events) == 0 || events[0].Recovered {
 		t.Fatalf("expected unrecovered diagnostics event, got %#v", events)
+	}
+}
+
+func TestRecoveredAssetRequiresLoginUnlessAnonymousRuleMatches(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Accept", "application/javascript,*/*")
+	req.Header.Set("Sec-Fetch-Dest", "script")
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated recovered asset to require login, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode login required response: %v", err)
+	}
+	if body["error"] != "login_required" {
+		t.Fatalf("expected login_required response, got %#v", body)
+	}
+
+	events := server.missedDiag.Recent()
+	if len(events) == 0 || events[0].RecoveryAction != proxy.RecoveryActionDenied || events[0].Reason != "proxy access requires login" {
+		t.Fatalf("expected denied recovery diagnostics, got %#v", events)
+	}
+}
+
+func TestRecoveredAssetAnonymousRuleBypassesLogin(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("anonymous recovered asset"))
+	}))
+	defer upstream.Close()
+	server := newProxyFetchTestServer(t, upstream.URL)
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:        "jstor",
+		Title:     "JSTOR",
+		Status:    "active",
+		EntryURLs: []string{"https://www.jstor.org/"},
+		Domains:   []resources.DomainRule{{Host: "www.jstor.org", Match: "exact", Action: "proxy"}},
+		AnonymousURLRules: []resources.AnonymousURLRule{
+			{Pattern: "https://www.jstor.org/assets/*", Behavior: "allow_public_proxy", Methods: []string{"GET", "HEAD"}},
+		},
+	}); err != nil {
+		t.Fatalf("upsert anonymous recovery resource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Accept", "application/javascript,*/*")
+	req.Header.Set("Sec-Fetch-Dest", "script")
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "anonymous recovered asset") {
+		t.Fatalf("expected anonymous recovered asset to be proxied, got %d body %s", rec.Code, rec.Body.String())
 	}
 }
 

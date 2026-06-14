@@ -122,6 +122,9 @@ Environment variables:
 - `APP_BOOTSTRAP_ADMIN_PASSWORD`, optional password used to create the first local admin user when no users exist
 - `APP_BOOTSTRAP_ADMIN_EMAIL`, optional email for the first local admin user
 - `APP_PROXY_REQUIRE_LOGIN`, default is enabled once local users exist; set `false` for development-only anonymous proxy access
+- `APP_SESSION_PERSIST_ON_RESTART`, default `true` in production and `false` in development; when `false`, existing browser sessions are rejected after Odo restarts
+- `APP_SESSION_TTL_MINUTES`, default `480`; absolute browser session lifetime
+- `APP_SESSION_IDLE_TIMEOUT_MINUTES`, default `60`; idle browser session timeout based on throttled `last_seen_at` updates
 - `APP_KEY_HASH_SECRET`, recommended secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
@@ -274,7 +277,9 @@ go run ./cmd/odo
 
 Open `http://127.0.0.1:8080/login` to sign in. Signed-in users can open `http://127.0.0.1:8080/resources` for a simple patron resource portal. Browser sessions use an HttpOnly `odo_session` cookie and proxy browsing also keeps upstream/vendor cookies in a separate server-side jar.
 
-Once local users exist, `/odo` proxy access requires login by default. For local development only, disable that gate with:
+In production, browser sessions can persist across Odo restarts because session rows live in SQLite until they expire or are revoked. In development, `APP_SESSION_PERSIST_ON_RESTART` defaults to `false`, so an existing browser cookie is rejected after a restart without deleting the session row. Set `APP_SESSION_PERSIST_ON_RESTART=true` when you want restart-persistent sessions during local testing. Use `APP_SESSION_TTL_MINUTES` and `APP_SESSION_IDLE_TIMEOUT_MINUTES` to control absolute and idle session limits. `last_seen_at` updates are throttled so normal browsing does not write the session row on every proxied asset request.
+
+Once local users exist, `/odo` proxy access requires login by default. When `APP_PROXY_REQUIRE_LOGIN=true`, every `/odo` proxy request requires a valid browser session unless the target matches an explicit `anonymous_url_rule`. Resource homepages, entry URLs, active resource domains, and direct deep links are not anonymous by default. For local development only, disable that gate with:
 
 ```sh
 APP_PROXY_REQUIRE_LOGIN=false go run ./cmd/odo
@@ -282,7 +287,9 @@ APP_PROXY_REQUIRE_LOGIN=false go run ./cmd/odo
 
 ## Login and return-to-resource flow
 
-Users can click Odo resource links directly, such as `/odo/https/www.jstor.org/stable/123456`. If they are not logged in, Odo sends browser navigation requests to `/login` with a safe local `next` path. After a successful login, the user returns to the original proxied URL, including the original path and query string.
+Users can click Odo resource links directly, such as `/odo/https/www.jstor.org/stable/123456` or a resource homepage like `/odo/https/www.jstor.org/`. If they are not logged in, Odo sends browser navigation requests to `/login` with a safe local `next` path. After a successful login, the user returns to the original proxied URL, including the original path and query string.
+
+Unsafe `next` values are rejected to prevent open redirects. Odo accepts local paths such as `/resources`, `/admin`, `/odo/https/www.jstor.org/`, and `/odo?url=https%3A%2F%2Fwww.jstor.org%2F`. Absolute URLs, scheme-relative URLs, malformed slash tricks, backslashes, and control characters fall back to `/resources`. A `next=/admin` redirect is honored only for users with admin-like scopes.
 
 Fetch/API-style proxy requests receive a JSON `login_required` response instead of an HTML redirect. This keeps scripts and app data calls from accidentally receiving a login page as data.
 

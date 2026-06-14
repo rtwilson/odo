@@ -24,20 +24,22 @@ const (
 )
 
 type Metadata struct {
-	RequestID      string
-	Route          string
-	UserID         string
-	SessionID      string
-	TargetHost     string
-	ResourceID     string
-	RuleHost       string
-	RuleMatch      string
-	Decision       string
-	DenialReason   string
-	NextPath       string
-	UpstreamStatus int
-	RateLimited    bool
-	Recovered      bool
+	RequestID            string
+	Route                string
+	UserID               string
+	SessionID            string
+	TargetHost           string
+	ResourceID           string
+	RuleHost             string
+	RuleMatch            string
+	Decision             string
+	DenialReason         string
+	NextPath             string
+	PathKind             string
+	UpstreamStatus       int
+	RateLimited          bool
+	Recovered            bool
+	AnonymousRuleMatched *bool
 }
 
 type Logger struct {
@@ -48,28 +50,30 @@ type Logger struct {
 }
 
 type Entry struct {
-	TS             string `json:"ts"`
-	RequestID      string `json:"request_id"`
-	RemoteIP       string `json:"remote_ip"`
-	Method         string `json:"method"`
-	Route          string `json:"route"`
-	Status         int    `json:"status"`
-	Bytes          int    `json:"bytes"`
-	DurationMS     int64  `json:"duration_ms"`
-	UserID         string `json:"user_id,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
-	UserAgent      string `json:"user_agent,omitempty"`
-	Referer        string `json:"referer,omitempty"`
-	TargetHost     string `json:"target_host,omitempty"`
-	ResourceID     string `json:"resource_id,omitempty"`
-	RuleHost       string `json:"rule_host,omitempty"`
-	RuleMatch      string `json:"rule_match,omitempty"`
-	Decision       string `json:"decision,omitempty"`
-	DenialReason   string `json:"denial_reason,omitempty"`
-	NextPath       string `json:"next_path,omitempty"`
-	UpstreamStatus int    `json:"upstream_status,omitempty"`
-	RateLimited    bool   `json:"rate_limited,omitempty"`
-	Recovered      bool   `json:"recovered_from_referer,omitempty"`
+	TS                   string `json:"ts"`
+	RequestID            string `json:"request_id"`
+	RemoteIP             string `json:"remote_ip"`
+	Method               string `json:"method"`
+	Route                string `json:"route"`
+	Status               int    `json:"status"`
+	Bytes                int    `json:"bytes"`
+	DurationMS           int64  `json:"duration_ms"`
+	UserID               string `json:"user_id,omitempty"`
+	SessionID            string `json:"session_id,omitempty"`
+	UserAgent            string `json:"user_agent,omitempty"`
+	Referer              string `json:"referer,omitempty"`
+	TargetHost           string `json:"target_host,omitempty"`
+	ResourceID           string `json:"resource_id,omitempty"`
+	RuleHost             string `json:"rule_host,omitempty"`
+	RuleMatch            string `json:"rule_match,omitempty"`
+	Decision             string `json:"decision,omitempty"`
+	DenialReason         string `json:"denial_reason,omitempty"`
+	NextPath             string `json:"next_path,omitempty"`
+	PathKind             string `json:"path_kind,omitempty"`
+	UpstreamStatus       int    `json:"upstream_status,omitempty"`
+	RateLimited          bool   `json:"rate_limited,omitempty"`
+	Recovered            bool   `json:"recovered_from_referer,omitempty"`
+	AnonymousRuleMatched *bool  `json:"anonymous_rule_matched,omitempty"`
 }
 
 type contextKey struct{}
@@ -159,26 +163,28 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 	}
 
 	e := Entry{
-		TS:             time.Now().UTC().Format(time.RFC3339),
-		RequestID:      metadata.RequestID,
-		RemoteIP:       remoteIP(r.RemoteAddr),
-		Method:         r.Method,
-		Route:          metadataRoute(metadata.Route, r.URL.Path),
-		Status:         status,
-		Bytes:          bytes,
-		DurationMS:     duration.Milliseconds(),
-		UserID:         metadata.UserID,
-		SessionID:      metadata.SessionID,
-		TargetHost:     metadata.TargetHost,
-		ResourceID:     metadata.ResourceID,
-		RuleHost:       metadata.RuleHost,
-		RuleMatch:      metadata.RuleMatch,
-		Decision:       metadata.Decision,
-		DenialReason:   metadata.DenialReason,
-		NextPath:       metadata.NextPath,
-		UpstreamStatus: metadata.UpstreamStatus,
-		RateLimited:    metadata.RateLimited,
-		Recovered:      metadata.Recovered,
+		TS:                   time.Now().UTC().Format(time.RFC3339),
+		RequestID:            metadata.RequestID,
+		RemoteIP:             remoteIP(r.RemoteAddr),
+		Method:               r.Method,
+		Route:                metadataRoute(metadata.Route, r.URL.Path),
+		Status:               status,
+		Bytes:                bytes,
+		DurationMS:           duration.Milliseconds(),
+		UserID:               metadata.UserID,
+		SessionID:            metadata.SessionID,
+		TargetHost:           metadata.TargetHost,
+		ResourceID:           metadata.ResourceID,
+		RuleHost:             metadata.RuleHost,
+		RuleMatch:            metadata.RuleMatch,
+		Decision:             metadata.Decision,
+		DenialReason:         metadata.DenialReason,
+		NextPath:             metadata.NextPath,
+		PathKind:             metadata.PathKind,
+		UpstreamStatus:       metadata.UpstreamStatus,
+		RateLimited:          metadata.RateLimited,
+		Recovered:            metadata.Recovered,
+		AnonymousRuleMatched: metadata.AnonymousRuleMatched,
 	}
 	if l.format == FormatCombined || l.format == FormatJSON {
 		e.UserAgent = r.UserAgent()
@@ -249,6 +255,10 @@ func privacyLine(e Entry) string {
 	parts = appendIf(parts, "decision", e.Decision)
 	parts = appendIf(parts, "denial_reason", e.DenialReason)
 	parts = appendIf(parts, "next_path", e.NextPath)
+	parts = appendIf(parts, "path_kind", e.PathKind)
+	if e.AnonymousRuleMatched != nil {
+		parts = append(parts, "anonymous_rule_matched="+strconv.FormatBool(*e.AnonymousRuleMatched))
+	}
 	if e.RateLimited {
 		parts = append(parts, "rate_limited=true")
 	}

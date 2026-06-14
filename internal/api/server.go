@@ -48,6 +48,7 @@ type Server struct {
 	missedDiag *proxy.MissedRewriteStore
 	proxyH     http.Handler
 	startedAt  time.Time
+	bootSecret string
 }
 
 var (
@@ -105,6 +106,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		proxyDiag:  proxy.NewDiagnosticsStore(200),
 		missedDiag: proxy.NewMissedRewriteStore(200),
 		startedAt:  time.Now().UTC(),
+		bootSecret: randomBootSecret(),
 	}
 }
 
@@ -271,6 +273,17 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 		metadata.Recovered = true
 	}
 
+	validatedTarget, result := s.proxyTarget(recoveredReq.Context(), target.String())
+	if validatedTarget == nil && target.Hostname() != "" {
+		result.Host = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	}
+	if !s.requireProxySessionOrAnonymous(w, recoveredReq, target, result) {
+		event.RecoveryAction = proxy.RecoveryActionDenied
+		event.Reason = "proxy access requires login"
+		s.missedDiag.Add(event)
+		return
+	}
+
 	recorder := &recoveryRecorder{ResponseWriter: w}
 	s.proxyH.ServeHTTP(recorder, recoveredReq)
 	event.UpstreamStatus = recorder.status
@@ -340,10 +353,11 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found || user.Status != "active" || !local.CheckPassword(user.PasswordHash, r.Form.Get("password")) {
+		_ = s.store.Audit("login_failed", fmt.Sprintf(`{"username":%q}`, strings.TrimSpace(r.Form.Get("username"))))
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	token, session, err := newBrowserSession(user.ID, r)
+	token, session, err := s.newBrowserSession(user.ID, r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "session creation failed")
 		return
@@ -357,13 +371,18 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	if next == "" {
 		next = r.URL.Query().Get("next")
 	}
-	next, _ = safeNextPath(next)
+	rawNext := next
+	next, ok := safeNextPath(next)
+	if !ok && strings.TrimSpace(rawNext) != "" {
+		_ = s.store.Audit("login_next_rejected", `{"path":"/login"}`)
+	}
 	if next == "/admin" && !authContextForUser(user, csrfTokenForSessionToken(token)).IsAdminLike {
 		_ = s.store.Audit("admin_ui_login_denied_insufficient_role", fmt.Sprintf(`{"subject_type":"user","subject_id":%q}`, user.ID))
 		next = "/resources"
 	} else if next == "/admin" {
 		_ = s.store.Audit("admin_ui_login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q}`, user.ID))
 	}
+	_ = s.store.Audit("login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"next_path":%q}`, user.ID, pathOnly(next)))
 	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
 	http.SetCookie(w, csrfCookie(csrfTokenForSessionToken(token)))
 	http.Redirect(w, r, next, http.StatusFound)
@@ -373,7 +392,7 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(browserSessionCookieName); err == nil {
 		_ = s.store.RevokeSession(local.SessionIDFromToken(cookie.Value))
 	}
-	clear := &http.Cookie{Name: browserSessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+	clear := &http.Cookie{Name: browserSessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(r)}
 	http.SetCookie(w, clear)
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
@@ -425,7 +444,7 @@ func (s *Server) legacyProxyRedirect(w http.ResponseWriter, r *http.Request) {
 const browserSessionCookieName = "odo_session"
 const csrfCookieName = "odo_csrf"
 
-func newBrowserSession(userID string, r *http.Request) (string, db.Session, error) {
+func (s *Server) newBrowserSession(userID string, r *http.Request) (string, db.Session, error) {
 	idPart, err := local.NewToken("", 16)
 	if err != nil {
 		return "", db.Session{}, err
@@ -440,28 +459,46 @@ func newBrowserSession(userID string, r *http.Request) (string, db.Session, erro
 	session := db.Session{
 		ID:            id,
 		UserID:        userID,
-		SessionHash:   local.HashToken(token),
+		SessionHash:   s.browserSessionHash(token),
 		CreatedAt:     now.Format(time.RFC3339),
 		LastSeenAt:    now.Format(time.RFC3339),
-		ExpiresAt:     now.Add(8 * time.Hour).Format(time.RFC3339),
+		ExpiresAt:     now.Add(sessionTTL()).Format(time.RFC3339),
 		UserAgentHash: local.HashToken(r.UserAgent()),
 		IPHash:        local.HashToken(remoteIPOnly(r.RemoteAddr)),
 	}
 	return token, session, nil
 }
 
+func (s *Server) browserSessionHash(token string) string {
+	if sessionPersistOnRestart() {
+		return local.HashToken(token)
+	}
+	return local.HashToken(s.bootSecret + ":" + token)
+}
+
+func randomBootSecret() string {
+	token, err := local.NewToken("", 32)
+	if err != nil {
+		return time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return token
+}
+
 func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 	expiresAt, _ := time.Parse(time.RFC3339, expires)
-	secure := r.TLS != nil || strings.HasPrefix(strings.ToLower(os.Getenv("APP_PUBLIC_URL")), "https://")
 	return &http.Cookie{
 		Name:     browserSessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   secure,
+		Secure:   sessionCookieSecure(r),
 		Expires:  expiresAt,
 	}
+}
+
+func sessionCookieSecure(r *http.Request) bool {
+	return r.TLS != nil || strings.HasPrefix(strings.ToLower(os.Getenv("APP_PUBLIC_URL")), "https://")
 }
 
 func csrfCookie(token string) *http.Cookie {
@@ -478,6 +515,38 @@ func csrfTokenForSessionToken(token string) string {
 	return local.HashToken("csrf:" + token)
 }
 
+func sessionTTL() time.Duration {
+	return minutesEnv("APP_SESSION_TTL_MINUTES", 480) * time.Minute
+}
+
+func sessionIdleTimeout() time.Duration {
+	return minutesEnv("APP_SESSION_IDLE_TIMEOUT_MINUTES", 60) * time.Minute
+}
+
+func sessionTouchInterval() time.Duration {
+	return time.Minute
+}
+
+func minutesEnv(name string, fallback int) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return time.Duration(fallback)
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return time.Duration(fallback)
+	}
+	return time.Duration(parsed)
+}
+
+func sessionPersistOnRestart() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("APP_SESSION_PERSIST_ON_RESTART")))
+	if value != "" {
+		return value == "true" || value == "1" || value == "yes" || value == "on"
+	}
+	return normalizedAppEnv() == "production"
+}
+
 func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
 	cookie, err := r.Cookie(browserSessionCookieName)
 	if err != nil || cookie.Value == "" {
@@ -485,11 +554,30 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
 	}
 	sessionID := local.SessionIDFromToken(cookie.Value)
 	session, found, err := s.store.GetSession(sessionID)
-	if err != nil || !found || session.RevokedAt != "" || session.SessionHash != local.HashToken(cookie.Value) {
+	if err != nil || !found {
 		return db.User{}, db.Session{}, false
 	}
+	if session.RevokedAt != "" {
+		_ = s.store.Audit("session_rejected_revoked", fmt.Sprintf(`{"session_id":%q}`, session.ID))
+		return db.User{}, db.Session{}, false
+	}
+	if session.SessionHash != s.browserSessionHash(cookie.Value) {
+		event := "session_rejected_restart_generation"
+		if sessionPersistOnRestart() {
+			event = "session_rejected_hash_mismatch"
+		}
+		_ = s.store.Audit(event, fmt.Sprintf(`{"session_id":%q}`, session.ID))
+		return db.User{}, db.Session{}, false
+	}
+	now := time.Now().UTC()
 	expiresAt, err := time.Parse(time.RFC3339, session.ExpiresAt)
-	if err != nil || time.Now().UTC().After(expiresAt) {
+	if err != nil || now.After(expiresAt) {
+		_ = s.store.Audit("session_rejected_expired", fmt.Sprintf(`{"session_id":%q}`, session.ID))
+		return db.User{}, db.Session{}, false
+	}
+	lastSeenAt, lastSeenErr := time.Parse(time.RFC3339, session.LastSeenAt)
+	if lastSeenErr == nil && now.Sub(lastSeenAt) > sessionIdleTimeout() {
+		_ = s.store.Audit("session_rejected_idle_timeout", fmt.Sprintf(`{"session_id":%q}`, session.ID))
 		return db.User{}, db.Session{}, false
 	}
 	user, found, err := s.store.GetUser(session.UserID)
@@ -497,7 +585,9 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
 		_ = s.store.RevokeSession(session.ID)
 		return db.User{}, db.Session{}, false
 	}
-	_ = s.store.TouchSession(session.ID)
+	if lastSeenErr != nil || now.Sub(lastSeenAt) >= sessionTouchInterval() {
+		_ = s.store.TouchSession(session.ID)
+	}
 	if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
 		metadata.UserID = user.ID
 		metadata.SessionID = session.ID
@@ -531,28 +621,62 @@ func (s *Server) proxyLoginRequired() bool {
 
 func (s *Server) requireProxySession(next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.proxyLoginRequired() || s.proxyRequestAllowedAnonymously(r) {
+		target, _, _, err := proxy.ParseProxyRequest(r)
+		var result resources.TestResult
+		var validatedTarget *url.URL
+		if err == nil {
+			validatedTarget, result = s.proxyTarget(r.Context(), target.String())
+			if validatedTarget == nil && target != nil && target.Hostname() != "" {
+				result.Host = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+			}
+		}
+		if s.requireProxySessionOrAnonymous(w, r, target, result) {
 			next.ServeHTTP(w, r)
-			return
 		}
-		if _, _, ok := s.currentUser(r); ok {
-			next.ServeHTTP(w, r)
-			return
-		}
-		s.markProxyLoginRequired(r)
-		if isDocumentNavigation(r) {
-			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
-			return
-		}
-		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error":     "login_required",
-			"login_url": "/login",
-			"reason":    "proxy access requires login",
-		})
 	}
 }
 
-func (s *Server) markProxyLoginRequired(r *http.Request) {
+func (s *Server) requireProxySessionOrAnonymous(w http.ResponseWriter, r *http.Request, target *url.URL, result resources.TestResult) bool {
+	if !s.proxyLoginRequired() {
+		return true
+	}
+	if target != nil {
+		if anonymous := s.explicitAnonymousProxyResult(r, target); anonymous.Allowed && anonymous.AnonymousRuleMatched {
+			return true
+		}
+	}
+	if result.Allowed && result.AnonymousRuleMatched {
+		return true
+	}
+	if _, _, ok := s.currentUser(r); ok {
+		return true
+	}
+	s.markProxyLoginRequired(r, target, result)
+	if isDocumentNavigation(r) {
+		_ = s.store.Audit("login_required_redirect", fmt.Sprintf(`{"path":%q}`, r.URL.Path))
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+		return false
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]string{
+		"error":     "login_required",
+		"login_url": "/login",
+		"reason":    "proxy access requires login",
+	})
+	return false
+}
+
+func (s *Server) explicitAnonymousProxyResult(r *http.Request, target *url.URL) resources.TestResult {
+	if target == nil {
+		return resources.TestResult{Allowed: false}
+	}
+	items, err := s.store.ListResources()
+	if err != nil {
+		return resources.TestResult{Allowed: false, Reason: "resource lookup failed"}
+	}
+	return resources.AnonymousURLRuleResult(target.String(), r.Method, items)
+}
+
+func (s *Server) markProxyLoginRequired(r *http.Request, target *url.URL, result resources.TestResult) {
 	metadata := accesslog.MetadataFrom(r.Context())
 	if metadata == nil {
 		return
@@ -561,15 +685,13 @@ func (s *Server) markProxyLoginRequired(r *http.Request) {
 	metadata.Decision = "login_required"
 	metadata.DenialReason = "proxy access requires login"
 	metadata.NextPath = r.URL.Path
-	target, _, _, err := proxy.ParseProxyRequest(r)
-	if err != nil {
-		return
-	}
-	validatedTarget, result := s.proxyTarget(r.Context(), target.String())
-	if validatedTarget != nil {
-		metadata.TargetHost = strings.ToLower(strings.TrimSuffix(validatedTarget.Hostname(), "."))
-	} else if target.Hostname() != "" {
+	metadata.PathKind = proxy.MissedRewriteRequestKind(r)
+	anonymousMatched := result.AnonymousRuleMatched
+	metadata.AnonymousRuleMatched = &anonymousMatched
+	if target != nil && target.Hostname() != "" {
 		metadata.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	} else if result.Host != "" {
+		metadata.TargetHost = result.Host
 	}
 	metadata.ResourceID = result.ResourceID
 	metadata.RuleHost = result.RuleHost
@@ -605,6 +727,9 @@ func safeNextPath(raw string) (string, bool) {
 	if raw == "" {
 		return "/resources", false
 	}
+	if strings.Contains(raw, "\\") || hasControlCharacter(raw) {
+		return "/resources", false
+	}
 	if strings.Contains(raw, "://") {
 		return "/resources", false
 	}
@@ -612,7 +737,27 @@ func safeNextPath(raw string) (string, bool) {
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
 		return "/resources", false
 	}
+	if parsed.Path != "/resources" && parsed.Path != "/admin" && parsed.Path != proxy.PublicProxyPath && !strings.HasPrefix(parsed.Path, proxy.PublicProxyPath+"/") {
+		return "/resources", false
+	}
 	return parsed.RequestURI(), true
+}
+
+func pathOnly(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Path == "" {
+		return "/resources"
+	}
+	return parsed.Path
+}
+
+func hasControlCharacter(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func htmlEscape(value string) string {
@@ -645,18 +790,21 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 	publicURL := configuredPublicURL()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":                  Version,
-		"commit":                   Commit,
-		"app_env":                  normalizedAppEnv(),
-		"public_url":               publicURL,
-		"public_url_set":           publicURL != "",
-		"data_dir":                 configuredDataDir(),
-		"config_dir":               s.configDir,
-		"proxy_require_login":      s.proxyLoginRequired(),
-		"trust_proxy_headers":      trustProxyHeaders(),
-		"proxy_url_mode":           proxy.ProxyURLMode(),
-		"javascript_shim_enabled":  proxy.InjectJSShimEnabled(),
-		"referer_recovery_enabled": proxy.RefererRecoveryEnabled(),
+		"version":                      Version,
+		"commit":                       Commit,
+		"app_env":                      normalizedAppEnv(),
+		"public_url":                   publicURL,
+		"public_url_set":               publicURL != "",
+		"data_dir":                     configuredDataDir(),
+		"config_dir":                   s.configDir,
+		"proxy_require_login":          s.proxyLoginRequired(),
+		"trust_proxy_headers":          trustProxyHeaders(),
+		"proxy_url_mode":               proxy.ProxyURLMode(),
+		"session_persist_on_restart":   sessionPersistOnRestart(),
+		"session_ttl_minutes":          int(sessionTTL() / time.Minute),
+		"session_idle_timeout_minutes": int(sessionIdleTimeout() / time.Minute),
+		"javascript_shim_enabled":      proxy.InjectJSShimEnabled(),
+		"referer_recovery_enabled":     proxy.RefererRecoveryEnabled(),
 	})
 }
 

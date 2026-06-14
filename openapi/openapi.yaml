@@ -1019,6 +1019,12 @@ components:
           type: boolean
         proxy_url_mode:
           type: string
+        session_persist_on_restart:
+          type: boolean
+        session_ttl_minutes:
+          type: integer
+        session_idle_timeout_minutes:
+          type: integer
         javascript_shim_enabled:
           type: boolean
         referer_recovery_enabled:
