@@ -68,6 +68,29 @@ func BuildProxyURLWithMode(target *url.URL, mode string) string {
 	}
 }
 
+// BuildProxyURLPrefix returns the path prefix that precedes a target host in a
+// path-mode proxy URL. Prefix templates cannot safely represent query mode,
+// where the complete target URL must be encoded as one query value.
+func BuildProxyURLPrefix(scheme, mode string) (string, error) {
+	if scheme != "http" && scheme != "https" {
+		return "", errors.New("proxy URL prefix scheme must be http or https")
+	}
+	if NormalizeProxyURLMode(mode) == ProxyURLModeQuery {
+		return "", errors.New("proxy URL prefix templates are not supported in query mode")
+	}
+	target := &url.URL{Scheme: scheme, Host: "odo-template.invalid", Path: "/"}
+	built := BuildProxyURLWithMode(target, mode)
+	wantSuffix := target.Host + "/"
+	if !strings.HasSuffix(built, wantSuffix) {
+		return "", errors.New("proxy URL strategy cannot produce a safe prefix for this scheme")
+	}
+	prefix := strings.TrimSuffix(built, wantSuffix)
+	if !strings.HasSuffix(prefix, "/"+scheme+"/") {
+		return "", errors.New("proxy URL strategy does not preserve the requested scheme")
+	}
+	return prefix, nil
+}
+
 func (envURLStrategy) BuildProxyURL(target *url.URL) string {
 	return BuildProxyURLWithMode(target, ProxyURLMode())
 }

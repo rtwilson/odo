@@ -754,30 +754,47 @@ func validateContentRewriteRule(i int, rule ContentRewriteRule) []string {
 }
 
 func validateReplacementTemplate(value string) error {
+	const supported = "proxy_url, urlencoded_proxy_url, proxy_prefix_url"
 	for {
 		start := strings.Index(value, "{")
+		close := strings.Index(value, "}")
 		if start < 0 {
+			if close >= 0 {
+				return fmt.Errorf("contains an unexpected closing template brace. Supported tokens: %s", supported)
+			}
 			return nil
+		}
+		if close >= 0 && close < start {
+			return fmt.Errorf("contains an unexpected closing template brace. Supported tokens: %s", supported)
 		}
 		end := strings.Index(value[start:], "}")
 		if end < 0 {
-			return fmt.Errorf("contains an unclosed template token")
+			return fmt.Errorf("contains an unclosed template token. Supported tokens: %s", supported)
 		}
 		token := value[start+1 : start+end]
 		if token == "proxy_host_suffix" || token == "proxy_base_url" || token == "target_origin" {
 			value = value[start+end+1:]
 			continue
 		}
-		if strings.HasPrefix(token, "proxy_url:") || strings.HasPrefix(token, "proxy_http_url:") {
-			raw := strings.TrimPrefix(strings.TrimPrefix(token, "proxy_url:"), "proxy_http_url:")
+		if strings.HasPrefix(token, "proxy_url:") || strings.HasPrefix(token, "proxy_http_url:") || strings.HasPrefix(token, "urlencoded_proxy_url:") {
+			raw := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(token, "proxy_url:"), "proxy_http_url:"), "urlencoded_proxy_url:")
 			parsed, err := url.Parse(raw)
 			if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
-				return fmt.Errorf("contains invalid proxy URL template")
+				return fmt.Errorf("contains invalid template token %q; use an absolute HTTPS URL. Supported tokens: %s", token, supported)
 			}
 			value = value[start+end+1:]
 			continue
 		}
-		return fmt.Errorf("contains unsupported template token %q", token)
+		if strings.HasPrefix(token, "proxy_prefix_url:") {
+			scheme := strings.TrimPrefix(token, "proxy_prefix_url:")
+			if scheme != "http" && scheme != "https" {
+				return fmt.Errorf("contains invalid template token %q; scheme must be http or https. Supported tokens: %s", token, supported)
+			}
+			value = value[start+end+1:]
+			continue
+		}
+		name := strings.SplitN(token, ":", 2)[0]
+		return fmt.Errorf("contains unsupported template token %q. Supported tokens: %s. Convert the EZproxy token to an Odo-native template or remove the rewrite rule", name, supported)
 	}
 }
 

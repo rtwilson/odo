@@ -706,6 +706,47 @@ func TestContentRewriteDoesNotApplyToBinary(t *testing.T) {
 	}
 }
 
+func TestExpandRewriteTemplatesUsesProxyURLStrategy(t *testing.T) {
+	t.Setenv("APP_PROXY_URL_MODE", ProxyURLModePath)
+	base, _ := url.Parse("https://example.org/")
+
+	got, err := expandRewriteTemplate("{proxy_url:https://apis.ebsco.com/}", base)
+	if err != nil || got != BuildProxyURL(mustParseURL(t, "https://apis.ebsco.com/")) {
+		t.Fatalf("unexpected proxy_url rendering: got %q, err %v", got, err)
+	}
+	got, err = expandRewriteTemplate("{urlencoded_proxy_url:https://apis.ebsco.com}", base)
+	want := url.QueryEscape(BuildProxyURL(mustParseURL(t, "https://apis.ebsco.com")))
+	if err != nil || got != want {
+		t.Fatalf("unexpected urlencoded_proxy_url rendering: got %q, want %q, err %v", got, want, err)
+	}
+	got, err = expandRewriteTemplate("{proxy_prefix_url:https}", base)
+	if err != nil || got != "/odo/https/" {
+		t.Fatalf("unexpected proxy_prefix_url rendering: got %q, err %v", got, err)
+	}
+}
+
+func TestProxyPrefixTemplateRejectsUnsafeModes(t *testing.T) {
+	base, _ := url.Parse("https://example.org/")
+	for _, tc := range []struct{ mode, template string }{
+		{ProxyURLModeQuery, "{proxy_prefix_url:https}"},
+		{ProxyURLModePath, "{proxy_prefix_url:http}"},
+	} {
+		t.Setenv("APP_PROXY_URL_MODE", tc.mode)
+		if _, err := expandRewriteTemplate(tc.template, base); err == nil {
+			t.Errorf("expected %s to fail in %s mode", tc.template, tc.mode)
+		}
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
 func allowedHostTargetCheck(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
 	target, _ := url.Parse(rawURL)
 	if target != nil && target.Hostname() == "tracking.jstor.org" {

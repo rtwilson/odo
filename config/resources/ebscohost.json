@@ -1,0 +1,838 @@
+{
+  "id": "ebscohost",
+  "title": "EBSCOhost",
+  "status": "active",
+  "description": "Odo-native draft resource config translated from an EZproxy EBSCOhost stanza updated 20260608.",
+  "tags": [
+    "database",
+    "discovery",
+    "journal-platform",
+    "ebook",
+    "vendor-complex",
+    "ebsco",
+    "sample"
+  ],
+  "notes": "Draft translation from EZproxy-style stanza. Review before production use. Some directives such as AddUserHeader, ProxyHostnameEdit, MetaEZproxyRewriting, and EZproxy tokenized Find/Replace rules may require Odo feature support or manual adjustment.",
+  "license": {
+    "vendor": "EBSCO",
+    "status": "",
+    "coverage": "",
+    "access_model": "licensed",
+    "renewal_date": "",
+    "erm_id": "",
+    "admin_url": "",
+    "support_url": "https://support.ebsco.com/"
+  },
+  "entry_urls": [
+    "https://search.ebscohost.com/login.aspx"
+  ],
+  "http_methods": [
+    "GET",
+    "HEAD",
+    "POST",
+    "PUT",
+    "PATCH",
+    "OPTIONS",
+    "DELETE"
+  ],
+  "cookie_policy": {
+    "enabled": true,
+    "jar_scope": "resource",
+    "allowed_cookie_domains": [
+      "api.ebsco.io",
+      "apis.ebsco.com",
+      "discovery.ebsco.com",
+      "ebsco.babelscape.com",
+      "ebsco.com",
+      "ebscohost.com",
+      "ebscois-live.apigee.net",
+      "epnet.com",
+      "logon.ebsco.zone",
+      "netlibrary.com",
+      "ppws.ebsco-content.com",
+      "publications.ebsco.com",
+      "resolver.ebsco.com",
+      "research.ebsco.com",
+      "smartimagebase.com",
+      "teacherreference.com"
+    ],
+    "notes": "Option Cookie plus EZproxy DJ directives."
+  },
+  "request_header_rules": [
+    {
+      "name": "Authorization",
+      "action": "remove",
+      "phase": "request"
+    },
+    {
+      "name": "OPAQUE-TOKEN",
+      "action": "remove",
+      "phase": "request"
+    },
+    {
+      "name": "userIdentifier",
+      "action": "remove",
+      "phase": "request"
+    },
+    {
+      "name": "X-EIS-FEATURE-FLAG",
+      "action": "remove",
+      "phase": "request"
+    },
+    {
+      "name": "X-EIS-STSTOKEN",
+      "action": "remove",
+      "phase": "request"
+    },
+    {
+      "name": "Prefer",
+      "action": "remove",
+      "phase": "request"
+    }
+  ],
+  "user_header_rules": [
+    {
+      "name": "X-EBSCO-PROXY-Username",
+      "phase": "request",
+      "value_template": "{username}",
+      "encoding": "base64",
+      "enabled": false,
+      "notes": "Models EZproxy AddUserHeader -base64 X-EBSCO-PROXY-Username. Disabled by default because it releases user identity to the vendor; enable only after privacy and license review."
+    }
+  ],
+  "anonymous_url_rules": [
+    {
+      "pattern": "https://ppws.ebsco-content.com/*",
+      "behavior": "allow_public_proxy",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "notes": "Normalized from EZproxy AnonymousURL."
+    },
+    {
+      "pattern": "https://apis.ebsco.com/public/*",
+      "behavior": "allow_public_proxy",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "notes": "Normalized from EZproxy AnonymousURL +."
+    }
+  ],
+  "domains": [
+    {
+      "host": "apis.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "connection.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "discovery.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "e.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "ebsco.smartimagebase.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.a.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.b.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.c.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.d.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.e.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.p.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eds.s.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "ehis.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "eoncontent.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "exports.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "flipster.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "healthlibrary.epnet.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "logon.ebsco.zone",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "m.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "m-eon-search.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "novelist.epnet.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "openurl.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "openurl.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "publications.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "research.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "resolver.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "resolver.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "search.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "search.epnet.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "support.ebsco.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "support.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "therapy.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "therapy.epnet.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "video.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.a.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.b.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.c.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.d.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.e.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.p.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "web.s.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "www.ebscohost.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "www.ebsconet.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "www.europeanamericana.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "www.netlibrary.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "www.teacherreference.com",
+      "behavior": "proxy",
+      "include_subdomains": false,
+      "role": "content",
+      "rewrite_javascript": true,
+      "notes": "Normalized from EZproxy HJ directive."
+    },
+    {
+      "host": "api.ebsco.io",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "ebsco.babelscape.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "ebsco.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "ebscohost.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "ebscois-live.apigee.net",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "epnet.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "netlibrary.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "ppws.ebsco-content.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "smartimagebase.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "teacherreference.com",
+      "behavior": "cookie_domain",
+      "include_subdomains": true,
+      "role": "cookie",
+      "notes": "Normalized from EZproxy DJ directive."
+    },
+    {
+      "host": "eoncontent.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": true,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "footnotelibrary.com",
+      "behavior": "block",
+      "include_subdomains": true,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "locate.ebsco.com",
+      "behavior": "block",
+      "include_subdomains": true,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "app.rs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "app-na.readspeaker.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "auth.ebsco.zone",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "connect.ebsco.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "content.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "ebsco-assets.com",
+      "behavior": "block",
+      "include_subdomains": true,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "ebscovideos.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "epmedia.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "imageserver.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "imagesrvr.epnet.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "ivotts.rs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "kg.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "login.ebsco.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "media.rs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "neverproxy.ebsco.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "nvntts.rs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "pdc-edm.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "pdc-evs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "rps2images.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "rpsimages.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "sdc-edm.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "sdc-evs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "shibboleth.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "signin.ebsco.zone",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "viewer.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "vttts.rs.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "widgets.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "edm.ebscohost.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    },
+    {
+      "host": "flipstercontent.s3.amazonaws.com",
+      "behavior": "block",
+      "include_subdomains": false,
+      "role": "unknown",
+      "notes": "Normalized from EZproxy NeverProxy directive. Explicit block should win over proxy/cookie rules."
+    }
+  ],
+  "proxy_hostname_edits": [
+    {
+      "match": "healthlibrary.epnet.com$",
+      "replacement": "healthlibrary-epnet-com",
+      "notes": "Models EZproxy ProxyHostnameEdit directive; requires Odo virtual-host/hostname-edit support if used."
+    }
+  ],
+  "content_rewrite_rules": [
+    {
+      "content_types": [
+        "text/html",
+        "application/javascript",
+        "text/javascript",
+        "application/json"
+      ],
+      "find": "https%3A%2F%2Fapis.ebsco.com",
+      "replace": "{urlencoded_proxy_url:https://apis.ebsco.com}",
+      "notes": "Odo-native approximation of the EZproxy encoded ^S replacement."
+    }
+  ],
+  "compatibility": {
+    "referer_recovery": true,
+    "js_shim": true,
+    "app_data_recovery": true,
+    "javascript_text_rewriting": true,
+    "meta_ezproxy_rewriting": true,
+    "notes": "Option MetaEZproxyRewriting / NoMetaEZproxyRewriting represented as a compatibility flag for review."
+  },
+  "source": {
+    "type": "ezproxy_stanza",
+    "title": "EBSCOhost",
+    "updated": "2026-06-08",
+    "translation_status": "draft",
+    "translation_notes": [
+      "HJ directives normalized into domains with behavior=proxy.",
+      "DJ directives normalized into cookie_policy.allowed_cookie_domains and cookie_domain domain rules where not exact proxy hosts.",
+      "NeverProxy directives normalized into explicit block domain rules.",
+      "AnonymousURL directives normalized into anonymous_url_rules.",
+      "HTTPHeader -request -process directives normalized into request_header_rules with action=remove.",
+      "AddUserHeader is modeled but disabled by default for privacy review.",
+      "Find/Replace rules using EZproxy tokens are approximated with Odo template placeholders and require validation against current Odo implementation."
+    ]
+  }
+}

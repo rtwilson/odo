@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -125,9 +126,57 @@ func TestValidateContentRewriteRules(t *testing.T) {
 	if _, err := Validate(resource); err != nil {
 		t.Fatalf("expected valid content rewrite rule: %v", err)
 	}
-	resource.ContentRewriteRules[0].Replace = "{unsupported}"
-	if _, err := Validate(resource); err == nil {
-		t.Fatal("expected invalid replacement template to be rejected")
+	for _, replacement := range []string{
+		"{proxy_url:https://apis.ebsco.com}",
+		"{urlencoded_proxy_url:https://apis.ebsco.com}",
+		"{proxy_prefix_url:https}",
+		"{proxy_prefix_url:http}",
+	} {
+		resource.ContentRewriteRules[0].Replace = replacement
+		if _, err := Validate(resource); err != nil {
+			t.Errorf("expected %q to be accepted: %v", replacement, err)
+		}
+	}
+
+	for _, replacement := range []string{
+		"{proxy_prefix_any}",
+		"{unknown:value}",
+		"{proxy_url:relative/path}",
+		"{proxy_url:javascript:alert(1)}",
+		"{proxy_prefix_url:ftp}",
+		"{proxy_url:https://apis.ebsco.com",
+		"proxy_url:https://apis.ebsco.com}",
+	} {
+		resource.ContentRewriteRules[0].Replace = replacement
+		_, err := Validate(resource)
+		if err == nil {
+			t.Errorf("expected %q to be rejected", replacement)
+			continue
+		}
+		if !strings.Contains(err.Error(), "Supported tokens: proxy_url, urlencoded_proxy_url, proxy_prefix_url") {
+			t.Errorf("expected supported token list in error for %q, got %v", replacement, err)
+		}
+	}
+}
+
+func TestEBSCOhostSampleUsesSupportedRewriteTemplates(t *testing.T) {
+	data, err := os.ReadFile("../../config/resources/ebscohost.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := Decode(data)
+	if err != nil {
+		t.Fatalf("EBSCOhost sample must validate: %v", err)
+	}
+	if len(resource.ContentRewriteRules) == 0 {
+		t.Fatal("EBSCOhost sample must contain a content rewrite rule")
+	}
+	text := string(data)
+	if strings.Contains(text, "proxy_prefix_any") {
+		t.Fatal("EBSCOhost sample contains unsupported proxy_prefix_any token")
+	}
+	if !strings.Contains(text, "{urlencoded_proxy_url:https://apis.ebsco.com}") {
+		t.Fatal("EBSCOhost sample is missing the encoded APIs rewrite template")
 	}
 }
 

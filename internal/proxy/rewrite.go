@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -102,7 +103,10 @@ func ApplyContentRewriteRules(ctx context.Context, body, contentType string, bas
 		if !rewriteRuleMatchesContentType(rule, contentType) || rule.Find == "" {
 			continue
 		}
-		replacement := expandRewriteTemplate(rule.Replace, base)
+		replacement, err := expandRewriteTemplate(rule.Replace, base)
+		if err != nil {
+			continue
+		}
 		count := strings.Count(body, rule.Find)
 		if count == 0 {
 			continue
@@ -146,7 +150,7 @@ func textLikeContentType(contentType string) bool {
 	return false
 }
 
-func expandRewriteTemplate(template string, base *url.URL) string {
+func expandRewriteTemplate(template string, base *url.URL) (string, error) {
 	out := template
 	out = strings.ReplaceAll(out, "{proxy_host_suffix}", "")
 	out = strings.ReplaceAll(out, "{proxy_base_url}", BuildProxyURL(base))
@@ -163,7 +167,36 @@ func expandRewriteTemplate(template string, base *url.URL) string {
 		}
 		return BuildProxyURL(parsed)
 	})
-	return out
+	encodedTokenRE := regexp.MustCompile(`\{urlencoded_proxy_url:([^}]+)\}`)
+	out = encodedTokenRE.ReplaceAllStringFunc(out, func(match string) string {
+		parts := encodedTokenRE.FindStringSubmatch(match)
+		if len(parts) != 2 {
+			return match
+		}
+		parsed, err := url.Parse(parts[1])
+		if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+			return match
+		}
+		return url.QueryEscape(BuildProxyURL(parsed))
+	})
+	prefixTokenRE := regexp.MustCompile(`\{proxy_prefix_url:([^}]+)\}`)
+	var prefixErr error
+	out = prefixTokenRE.ReplaceAllStringFunc(out, func(match string) string {
+		parts := prefixTokenRE.FindStringSubmatch(match)
+		if len(parts) != 2 {
+			return match
+		}
+		prefix, err := BuildProxyURLPrefix(parts[1], ProxyURLMode())
+		if err != nil {
+			prefixErr = fmt.Errorf("render %s: %w", match, err)
+			return match
+		}
+		return prefix
+	})
+	if prefixErr != nil {
+		return "", prefixErr
+	}
+	return out, nil
 }
 
 func splitAttr(match string) (string, string, bool) {
