@@ -1492,16 +1492,26 @@ func TestUnknownDocumentPathWithProxiedRefererRedirectsToCanonical(t *testing.T)
 	defer upstream.Close()
 
 	server := newProxyFetchTestServer(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodGet, "/action/doAdvancedSearch", nil)
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:      "ebscohost",
+		Name:    "EBSCOhost",
+		Status:  "active",
+		Domains: []resources.DomainRule{{Host: "search.ebscohost.com", Match: "exact"}},
+	}); err != nil {
+		t.Fatalf("upsert EBSCOhost resource: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/c/pjt2xq/search", nil)
 	req.Header.Set("Accept", "text/html")
-	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/search.ebscohost.com/login.aspx")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected document recovery redirect, got %d with body %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Location"); got != "/odo/https/www.jstor.org/action/doAdvancedSearch" {
+	if got := rec.Header().Get("Location"); got != "/odo/https/search.ebscohost.com/c/pjt2xq/search" {
 		t.Fatalf("expected canonical proxy redirect, got %q", got)
 	}
 	events := server.missedDiag.Recent()
@@ -1509,10 +1519,10 @@ func TestUnknownDocumentPathWithProxiedRefererRedirectsToCanonical(t *testing.T)
 		t.Fatal("expected missed rewrite diagnostics event")
 	}
 	event := events[0]
-	if event.RequestKind != proxy.RequestKindDocument || event.RecoveryAction != proxy.RecoveryActionRedirectedToCanonical || !event.Recovered {
+	if event.Type != proxy.MissedRewriteRecoveredEventType || event.RequestKind != proxy.RequestKindDocument || event.RecoveryAction != proxy.RecoveryActionRedirectedToCanonical || !event.Recovered {
 		t.Fatalf("expected document redirect diagnostics, got %#v", event)
 	}
-	if event.CanonicalProxyPath != "/odo/https/www.jstor.org/action/doAdvancedSearch" {
+	if event.CanonicalProxyPath != "/odo/https/search.ebscohost.com/c/pjt2xq/search" || event.Path != "/c/pjt2xq/search" || event.LocalPath != "/c/pjt2xq/search" || event.RecoveredTargetHost != "search.ebscohost.com" {
 		t.Fatalf("expected canonical path without query, got %q", event.CanonicalProxyPath)
 	}
 }
@@ -1520,6 +1530,7 @@ func TestUnknownDocumentPathWithProxiedRefererRedirectsToCanonical(t *testing.T)
 func TestUnknownDocumentPathRedirectPreservesQuery(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
 	req := httptest.NewRequest(http.MethodGet, "/action/doBasicSearch?Query=science", nil)
+	req.Header.Set("Accept", "text/html")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
 	rec := httptest.NewRecorder()
@@ -1608,24 +1619,19 @@ func TestUnknownNextDataJSONWithProxiedRefererIsSilentlyRecovered(t *testing.T) 
 	}
 }
 
-func TestUnknownVendorAPIWithProxiedRefererIsRecovered(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
-
-	server := newProxyFetchTestServer(t, upstream.URL)
+func TestUnknownLocalAPIPathIsNotRecovered(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
 	req := httptest.NewRequest(http.MethodGet, "/api/foo", nil)
 	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected vendor API recovery, got %d with body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected local API path to remain protected, got %d with body %s", rec.Code, rec.Body.String())
 	}
 	events := server.missedDiag.Recent()
-	if len(events) == 0 || events[0].RequestKind != proxy.RequestKindAPI || events[0].RecoveryAction != proxy.RecoveryActionSilentlyProxied {
-		t.Fatalf("expected API silent recovery diagnostics, got %#v", events)
+	if len(events) == 0 || events[0].Reason != "protected app path" || events[0].Recovered {
+		t.Fatalf("expected protected-path diagnostics, got %#v", events)
 	}
 }
 
@@ -1872,8 +1878,10 @@ func TestUnsafeRefererHostPreventsRecovery(t *testing.T) {
 func TestUnknownLocalPathRecoveryRequiresProxiedReferer(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
 
+	noRefererReq := httptest.NewRequest(http.MethodGet, "/c/pjt2xq/search", nil)
+	noRefererReq.Header.Set("Accept", "text/html")
 	noReferer := httptest.NewRecorder()
-	server.Routes().ServeHTTP(noReferer, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	server.Routes().ServeHTTP(noReferer, noRefererReq)
 	if noReferer.Code != http.StatusNotFound {
 		t.Fatalf("expected missing referer to return 404, got %d", noReferer.Code)
 	}
@@ -1889,7 +1897,7 @@ func TestUnknownLocalPathRecoveryRequiresProxiedReferer(t *testing.T) {
 
 func TestProtectedAppPathsAreNotRecovered(t *testing.T) {
 	server := newProxyFetchTestServer(t, "http://127.0.0.1")
-	for _, path := range []string{"/api/v1/search", "/admin/assets/app.js"} {
+	for _, path := range []string{"/api/v1/search", "/api/search", "/admin/assets/app.js", "/login/vendor", "/logout/vendor", "/resources/vendor", "/odometer"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
 		rec := httptest.NewRecorder()
@@ -1897,6 +1905,77 @@ func TestProtectedAppPathsAreNotRecovered(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("expected protected path %s to return 404, got %d", path, rec.Code)
 		}
+	}
+}
+
+func TestLocalDocumentRoutesRemainLocalWithProxiedReferer(t *testing.T) {
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	for _, path := range []string{"/login", "/admin", "/resources"} {
+		before := len(server.missedDiag.Recent())
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html")
+		req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
+		rec := httptest.NewRecorder()
+		server.Routes().ServeHTTP(rec, req)
+		if strings.HasPrefix(rec.Header().Get("Location"), proxy.PublicProxyPath) {
+			t.Fatalf("local route %s was recovered to %q", path, rec.Header().Get("Location"))
+		}
+		if got := len(server.missedDiag.Recent()); got != before {
+			t.Fatalf("local route %s recorded missed rewrite diagnostics", path)
+		}
+	}
+}
+
+func TestRecoveredDocumentRequiresLoginAtCanonicalPath(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	canonical := "/odo/https/www.jstor.org/c/pjt2xq/search?query=history"
+
+	req := httptest.NewRequest(http.MethodGet, "/c/pjt2xq/search?query=history", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/login.aspx")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login?next="+url.QueryEscape(canonical) {
+		t.Fatalf("expected canonical login redirect, got %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	cookie := loginTestUser(t, server, "alice", "correct horse battery", "/resources")
+	authReq := httptest.NewRequest(http.MethodGet, "/c/pjt2xq/search?query=history", nil)
+	authReq.Header.Set("Accept", "text/html")
+	authReq.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/login.aspx")
+	authReq.AddCookie(cookie)
+	authRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(authRec, authReq)
+	if authRec.Code != http.StatusFound || authRec.Header().Get("Location") != canonical {
+		t.Fatalf("expected authenticated canonical redirect, got %d location %q", authRec.Code, authRec.Header().Get("Location"))
+	}
+}
+
+func TestRecoveredDocumentAnonymousRuleIsOnlyLoginBypass(t *testing.T) {
+	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
+	server := newProxyFetchTestServer(t, "http://127.0.0.1")
+	createLocalTestUser(t, server, "alice", "correct horse battery")
+	if err := server.store.UpsertResource(resources.Resource{
+		ID:        "jstor",
+		Title:     "JSTOR",
+		Status:    "active",
+		EntryURLs: []string{"https://www.jstor.org/"},
+		Domains:   []resources.DomainRule{{Host: "www.jstor.org", Match: "exact", Action: "proxy"}},
+		AnonymousURLRules: []resources.AnonymousURLRule{
+			{Pattern: "https://www.jstor.org/c/*", Behavior: "allow_public_proxy", Methods: []string{"GET"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/c/pjt2xq/search", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/login.aspx")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/odo/https/www.jstor.org/c/pjt2xq/search" {
+		t.Fatalf("expected anonymous-rule canonical redirect, got %d location %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
 

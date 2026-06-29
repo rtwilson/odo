@@ -189,8 +189,10 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 	event := proxy.MissedRewriteEvent{
+		Type:                proxy.MissedRewriteEventType,
 		Method:              r.Method,
 		Path:                r.URL.Path,
+		LocalPath:           r.URL.Path,
 		RequestKind:         proxy.MissedRewriteRequestKind(r),
 		RecoveryAction:      proxy.RecoveryActionNotRecovered,
 		AcceptHeaderSummary: proxy.AcceptHeaderSummary(r.Header.Get("Accept")),
@@ -250,7 +252,26 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		canonical := proxy.BuildProxyURL(validatedTarget)
+		canonicalURL, err := url.Parse(canonical)
+		if err != nil {
+			event.RecoveryAction = proxy.RecoveryActionDenied
+			event.Reason = "canonical proxy URL is invalid"
+			s.missedDiag.Add(event)
+			http.NotFound(w, r)
+			return
+		}
+		authReq := r.Clone(r.Context())
+		authReq.URL = canonicalURL
+		authReq.RequestURI = canonicalURL.RequestURI()
+		if !s.requireProxySessionOrAnonymous(w, authReq, validatedTarget, result) {
+			event.RecoveryAction = proxy.RecoveryActionDenied
+			event.Reason = "proxy access requires login"
+			s.missedDiag.Add(event)
+			return
+		}
 		event.Recovered = true
+		event.Type = proxy.MissedRewriteRecoveredEventType
 		event.RecoveryAction = proxy.RecoveryActionRedirectedToCanonical
 		event.Reason = "redirected to canonical proxy URL"
 		s.missedDiag.Add(event)
@@ -259,7 +280,7 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Odo-Recovery-Action", proxy.RecoveryActionHeader(event.RecoveryAction))
 			w.Header().Set("X-Odo-Target-Host", event.RecoveredTargetHost)
 		}
-		http.Redirect(w, r, proxy.BuildProxyURL(validatedTarget), http.StatusFound)
+		http.Redirect(w, r, canonical, http.StatusFound)
 		return
 	}
 
@@ -290,6 +311,7 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 	event.ContentType = recorder.Header().Get("Content-Type")
 	if recorder.status >= http.StatusOK && recorder.status < http.StatusBadRequest {
 		event.Recovered = true
+		event.Type = proxy.MissedRewriteRecoveredEventType
 		event.RecoveryAction = proxy.RecoveryActionSilentlyProxied
 		event.Reason = "recovered from proxied referer"
 	} else {

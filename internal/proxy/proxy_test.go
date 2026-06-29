@@ -508,6 +508,24 @@ func TestFetchHandlerPOSTRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
 	}
 }
 
+func TestFetchHandlerAbsoluteRedirectToAllowlistedTargetIsRewritten(t *testing.T) {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"https://www.jstor.org/c/pjt2xq/search"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	}).client()
+	handler := FetchHandler(client, allowedHostTargetCheck)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/login.aspx", nil))
+
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/odo/https/www.jstor.org/c/pjt2xq/search" {
+		t.Fatalf("expected canonical absolute redirect, got %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
 func TestFetchHandlerPOSTRedirectToNonAllowlistedTargetIsRejected(t *testing.T) {
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{

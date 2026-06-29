@@ -21,12 +21,17 @@ const (
 	RecoveryActionSilentlyProxied       = "silently_proxied"
 	RecoveryActionDenied                = "denied"
 	RecoveryActionNotRecovered          = "not_recovered"
+
+	MissedRewriteEventType          = "missed_rewrite"
+	MissedRewriteRecoveredEventType = "missed_rewrite_recovered"
 )
 
 type MissedRewriteEvent struct {
+	Type                string `json:"type"`
 	TS                  string `json:"ts"`
 	Method              string `json:"method"`
 	Path                string `json:"path"`
+	LocalPath           string `json:"local_path,omitempty"`
 	RequestKind         string `json:"request_kind,omitempty"`
 	RecoveryAction      string `json:"recovery_action,omitempty"`
 	AcceptHeaderSummary string `json:"accept_header_summary,omitempty"`
@@ -100,11 +105,16 @@ func (s *MissedRewriteStore) Recent() []MissedRewriteEvent {
 func ProtectedAppPath(path string) bool {
 	return path == "/admin" ||
 		strings.HasPrefix(path, "/admin/") ||
+		path == "/login" ||
+		strings.HasPrefix(path, "/login/") ||
+		path == "/logout" ||
+		strings.HasPrefix(path, "/logout/") ||
+		path == "/resources" ||
+		strings.HasPrefix(path, "/resources/") ||
 		path == "/openapi.yaml" ||
-		path == "/odo" ||
-		strings.HasPrefix(path, "/odo/") ||
-		path == "/api/v1" ||
-		strings.HasPrefix(path, "/api/v1/")
+		strings.HasPrefix(path, "/odo") ||
+		path == "/api" ||
+		strings.HasPrefix(path, "/api/")
 }
 
 func MissedRewriteRequestKind(r *http.Request) string {
@@ -133,13 +143,15 @@ func IsDocumentNavigation(r *http.Request) bool {
 	if r == nil || r.URL == nil || r.Method != http.MethodGet || LooksLikeStaticAssetPath(r.URL.Path) {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")), "document") {
-		return true
+	if !strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
+		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")), "navigate") {
-		return true
+	dest := strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest"))
+	if dest != "" && !strings.EqualFold(dest, "document") {
+		return false
 	}
-	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+	mode := strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode"))
+	return mode == "" || strings.EqualFold(mode, "navigate")
 }
 
 func LooksLikeStaticAssetPath(rawPath string) bool {
@@ -238,9 +250,10 @@ func RecoverTargetFromReferer(r *http.Request) (*url.URL, string, error) {
 		return nil, "", errMissedRewrite("referer is not proxied")
 	}
 	target := &url.URL{
-		Scheme:   "https",
+		Scheme:   base.Scheme,
 		Host:     base.Host,
-		Path:     r.URL.EscapedPath(),
+		Path:     r.URL.Path,
+		RawPath:  r.URL.RawPath,
 		RawQuery: r.URL.RawQuery,
 	}
 	return target, PublicProxyPath, nil
