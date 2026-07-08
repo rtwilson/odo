@@ -51,10 +51,11 @@ func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
 		t.Fatalf("expected application/json content type, got %q", got)
 	}
 	var body struct {
-		Name    string            `json:"name"`
-		Version string            `json:"version"`
-		Status  string            `json:"status"`
-		Links   map[string]string `json:"links"`
+		Name          string            `json:"name"`
+		Version       string            `json:"version"`
+		Status        string            `json:"status"`
+		Authenticated bool              `json:"authenticated"`
+		Links         map[string]string `json:"links"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode API index: %v", err)
@@ -62,7 +63,7 @@ func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
 	wantLinks := map[string]string{
 		"health": "/api/v1/health", "openapi": "/openapi.yaml", "resources": "/api/v1/resources",
 	}
-	if body.Name != "Odo API" || body.Version != "v1" || body.Status != "ok" {
+	if body.Name != "Odo API" || body.Version != "v1" || body.Status != "ok" || body.Authenticated {
 		t.Fatalf("unexpected API index metadata: %#v", body)
 	}
 	if len(body.Links) != len(wantLinks) {
@@ -77,6 +78,93 @@ func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
 		if strings.Contains(rec.Body.String(), sensitive) {
 			t.Fatalf("API index exposed sensitive value %q: %s", sensitive, rec.Body.String())
 		}
+	}
+}
+
+func TestAPIIndexFiltersLinksForAuthenticatedSubject(t *testing.T) {
+	server := newTestServer(t, "secret")
+	createLocalTestUserWithRoles(t, server, "admin", "correct horse battery", []string{"super_admin"})
+	createLocalTestUser(t, server, "patron", "correct horse battery")
+
+	requestIndex := func(req *http.Request) struct {
+		Authenticated bool              `json:"authenticated"`
+		SubjectType   string            `json:"subject_type"`
+		Links         map[string]string `json:"links"`
+	} {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		server.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected API index 200, got %d body %s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Authenticated bool              `json:"authenticated"`
+			SubjectType   string            `json:"subject_type"`
+			Links         map[string]string `json:"links"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode API index: %v", err)
+		}
+		return body
+	}
+
+	adminCookie := loginTestUser(t, server, "admin", "correct horse battery", "/admin")
+	adminReq := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	adminReq.AddCookie(adminCookie)
+	admin := requestIndex(adminReq)
+	if !admin.Authenticated || admin.SubjectType != "user" {
+		t.Fatalf("expected authenticated admin user metadata, got %#v", admin)
+	}
+	wantAdminLinks := map[string]string{
+		"health": "/api/v1/health", "openapi": "/openapi.yaml", "session": "/api/v1/session/me",
+		"resources": "/api/v1/resources", "api_keys": "/api/v1/api-keys", "users": "/api/v1/users",
+		"config": "/api/v1/config/revisions", "diagnostics": "/api/v1/diagnostics/proxy/recent",
+		"logs": "/api/v1/logs/access/recent", "system": "/api/v1/system",
+		"saml_providers": "/api/v1/auth/saml/providers",
+	}
+	if len(admin.Links) != len(wantAdminLinks) {
+		t.Fatalf("unexpected admin links: %#v", admin.Links)
+	}
+	for name, path := range wantAdminLinks {
+		if admin.Links[name] != path {
+			t.Fatalf("expected admin link %q to be %q, got %q", name, path, admin.Links[name])
+		}
+	}
+
+	keyReq := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	keyReq.Header.Set("Authorization", "Bearer secret")
+	key := requestIndex(keyReq)
+	if !key.Authenticated || key.SubjectType != "api_key" || len(key.Links) != len(wantAdminLinks) {
+		t.Fatalf("expected bootstrap API key to receive admin links, got %#v", key)
+	}
+
+	patronCookie := loginTestUser(t, server, "patron", "correct horse battery", "/resources")
+	patronReq := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	patronReq.AddCookie(patronCookie)
+	patron := requestIndex(patronReq)
+	if !patron.Authenticated || patron.SubjectType != "user" {
+		t.Fatalf("expected authenticated regular user metadata, got %#v", patron)
+	}
+	if len(patron.Links) != 3 || patron.Links["health"] == "" || patron.Links["openapi"] == "" || patron.Links["session"] == "" {
+		t.Fatalf("regular user received unexpected links: %#v", patron.Links)
+	}
+
+	invalidReq := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	invalidReq.Header.Set("Authorization", "Bearer invalid")
+	invalid := requestIndex(invalidReq)
+	if invalid.Authenticated || len(invalid.Links) != 3 || invalid.Links["resources"] == "" {
+		t.Fatalf("invalid API key received authenticated links: %#v", invalid)
+	}
+
+	revokedToken, revokedID := createTestAPIKey(t, server, "secret", []string{"admin"})
+	if _, found, err := server.store.RevokeAPIKey(revokedID); err != nil || !found {
+		t.Fatalf("revoke API key: found=%v err=%v", found, err)
+	}
+	revokedReq := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	revokedReq.Header.Set("Authorization", "Bearer "+revokedToken)
+	revoked := requestIndex(revokedReq)
+	if revoked.Authenticated || len(revoked.Links) != 3 {
+		t.Fatalf("revoked API key received authenticated links: %#v", revoked)
 	}
 }
 

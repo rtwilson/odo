@@ -820,16 +820,52 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiIndex(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":    "Odo API",
-		"version": "v1",
-		"status":  "ok",
-		"links": map[string]string{
-			"health":    "/api/v1/health",
-			"openapi":   "/openapi.yaml",
-			"resources": "/api/v1/resources",
-		},
-	})
+	links := map[string]string{
+		"health":    "/api/v1/health",
+		"openapi":   "/openapi.yaml",
+		"resources": "/api/v1/resources",
+	}
+	auth, authenticated := s.optionalAPIAuthentication(r)
+	response := map[string]any{
+		"name":          "Odo API",
+		"version":       "v1",
+		"status":        "ok",
+		"authenticated": authenticated,
+		"links":         links,
+	}
+	if authenticated {
+		response["subject_type"] = auth.SubjectType
+		links = map[string]string{
+			"health":  "/api/v1/health",
+			"openapi": "/openapi.yaml",
+			"session": "/api/v1/session/me",
+		}
+		addScopedAPILink(links, auth.Scopes, "resources", "/api/v1/resources", "resources:read")
+		addScopedAPILink(links, auth.Scopes, "api_keys", "/api/v1/api-keys", "api_keys:read", "api_keys:write")
+		addScopedAPILink(links, auth.Scopes, "users", "/api/v1/users", "users:read", "users:write")
+		addScopedAPILink(links, auth.Scopes, "config", "/api/v1/config/revisions", "config:read")
+		addScopedAPILink(links, auth.Scopes, "diagnostics", "/api/v1/diagnostics/proxy/recent", "diagnostics:read")
+		addScopedAPILink(links, auth.Scopes, "logs", "/api/v1/logs/access/recent", "logs:read")
+		addScopedAPILink(links, auth.Scopes, "system", "/api/v1/system", "system:read")
+		addScopedAPILink(links, auth.Scopes, "saml_providers", "/api/v1/auth/saml/providers", "auth:read")
+		response["links"] = links
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) optionalAPIAuthentication(r *http.Request) (AuthContext, bool) {
+	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
+		auth, status, _ := s.authenticateBearerToken(token)
+		return auth, status == 0 && auth.IsAuthenticated
+	}
+	auth, ok := s.currentUserAuth(r)
+	return auth, ok && auth.IsAuthenticated
+}
+
+func addScopedAPILink(links map[string]string, scopes []string, name, path string, requiredScopes ...string) {
+	if hasRequiredScope(scopes, requiredScopes) {
+		links[name] = path
+	}
 }
 
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {

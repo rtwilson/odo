@@ -64,7 +64,7 @@ See [Installing Odo on a Linux VM](docs/install-linux-vm.md) for binary/systemd 
 
 ## API Documentation
 
-`/api/v1` is the versioned API namespace and a public JSON index endpoint. Specific API resources live under `/api/v1/{resource}` and retain their documented authentication requirements.
+`/api/v1` is the versioned API namespace and a safe, public JSON discovery endpoint. Its links expand to the routes available to a valid user session or API key; discovery does not grant access, and specific resources under `/api/v1/{resource}` retain their authentication and scope requirements.
 
 The current OpenAPI 3.1 schema is served by the app at `/openapi.yaml`:
 

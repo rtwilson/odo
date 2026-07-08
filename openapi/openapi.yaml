@@ -11,7 +11,7 @@ paths:
   /api/v1:
     get:
       summary: API v1 index
-      description: Public index of known API routes. Linked resources retain their own authentication requirements.
+      description: Safe public discovery endpoint. Links expand based on an optional user session or API key, and linked resources retain their own authentication requirements.
       operationId: getAPIIndex
       security: []
       responses:
@@ -972,7 +972,7 @@ components:
   schemas:
     APIIndexResponse:
       type: object
-      required: [name, version, status, links]
+      required: [name, version, status, authenticated, links]
       properties:
         name:
           type: string
@@ -983,6 +983,11 @@ components:
         status:
           type: string
           examples: [ok]
+        authenticated:
+          type: boolean
+        subject_type:
+          type: string
+          enum: [api_key, user]
         links:
           type: object
           additionalProperties:
