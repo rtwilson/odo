@@ -60,10 +60,7 @@ func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
 		t.Fatalf("decode API index: %v", err)
 	}
 	wantLinks := map[string]string{
-		"api_keys": "/api/v1/api-keys", "diagnostics": "/api/v1/diagnostics/proxy/recent",
-		"health": "/api/v1/health", "logs": "/api/v1/logs/access/recent",
-		"openapi": "/openapi.yaml", "resources": "/api/v1/resources",
-		"session": "/api/v1/session/me", "system": "/api/v1/system", "users": "/api/v1/users",
+		"health": "/api/v1/health", "openapi": "/openapi.yaml", "resources": "/api/v1/resources",
 	}
 	if body.Name != "Odo API" || body.Version != "v1" || body.Status != "ok" {
 		t.Fatalf("unexpected API index metadata: %#v", body)
@@ -76,7 +73,7 @@ func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
 			t.Fatalf("expected link %q to be %q, got %q", name, path, body.Links[name])
 		}
 	}
-	for _, sensitive := range []string{"secret", "do-not-leak", "also-do-not-leak", "/private/config", "password", "username"} {
+	for _, sensitive := range []string{"secret", "do-not-leak", "also-do-not-leak", "/private/config", "password", "username", "api_keys", "diagnostics", "logs", "session", "users"} {
 		if strings.Contains(rec.Body.String(), sensitive) {
 			t.Fatalf("API index exposed sensitive value %q: %s", sensitive, rec.Body.String())
 		}
@@ -85,25 +82,49 @@ func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
 
 func TestAPIIndexDoesNotWeakenProtectedRoutes(t *testing.T) {
 	server := newTestServer(t, "secret")
-	for _, path := range []string{
-		"/api/v1/resources", "/api/v1/api-keys", "/api/v1/users",
-		"/api/v1/config/revisions", "/api/v1/diagnostics/proxy/recent",
-		"/api/v1/logs/access/recent", "/api/v1/system",
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/resources"}, {http.MethodPost, "/api/v1/resources"},
+		{http.MethodGet, "/api/v1/api-keys"}, {http.MethodGet, "/api/v1/users"},
+		{http.MethodGet, "/api/v1/config"}, {http.MethodGet, "/api/v1/diagnostics"},
+		{http.MethodGet, "/api/v1/logs"}, {http.MethodGet, "/api/v1/system"},
+		{http.MethodGet, "/api/v1/session/me"}, {http.MethodGet, "/api/v1/auth/saml/providers"},
 	} {
-		t.Run(path, func(t *testing.T) {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			server.Routes().ServeHTTP(rec, httptest.NewRequest(test.method, test.path, nil))
 			if rec.Code != http.StatusUnauthorized {
-				t.Fatalf("expected %s to remain protected, got %d with body %s", path, rec.Code, rec.Body.String())
+				t.Fatalf("expected %s to remain protected, got %d with body %s", test.path, rec.Code, rec.Body.String())
+			}
+			if rec.Header().Get("Content-Type") != "application/json" || !strings.Contains(rec.Body.String(), `"error":"authentication_required"`) {
+				t.Fatalf("expected JSON authentication error for %s, got %q body %s", test.path, rec.Header().Get("Content-Type"), rec.Body.String())
 			}
 		})
+	}
+
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/resources", nil)
+	invalid.Header.Set("Authorization", "Bearer wrong")
+	invalidRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(invalidRec, invalid)
+	if invalidRec.Code != http.StatusUnauthorized || !strings.Contains(invalidRec.Body.String(), `"error":"authentication_required"`) {
+		t.Fatalf("expected invalid API key to return JSON 401, got %d body %s", invalidRec.Code, invalidRec.Body.String())
 	}
 }
 
 func TestUnknownAPIV1RouteReturns404(t *testing.T) {
 	server := newTestServer(t, "secret")
+	unauthenticated := httptest.NewRecorder()
+	server.Routes().ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist", nil))
+	if unauthenticated.Code != http.StatusUnauthorized || !strings.Contains(unauthenticated.Body.String(), `"error":"authentication_required"`) {
+		t.Fatalf("expected unknown API v1 route to require authentication, got %d with body %s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
-	server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist", nil))
+	server.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected unknown API v1 route to return 404, got %d with body %s", rec.Code, rec.Body.String())
 	}
@@ -365,7 +386,7 @@ func TestSessionAuthenticatedAdminAPIsRequireScopesAndCSRF(t *testing.T) {
 	noCSRFReq.AddCookie(resourceCookie)
 	noCSRFRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(noCSRFRec, noCSRFReq)
-	if noCSRFRec.Code != http.StatusForbidden || !strings.Contains(noCSRFRec.Body.String(), "csrf") {
+	if noCSRFRec.Code != http.StatusForbidden || !strings.Contains(noCSRFRec.Body.String(), `"error":"forbidden"`) {
 		t.Fatalf("expected missing CSRF to fail, got %d body %s", noCSRFRec.Code, noCSRFRec.Body.String())
 	}
 
@@ -464,8 +485,8 @@ func TestSessionMeForUserAndAnonymous(t *testing.T) {
 	anonReq := httptest.NewRequest(http.MethodGet, "/api/v1/session/me", nil)
 	anonRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(anonRec, anonReq)
-	if anonRec.Code != http.StatusOK || !strings.Contains(anonRec.Body.String(), `"authenticated":false`) {
-		t.Fatalf("expected unauthenticated session response, got %d body %s", anonRec.Code, anonRec.Body.String())
+	if anonRec.Code != http.StatusUnauthorized || !strings.Contains(anonRec.Body.String(), `"error":"authentication_required"`) {
+		t.Fatalf("expected unauthenticated session request to be rejected, got %d body %s", anonRec.Code, anonRec.Body.String())
 	}
 
 	cookie := loginTestUser(t, server, "viewer", "correct horse battery", "/admin")
@@ -1221,7 +1242,7 @@ func TestResourcesPageRequiresLoginAndLogoutRevokesSession(t *testing.T) {
 		_, _ = w.Write([]byte("proxied after login"))
 	}))
 	defer upstream.Close()
-	server := newProxyFetchTestServer(t, upstream.URL)
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
 	createLocalTestUser(t, server, "alice", "correct horse battery")
 
 	resourcesReq := httptest.NewRequest(http.MethodGet, "/resources", nil)
@@ -1232,7 +1253,8 @@ func TestResourcesPageRequiresLoginAndLogoutRevokesSession(t *testing.T) {
 	}
 
 	cookie := loginTestUser(t, server, "alice", "correct horse battery", "/resources")
-	logoutReq := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	sessionID := local.SessionIDFromToken(cookie.Value)
+	logoutReq := httptest.NewRequest(http.MethodGet, "/logout", nil)
 	logoutReq.AddCookie(cookie)
 	logoutRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(logoutRec, logoutReq)
@@ -1242,6 +1264,19 @@ func TestResourcesPageRequiresLoginAndLogoutRevokesSession(t *testing.T) {
 	cleared := findCookie(logoutRec.Result().Cookies(), browserSessionCookieName)
 	if cleared == nil || cleared.MaxAge >= 0 {
 		t.Fatalf("expected logout to clear session cookie, got %#v", cleared)
+	}
+	session, found, err := server.store.GetSession(sessionID)
+	if err != nil || !found || session.RevokedAt == "" {
+		t.Fatalf("expected logout to revoke server-side session, found=%v err=%v session=%#v", found, err, session)
+	}
+
+	alreadyLoggedOut := httptest.NewRecorder()
+	server.Routes().ServeHTTP(alreadyLoggedOut, httptest.NewRequest(http.MethodGet, "/logout", nil))
+	if alreadyLoggedOut.Code != http.StatusFound || alreadyLoggedOut.Header().Get("Location") != "/login" {
+		t.Fatalf("expected already-logged-out request to redirect, got %d location %q", alreadyLoggedOut.Code, alreadyLoggedOut.Header().Get("Location"))
+	}
+	if cleared := findCookie(alreadyLoggedOut.Result().Cookies(), browserSessionCookieName); cleared == nil || cleared.MaxAge >= 0 {
+		t.Fatalf("expected already-logged-out request to clear session cookie, got %#v", cleared)
 	}
 
 	proxyReq := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/", nil)
@@ -1338,10 +1373,11 @@ func TestProxyTestFetchDeniedForNonAllowlistedURL(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
-	server := newProxyFetchTestServer(t, upstream.URL)
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://bad.example/"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -1365,10 +1401,11 @@ func TestProxyTestFetchReturnsPreviewForAllowlistedUpstream(t *testing.T) {
 		_, _ = w.Write([]byte("<!doctype html><title>JSTOR</title>"))
 	}))
 	defer upstream.Close()
-	server := newProxyFetchTestServer(t, upstream.URL)
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://www.jstor.org/"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -1396,10 +1433,11 @@ func TestProxyTestFetchTruncatesLargePreview(t *testing.T) {
 		_, _ = w.Write(bytes.Repeat([]byte("a"), 20*1024))
 	}))
 	defer upstream.Close()
-	server := newProxyFetchTestServer(t, upstream.URL)
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proxy/test-fetch", strings.NewReader(`{"url":"https://www.jstor.org/"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
@@ -1436,7 +1474,7 @@ func TestRecentAccessLogsReturnsSafeEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create access logger: %v", err)
 	}
-	server := newProxyFetchTestServerWithAccessLog(t, upstream.URL, accessLogger)
+	server := newProxyFetchTestServerWithAccessLogAndAdmin(t, upstream.URL, accessLogger, "secret")
 
 	proxyReq := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example?token=secret", nil)
 	proxyReq.Header.Set("Authorization", "Bearer should-not-appear")
@@ -1448,6 +1486,7 @@ func TestRecentAccessLogsReturnsSafeEntries(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/access/recent", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1975,8 +2014,12 @@ func TestProtectedAppPathsAreNotRecovered(t *testing.T) {
 		req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
 		rec := httptest.NewRecorder()
 		server.Routes().ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("expected protected path %s to return 404, got %d", path, rec.Code)
+		want := http.StatusNotFound
+		if strings.HasPrefix(path, "/api/v1/") {
+			want = http.StatusUnauthorized
+		}
+		if rec.Code != want {
+			t.Fatalf("expected protected path %s to return %d, got %d", path, want, rec.Code)
 		}
 	}
 }
@@ -2083,7 +2126,7 @@ func TestMissedRewriteDiagnosticsRecordsRecoveredAndUnrecovered(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
-	server := newProxyFetchTestServer(t, upstream.URL)
+	server := newProxyFetchTestServerWithAdmin(t, upstream.URL, "secret")
 
 	unrecovered := httptest.NewRecorder()
 	server.Routes().ServeHTTP(unrecovered, httptest.NewRequest(http.MethodGet, "/missing.js", nil))
@@ -2093,8 +2136,10 @@ func TestMissedRewriteDiagnosticsRecordsRecoveredAndUnrecovered(t *testing.T) {
 	recovered := httptest.NewRecorder()
 	server.Routes().ServeHTTP(recovered, recoveredReq)
 
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/missed-rewrites/recent", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
-	server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/missed-rewrites/recent", nil))
+	server.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected diagnostics endpoint to return 200, got %d with body %s", rec.Code, rec.Body.String())
 	}
@@ -2463,7 +2508,7 @@ func TestProxyStubRejectsPrivateResolvedIP(t *testing.T) {
 	}
 }
 
-func TestManagementEndpointWorksWithoutConfiguredAPIKey(t *testing.T) {
+func TestManagementEndpointRequiresAuthenticationWithoutConfiguredAPIKey(t *testing.T) {
 	server := newTestServer(t, "")
 	body := bytes.NewBufferString(`{
   "id": "jstor",
@@ -2475,8 +2520,8 @@ func TestManagementEndpointWorksWithoutConfiguredAPIKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected unset API key to allow dev management request, got %d with body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"error":"authentication_required"`) {
+		t.Fatalf("expected unset API key to keep management API protected, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2610,8 +2655,8 @@ func TestManagementEndpointRejectsInvalidAPIKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected invalid API key to return 403, got %d with body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected invalid API key to return 401, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2720,7 +2765,7 @@ func TestStoredAPIKeyRejectsInsufficientScope(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "insufficient scope") {
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"error":"forbidden"`) {
 		t.Fatalf("expected insufficient scope 403, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
@@ -2735,7 +2780,7 @@ func TestStoredAPIKeyRevokedAndExpiredRejected(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+revokedToken)
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
+	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected revoked key to be rejected, got %d with body %s", rec.Code, rec.Body.String())
 	}
 
@@ -2754,7 +2799,7 @@ func TestStoredAPIKeyRevokedAndExpiredRejected(t *testing.T) {
 	expiredReq.Header.Set("Authorization", "Bearer "+expiredToken)
 	expiredRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(expiredRec, expiredReq)
-	if expiredRec.Code != http.StatusForbidden {
+	if expiredRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected expired key to be rejected, got %d with body %s", expiredRec.Code, expiredRec.Body.String())
 	}
 }
@@ -2784,7 +2829,7 @@ func TestAPIKeyRotateInvalidatesOldTokenAndRevokeDisablesNewToken(t *testing.T) 
 	oldReq.Header.Set("Authorization", "Bearer "+oldToken)
 	oldRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(oldRec, oldReq)
-	if oldRec.Code != http.StatusForbidden {
+	if oldRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected old rotated token to fail, got %d with body %s", oldRec.Code, oldRec.Body.String())
 	}
 
@@ -2807,7 +2852,7 @@ func TestAPIKeyRotateInvalidatesOldTokenAndRevokeDisablesNewToken(t *testing.T) 
 	revokedReq.Header.Set("Authorization", "Bearer "+rotated.Token)
 	revokedRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(revokedRec, revokedReq)
-	if revokedRec.Code != http.StatusForbidden {
+	if revokedRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected revoked rotated token to fail, got %d with body %s", revokedRec.Code, revokedRec.Body.String())
 	}
 }
@@ -2869,7 +2914,7 @@ func TestSAMLProviderAPIKeyAndScopeBehavior(t *testing.T) {
 	writeReq.Header.Set("Authorization", "Bearer "+readToken)
 	writeRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(writeRec, writeReq)
-	if writeRec.Code != http.StatusForbidden || !strings.Contains(writeRec.Body.String(), "insufficient scope") {
+	if writeRec.Code != http.StatusForbidden || !strings.Contains(writeRec.Body.String(), `"error":"forbidden"`) {
 		t.Fatalf("expected insufficient scope for write, got %d with body %s", writeRec.Code, writeRec.Body.String())
 	}
 }

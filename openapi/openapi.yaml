@@ -74,14 +74,15 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
-        - {}
       responses:
         "200":
-          description: Current user, API key, or anonymous session state. Does not expose password hashes, session hashes, API key hashes, or full tokens.
+          description: Current user or API key. Does not expose password hashes, session hashes, API key hashes, or full tokens.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionMe"
+        "401":
+          $ref: "#/components/responses/Error"
   /api/v1/resources:
     get:
       summary: List resources

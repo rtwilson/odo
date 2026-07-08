@@ -117,6 +117,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /admin", s.admin)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPost)
+	mux.HandleFunc("GET /logout", s.logout)
 	mux.HandleFunc("POST /logout", s.logoutPost)
 	mux.HandleFunc("GET /resources", s.userResources)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
@@ -177,7 +178,7 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
-	return s.logging(mux)
+	return s.logging(s.requireAPIAuthentication(mux))
 }
 
 func (s *Server) root(w http.ResponseWriter, r *http.Request) {
@@ -412,12 +413,20 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
+	s.logout(w, r)
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(browserSessionCookieName); err == nil {
 		_ = s.store.RevokeSession(local.SessionIDFromToken(cookie.Value))
 	}
-	clear := &http.Cookie{Name: browserSessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(r)}
-	http.SetCookie(w, clear)
+	http.SetCookie(w, clearSessionCookie(r, browserSessionCookieName, true))
+	http.SetCookie(w, clearSessionCookie(r, csrfCookieName, false))
 	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+func clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
+	return &http.Cookie{Name: name, Path: "/", MaxAge: -1, HttpOnly: httpOnly, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(r)}
 }
 
 func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
@@ -816,15 +825,9 @@ func (s *Server) apiIndex(w http.ResponseWriter, r *http.Request) {
 		"version": "v1",
 		"status":  "ok",
 		"links": map[string]string{
-			"api_keys":    "/api/v1/api-keys",
-			"diagnostics": "/api/v1/diagnostics/proxy/recent",
-			"health":      "/api/v1/health",
-			"logs":        "/api/v1/logs/access/recent",
-			"openapi":     "/openapi.yaml",
-			"resources":   "/api/v1/resources",
-			"session":     "/api/v1/session/me",
-			"system":      "/api/v1/system",
-			"users":       "/api/v1/users",
+			"health":    "/api/v1/health",
+			"openapi":   "/openapi.yaml",
+			"resources": "/api/v1/resources",
 		},
 	})
 }
@@ -1767,6 +1770,36 @@ type responseRecorder struct {
 	bytes  int
 }
 
+type apiAuthContextKey struct{}
+
+func (s *Server) requireAPIAuthentication(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.URL.Path != "/api/v1" && !strings.HasPrefix(r.URL.Path, "/api/v1/")) || publicAPIRoute(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		var auth AuthContext
+		var status int
+		if token := bearerToken(r.Header.Get("Authorization")); token != "" {
+			auth, status, _ = s.authenticateBearerToken(token)
+		} else if sessionAuth, ok := s.currentUserAuth(r); ok {
+			auth = sessionAuth
+		} else {
+			status = http.StatusUnauthorized
+		}
+		if status != 0 || !auth.IsAuthenticated {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication_required"})
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), apiAuthContextKey{}, auth)))
+	})
+}
+
+func publicAPIRoute(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/api/v1" || r.URL.Path == "/api/v1/health")
+}
+
 func (r *responseRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
@@ -1789,7 +1822,11 @@ func (s *Server) requireScopes(next http.HandlerFunc, scopes ...string) http.Han
 			if status == http.StatusForbidden && auth.SubjectType == "user" && unsafeMethod(r.Method) && message == "csrf token is invalid or missing" {
 				_ = s.store.Audit("csrf_failure", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"path":%q}`, auth.SubjectID, r.URL.Path))
 			}
-			writeError(w, status, message)
+			if status == http.StatusForbidden {
+				writeError(w, status, "forbidden")
+			} else {
+				writeError(w, status, message)
+			}
 			return
 		}
 		if !auth.IsAuthenticated {
@@ -1806,6 +1843,15 @@ func (s *Server) requireScopes(next http.HandlerFunc, scopes ...string) http.Han
 }
 
 func (s *Server) authorizeRequest(r *http.Request, requiredScopes ...string) (AuthContext, int, string) {
+	if auth, ok := r.Context().Value(apiAuthContextKey{}).(AuthContext); ok && auth.IsAuthenticated {
+		if !hasRequiredScope(auth.Scopes, requiredScopes) {
+			return auth, http.StatusForbidden, "insufficient scope"
+		}
+		if auth.SubjectType == "user" && unsafeMethod(r.Method) && r.Header.Get("X-Odo-CSRF") != auth.csrfToken {
+			return auth, http.StatusForbidden, "csrf token is invalid or missing"
+		}
+		return auth, 0, ""
+	}
 	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
 		return s.authenticateBearerToken(token, requiredScopes...)
 	}

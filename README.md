@@ -32,7 +32,7 @@ The important architectural rule is that management and configuration happen thr
 
 ## Local Run
 
-Run without an API key for local dev. Management endpoints are unprotected in this mode, and the app logs a startup warning:
+Run without a bootstrap API key for local development. Protected API endpoints still require an authenticated user session or a stored API key:
 
 ```sh
 go run ./cmd/odo
