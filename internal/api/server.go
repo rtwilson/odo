@@ -123,6 +123,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/saml/metadata", s.samlMetadata)
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
 	mux.HandleFunc("POST /auth/saml/acs", s.samlACS)
+	mux.HandleFunc("GET /api/v1", s.apiIndex)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/session/me", s.sessionMe)
 	mux.HandleFunc("GET /api/v1/system", s.requireScopes(s.systemInfo, "system:read"))
@@ -806,6 +807,25 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) apiIndex(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":    "Odo API",
+		"version": "v1",
+		"status":  "ok",
+		"links": map[string]string{
+			"api_keys":    "/api/v1/api-keys",
+			"diagnostics": "/api/v1/diagnostics/proxy/recent",
+			"health":      "/api/v1/health",
+			"logs":        "/api/v1/logs/access/recent",
+			"openapi":     "/openapi.yaml",
+			"resources":   "/api/v1/resources",
+			"session":     "/api/v1/session/me",
+			"system":      "/api/v1/system",
+			"users":       "/api/v1/users",
+		},
 	})
 }
 

@@ -64,7 +64,9 @@ See [Installing Odo on a Linux VM](docs/install-linux-vm.md) for binary/systemd 
 
 ## API Documentation
 
-The current OpenAPI 3.1 spec is served by the app:
+`/api/v1` is the versioned API namespace and a public JSON index endpoint. Specific API resources live under `/api/v1/{resource}` and retain their documented authentication requirements.
+
+The current OpenAPI 3.1 schema is served by the app at `/openapi.yaml`:
 
 ```text
 http://127.0.0.1:8080/openapi.yaml

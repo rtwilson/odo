@@ -36,6 +36,79 @@ func TestHealthDoesNotRequireAPIKey(t *testing.T) {
 	}
 }
 
+func TestAPIIndexIsPublicAndListsOnlyKnownRoutes(t *testing.T) {
+	t.Setenv("APP_ADMIN_API_KEY", "do-not-leak")
+	t.Setenv("APP_KEY_HASH_SECRET", "also-do-not-leak")
+	server := newTestServerWithConfig(t, "secret", "/private/config")
+
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected public API index to return 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected application/json content type, got %q", got)
+	}
+	var body struct {
+		Name    string            `json:"name"`
+		Version string            `json:"version"`
+		Status  string            `json:"status"`
+		Links   map[string]string `json:"links"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode API index: %v", err)
+	}
+	wantLinks := map[string]string{
+		"api_keys": "/api/v1/api-keys", "diagnostics": "/api/v1/diagnostics/proxy/recent",
+		"health": "/api/v1/health", "logs": "/api/v1/logs/access/recent",
+		"openapi": "/openapi.yaml", "resources": "/api/v1/resources",
+		"session": "/api/v1/session/me", "system": "/api/v1/system", "users": "/api/v1/users",
+	}
+	if body.Name != "Odo API" || body.Version != "v1" || body.Status != "ok" {
+		t.Fatalf("unexpected API index metadata: %#v", body)
+	}
+	if len(body.Links) != len(wantLinks) {
+		t.Fatalf("unexpected API index links: %#v", body.Links)
+	}
+	for name, path := range wantLinks {
+		if body.Links[name] != path {
+			t.Fatalf("expected link %q to be %q, got %q", name, path, body.Links[name])
+		}
+	}
+	for _, sensitive := range []string{"secret", "do-not-leak", "also-do-not-leak", "/private/config", "password", "username"} {
+		if strings.Contains(rec.Body.String(), sensitive) {
+			t.Fatalf("API index exposed sensitive value %q: %s", sensitive, rec.Body.String())
+		}
+	}
+}
+
+func TestAPIIndexDoesNotWeakenProtectedRoutes(t *testing.T) {
+	server := newTestServer(t, "secret")
+	for _, path := range []string{
+		"/api/v1/resources", "/api/v1/api-keys", "/api/v1/users",
+		"/api/v1/config/revisions", "/api/v1/diagnostics/proxy/recent",
+		"/api/v1/logs/access/recent", "/api/v1/system",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected %s to remain protected, got %d with body %s", path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestUnknownAPIV1RouteReturns404(t *testing.T) {
+	server := newTestServer(t, "secret")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected unknown API v1 route to return 404, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSystemEndpointReturnsNonSecretRuntimeInfo(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu/")

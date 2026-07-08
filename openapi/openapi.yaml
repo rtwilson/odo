@@ -8,6 +8,19 @@ servers:
   - url: http://127.0.0.1:8080
 security: []
 paths:
+  /api/v1:
+    get:
+      summary: API v1 index
+      description: Public index of known API routes. Linked resources retain their own authentication requirements.
+      operationId: getAPIIndex
+      security: []
+      responses:
+        "200":
+          description: API version and route links
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIIndexResponse"
   /api/v1/health:
     get:
       summary: Health check
@@ -956,6 +969,23 @@ components:
         type: string
       example: user_abc123
   schemas:
+    APIIndexResponse:
+      type: object
+      required: [name, version, status, links]
+      properties:
+        name:
+          type: string
+          examples: [Odo API]
+        version:
+          type: string
+          examples: [v1]
+        status:
+          type: string
+          examples: [ok]
+        links:
+          type: object
+          additionalProperties:
+            type: string
     HealthResponse:
       type: object
       required: [status, time]
