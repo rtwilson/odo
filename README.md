@@ -24,6 +24,14 @@ The important architectural rule is that management and configuration happen thr
 - A production HA deployment.
 - A complete audit implementation.
 
+## AI assistance disclosure
+
+Odo is built with human direction and review, with some assistance from AI tools for drafting code, tests, documentation, examples, and design notes.
+
+Because Odo concerns privacy, authentication, access control, and library infrastructure, AI-generated output is not treated as authoritative. All AI-assisted changes should be reviewed for correctness, security, privacy impact, maintainability, and alignment with the project’s goals.
+
+The project maintainer and contributors remain responsible for what is committed to the repository.
+
 ## Installation
 
 - Local development: run `go run ./cmd/odo` and open `http://127.0.0.1:8080/admin`.
@@ -485,3 +493,4 @@ podman run --rm -p 8080:8080 \
 - Signed proxy links.
 - Deeper JavaScript-aware proxy rewriting.
 - HA with PostgreSQL and Redis.
+
