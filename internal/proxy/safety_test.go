@@ -3,12 +3,15 @@ package proxy
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 )
 
 func TestNormalizeAndValidateTargetURLRejectsUnsafeSyntax(t *testing.T) {
 	tests := []string{
 		"http://example.com",
+		"file:///etc/passwd",
+		"gopher://example.com/",
 		"https://user:pass@example.com",
 		"https://127.0.0.1/",
 		"https://localhost/",
@@ -59,11 +62,19 @@ func TestNormalizeAndValidateTargetURLRejectsLocalHTTPWithoutDevelopmentAllowanc
 
 func TestValidateTargetURLRejectsPrivateResolvedIPs(t *testing.T) {
 	tests := []string{
+		"0.0.0.1",
 		"127.0.0.1",
 		"10.0.0.1",
+		"172.16.0.1",
+		"172.31.255.255",
 		"192.168.1.5",
+		"169.254.1.1",
 		"::1",
+		"fe80::1",
 		"fc00::1",
+		"224.0.0.1",
+		"192.0.2.1",
+		"2001:db8::1",
 	}
 
 	for _, ip := range tests {
@@ -75,6 +86,68 @@ func TestValidateTargetURLRejectsPrivateResolvedIPs(t *testing.T) {
 				t.Fatal("expected resolved private/internal IP to be rejected")
 			}
 		})
+	}
+}
+
+func TestSafeDialContextUsesValidatedNumericAddress(t *testing.T) {
+	lookup := func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
+	var dialed string
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed = address
+		return nil, nil
+	}
+	_, err := safeDialContext(lookup, dial)(context.Background(), "tcp", "vendor.example:443")
+	if err != nil {
+		t.Fatalf("expected validated public address to be dialed: %v", err)
+	}
+	if dialed != "93.184.216.34:443" {
+		t.Fatalf("expected numeric validated address, got %q", dialed)
+	}
+}
+
+func TestSafeDialContextBlocksDNSRebindingBeforeDial(t *testing.T) {
+	lookups := 0
+	lookup := func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		lookups++
+		if lookups == 1 {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		}
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	if _, err := ValidateTargetURL(context.Background(), "https://vendor.example/", lookup); err != nil {
+		t.Fatalf("initial validation should see a public address: %v", err)
+	}
+	dialCalled := false
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialCalled = true
+		return nil, nil
+	}
+	_, err := safeDialContext(lookup, dial)(context.Background(), "tcp", "vendor.example:443")
+	if err == nil || SafetyReason(err) != SafetyReasonLoopbackIP {
+		t.Fatalf("expected loopback rebinding to be blocked, got %v", err)
+	}
+	if dialCalled {
+		t.Fatal("unsafe rebound address must not be dialed")
+	}
+}
+
+func TestSafeDialContextPreservesIPv6AddressFormatting(t *testing.T) {
+	lookup := func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("2606:4700:4700::1111")}}, nil
+	}
+	var dialed string
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed = address
+		return nil, nil
+	}
+	_, err := safeDialContext(lookup, dial)(context.Background(), "tcp", "vendor.example:443")
+	if err != nil {
+		t.Fatalf("expected public IPv6 address to pass: %v", err)
+	}
+	if !strings.HasPrefix(dialed, "[") || !strings.HasSuffix(dialed, "]:443") {
+		t.Fatalf("expected bracketed IPv6 dial address, got %q", dialed)
 	}
 }
 

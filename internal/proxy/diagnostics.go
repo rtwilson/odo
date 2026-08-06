@@ -7,6 +7,8 @@ import (
 )
 
 type Diagnostics struct {
+	Type                         string `json:"type,omitempty"`
+	Reason                       string `json:"reason,omitempty"`
 	TS                           string `json:"ts"`
 	Method                       string `json:"method,omitempty"`
 	TargetHost                   string `json:"target_host,omitempty"`

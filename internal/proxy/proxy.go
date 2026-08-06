@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,9 +36,14 @@ const (
 const DefaultProxyMaxBodyBytes int64 = 10 * 1024 * 1024
 
 func DefaultHTTPClient() *http.Client {
+	return DefaultHTTPClientWithResolver(net.DefaultResolver.LookupIPAddr)
+}
+
+func DefaultHTTPClientWithResolver(lookup IPLookupFunc) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
+			DialContext:           SafeDialContext(lookup),
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 15 * time.Second,
 		},
@@ -87,6 +93,8 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		diagnostics.Method = r.Method
 		if target != nil {
 			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+		} else if parsedTarget != nil {
+			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(parsedTarget.Hostname(), "."))
 		}
 		diagnostics.ProxyURLMode = parsedMode
 		if diagnostics.ProxyURLMode == "" {
@@ -99,6 +107,10 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		diagnostics.AnonymousRuleMatched = result.AnonymousRuleMatched
 		diagnostics.AnonymousRulePattern = result.AnonymousRulePattern
 		diagnostics.JavaScriptTextRewriteEnabled = result.JavaScriptTextRewriteEnabled
+		if !result.Allowed && result.SafetyReason != "" {
+			diagnostics.Type = "proxy_target_blocked"
+			diagnostics.Reason = result.SafetyReason
+		}
 		defer func() {
 			options.Diagnostics.Add(*diagnostics)
 		}()
@@ -141,6 +153,10 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		upstreamCookiesSent := len(session.Jar.Cookies(target))
 		resp, err := sessionClient.Do(upstreamReq)
 		if err != nil {
+			if reason := SafetyReason(err); reason != "" {
+				diagnostics.Type = "proxy_target_blocked"
+				diagnostics.Reason = reason
+			}
 			writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", safeFetchReason(err))
 			return
 		}
@@ -395,6 +411,10 @@ func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, res
 	resolved := target.ResolveReference(parsed)
 	nextTarget, result := check(r.Context(), resolved.String())
 	if !result.Allowed || nextTarget == nil {
+		if diagnostics := DiagnosticsFrom(r.Context()); diagnostics != nil {
+			diagnostics.Type = "proxy_target_blocked"
+			diagnostics.Reason = "redirect_to_blocked_target"
+		}
 		writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "redirect target is not allowed")
 		return
 	}

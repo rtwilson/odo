@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -527,6 +528,7 @@ func TestFetchHandlerAbsoluteRedirectToAllowlistedTargetIsRewritten(t *testing.T
 }
 
 func TestFetchHandlerPOSTRedirectToNonAllowlistedTargetIsRejected(t *testing.T) {
+	store := NewDiagnosticsStore(10)
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusFound,
@@ -535,7 +537,7 @@ func TestFetchHandlerPOSTRedirectToNonAllowlistedTargetIsRejected(t *testing.T) 
 			Request:    req,
 		}, nil
 	}).client()
-	handler := FetchHandler(client, allowedHostTargetCheck)
+	handler := FetchHandlerWithOptions(FetchOptions{Client: client, Check: allowedHostTargetCheck, Diagnostics: store})
 
 	req := httptest.NewRequest(http.MethodPost, "/odo/https/www.jstor.org/form", strings.NewReader("q=science"))
 	rec := httptest.NewRecorder()
@@ -546,6 +548,40 @@ func TestFetchHandlerPOSTRedirectToNonAllowlistedTargetIsRejected(t *testing.T) 
 	}
 	if strings.Contains(rec.Header().Get("Location"), "bad.example") {
 		t.Fatalf("unsafe redirect Location leaked to browser: %q", rec.Header().Get("Location"))
+	}
+	entries := store.Recent()
+	if len(entries) != 1 || entries[0].Type != "proxy_target_blocked" || entries[0].Reason != "redirect_to_blocked_target" || entries[0].TargetHost != "www.jstor.org" {
+		t.Fatalf("expected privacy-safe blocked redirect diagnostic, got %#v", entries)
+	}
+}
+
+func TestFetchHandlerRecordsPrivacySafeSSRFDiagnostic(t *testing.T) {
+	store := NewDiagnosticsStore(10)
+	handler := FetchHandlerWithOptions(FetchOptions{
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatal("blocked target must not reach upstream")
+			return nil, nil
+		}).client(),
+		Check: func(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
+			return nil, resources.TestResult{Allowed: false, Reason: "hostname resolves to an unsafe IP address", SafetyReason: SafetyReasonPrivateIP}
+		},
+		Diagnostics: store,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/odo?url="+url.QueryEscape("https://vendor.example/search?q=private-term"), nil)
+	req.Header.Set("Authorization", "Bearer must-not-appear")
+	req.Header.Set("Cookie", "secret=must-not-appear")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	entries := store.Recent()
+	if len(entries) != 1 || entries[0].Type != "proxy_target_blocked" || entries[0].Reason != SafetyReasonPrivateIP || entries[0].TargetHost != "vendor.example" {
+		t.Fatalf("unexpected blocked-target diagnostic: %#v", entries)
+	}
+	payload := fmt.Sprintf("%#v", entries[0])
+	for _, secret := range []string{"private-term", "must-not-appear"} {
+		if strings.Contains(payload, secret) {
+			t.Fatalf("diagnostic leaked sensitive value %q: %s", secret, payload)
+		}
 	}
 }
 

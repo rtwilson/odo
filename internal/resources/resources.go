@@ -91,6 +91,7 @@ type TestResult struct {
 	AnonymousRulePattern         string               `json:"anonymous_rule_pattern,omitempty"`
 	JavaScriptTextRewriteEnabled bool                 `json:"javascript_text_rewrite_enabled,omitempty"`
 	MethodAllowed                bool                 `json:"method_allowed,omitempty"`
+	SafetyReason                 string               `json:"-"`
 }
 
 type ValidationResult struct {

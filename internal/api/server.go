@@ -79,7 +79,7 @@ func NewServerWithAccessLogger(store *db.Store, configDir, adminKey string, logg
 }
 
 func NewServerWithAccessLoggerAndResolver(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc) *Server {
-	return NewServerWithAccessLoggerResolverAndHTTPClient(store, configDir, adminKey, logger, accessLogger, lookup, proxy.DefaultHTTPClient())
+	return NewServerWithAccessLoggerResolverAndHTTPClient(store, configDir, adminKey, logger, accessLogger, lookup, nil)
 }
 
 func NewServerWithAccessLoggerResolverAndHTTPClient(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client) *Server {
@@ -91,7 +91,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		lookup = net.DefaultResolver.LookupIPAddr
 	}
 	if client == nil {
-		client = proxy.DefaultHTTPClient()
+		client = proxy.DefaultHTTPClientWithResolver(lookup)
 	}
 	return &Server{
 		store:      store,
@@ -1769,7 +1769,7 @@ func proxySafeFetchReason(err error) string {
 func (s *Server) proxyTarget(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
 	target, err := proxy.ValidateTargetURL(ctx, rawURL, s.ipLookup)
 	if err != nil {
-		return nil, resources.TestResult{Allowed: false, Reason: err.Error()}
+		return nil, resources.TestResult{Allowed: false, Reason: err.Error(), SafetyReason: proxy.SafetyReason(err)}
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
