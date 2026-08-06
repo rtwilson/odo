@@ -7,17 +7,16 @@
 - **Scope reviewed:** `cmd/odo`, `internal/api`, `internal/auth`, `internal/db`, `internal/proxy`, `internal/resources`, `internal/accesslog`, `internal/audit`, `internal/config`, `internal/ui`, OpenAPI, sample resource and SAML configuration, tracked data files, dependency manifests, container and systemd packaging, install/uninstall scripts, and deployment documentation.
 - **Commands run:** `rg --files`; targeted `rg`, `sed`, `file`, `strings`, `git ls-files`, and `git status` inspection; Go 1.23.12 container runs of `go test ./...`, `go vet ./...`, `go mod verify`, and `go list -m all`.
 - **Command results:** tests passed; vet passed; all modules verified; module inventory completed. `govulncheck`, `staticcheck`, and `gosec` were not installed in the available Go image and were not run. The host had no Go executable, so Go commands were run in the project container image.
-- **Overall risk after remediation:** **Medium, with one operational prerequisite before an Internet-facing pilot.** The proxy now connects only to IPs validated at dial time, production configuration fails closed, and runtime databases are no longer tracked. The repository owner must still determine whether the removed databases contained real data and clean history/rotate affected credentials if so. The remaining medium findings should be addressed before pilot where noted.
+- **Overall risk after remediation:** **Medium.** The proxy now connects only to IPs validated at dial time, production configuration fails closed, runtime databases are no longer tracked, and production Odo-owned security/session cookies are consistently `Secure`. The repository owner confirmed that the removed databases contained synthetic/development data only. The remaining medium findings should be addressed before pilot where noted.
 - **Remediation review:** `scripts/install-linux.sh` and `scripts/uninstall-linux.sh` had pre-existing uncommitted user changes and were not modified.
 
 ### MVP blockers
 
-The three implementation blockers are remediated in the current tree. **One operational blocker remains:** complete the provenance review for the formerly tracked databases and, if any data was real, rewrite published history as appropriate and rotate/reset affected passwords, API keys, and sessions (ODO-2025-002). History rewriting was intentionally not performed by this change.
+**No MVP blockers remain.** The three implementation blockers are remediated, and the repository owner confirmed that the formerly tracked SQLite databases contained synthetic/development data only. No credential rotation or history rewrite was required for real user data; neither action was performed.
 
 ### Should fix before pilot
 
 - Add login throttling and operational alerting (ODO-2025-004).
-- Set all session-identifying cookies `Secure` under production HTTPS and reject inconsistent public-URL/TLS configuration (ODO-2025-005).
 - Stop returning internal error text to clients; log it with a request ID (ODO-2025-006).
 - Add application-page security headers and document proxy-response header policy (ODO-2025-007).
 - Add dependency scanning, update automation, immutable container inputs, and release provenance (ODO-2025-008).
@@ -35,10 +34,10 @@ The three implementation blockers are remediated in the current tree. **One oper
 | ID | OWASP category | Severity | Status | Short title | Affected files | Recommended fix |
 |---|---|---:|---|---|---|---|
 | ODO-2025-001 | A06 | High | Fixed | DNS rebinding/TOCTOU gap in SSRF defense | `internal/proxy/safety.go`, `internal/proxy/proxy.go` | Validated-IP dialer implemented; retain regression coverage |
-| ODO-2025-002 | A08, A04 | High | Partially fixed | Runtime SQLite databases containing auth data are tracked | `data/app.db`, `data/odo.db`, `.gitignore` | Current tracking fixed; assess history and rotate affected credentials if data was real |
+| ODO-2025-002 | A08, A04 | High | Fixed | Runtime SQLite databases containing auth data are tracked | `data/app.db`, `data/odo.db`, `.gitignore` | Retain CI checks preventing runtime databases from being committed |
 | ODO-2025-003 | A02 | High | Fixed | Production security requirements warn but do not fail closed | `cmd/odo/main.go`, `cmd/odo/main_test.go` | Production startup validation implemented; retain regression coverage |
 | ODO-2025-004 | A07 | Medium | Confirmed | Login has no brute-force throttling | `internal/api/server.go` | Add per-account and per-source throttling with bounded lockout/backoff |
-| ODO-2025-005 | A04, A07 | Medium | Confirmed | Proxy and CSRF cookies are not consistently `Secure` | `internal/proxy/session.go`, `internal/api/server.go` | Derive secure mode centrally and force it in production |
+| ODO-2025-005 | A04, A07 | Medium | Fixed | Proxy and CSRF cookies are not consistently `Secure` | `internal/cookiepolicy/policy.go`, `internal/proxy/session.go`, `internal/api/server.go` | Retain production/development cookie-policy regression coverage |
 | ODO-2025-006 | A10 | Medium | Confirmed | Internal errors are returned verbatim | `internal/api/server.go` | Return stable public messages; log internal cause and request ID |
 | ODO-2025-007 | A02, A05 | Medium | Confirmed | Application HTML lacks baseline security headers | `internal/api/server.go` | Add CSP, frame protection, nosniff, referrer and permissions policies |
 | ODO-2025-008 | A03 | Medium | Confirmed | Supply-chain controls and immutable build inputs are absent | `go.mod`, `go.sum`, `Containerfile`, repository CI | Add scanning/update CI, digest pinning, SBOM and signed provenance |
@@ -101,7 +100,7 @@ Tests to add: enumerate every registered `/api/v1` route as anonymous, viewer, e
 #### ODO-2025-002 — Runtime SQLite databases containing authentication data are tracked
 
 - **Severity:** High
-- **Status:** Partially fixed
+- **Status:** Fixed
 - **Evidence:** Git tracks `data/app.db` and `data/odo.db`. Both are SQLite databases; inspection found user names/IDs, audit events, session IDs and hashes, user-agent/IP hashes, and authentication table schemas. `.gitignore` does not ignore database files. Passwords use bcrypt and API/session tokens are hashed, so plaintext credential storage was not observed, but committed password hashes permit offline guessing and the data represents an avoidable disclosure.
 - **Affected files:** `data/app.db`, `data/odo.db`, `.gitignore`.
 - **Risk:** a public clone exposes identity/activity metadata and password verifiers. If these are not purely synthetic, users and credentials are compromised regardless of later deletion from the tip.
@@ -109,17 +108,20 @@ Tests to add: enumerate every registered `/api/v1` route as anonymous, viewer, e
 - **Test to add:** CI secret/data-artifact scan rejecting SQLite databases, key material, and runtime state.
 - **Fix implemented:** `data/app.db` and `data/odo.db` were removed from Git tracking without deleting the user's local copies. Ignore rules now cover database/WAL/SHM extensions and repository runtime directories. Linux deployment documentation continues to use `/var/lib/odo/odo.db`.
 - **Tests/checks added:** Git ignore matching and tracked-file status were checked; the full Go suite remains green.
-- **Remaining risk:** existing commits may still expose the prior database contents. Determine whether the data was synthetic; if not, rotate/reset credentials and clean published history using a separately approved, coordinated procedure.
+- **Resolution:** the repository owner confirmed the removed SQLite files contained synthetic/development data only. No credential rotation or history rewrite was required for real user data, and neither was performed. Retain CI checks preventing runtime databases from being committed again.
 
 #### ODO-2025-005 — Proxy and CSRF cookies are not consistently `Secure`
 
 - **Severity:** Medium
-- **Status:** Confirmed
-- **Evidence:** `odo_proxy_sid`, which selects the in-memory vendor cookie jar, is always created with `Secure: false` (`internal/proxy/session.go:63-70`). The readable CSRF cookie also omits `Secure` (`internal/api/server.go:536-544`). The main browser-session cookie conditionally uses TLS or an HTTPS `APP_PUBLIC_URL`.
+- **Status:** Fixed
+- **Evidence at review time:** `odo_proxy_sid`, which selects the in-memory vendor cookie jar, was always created with `Secure: false` (`internal/proxy/session.go:63-70` at the reviewed commit). The readable CSRF cookie also omitted `Secure`; the main browser-session cookie conditionally used TLS or an HTTPS `APP_PUBLIC_URL`.
 - **Affected files:** `internal/proxy/session.go`, `internal/api/server.go`.
 - **Risk:** an HTTP request can disclose or overwrite the proxy-session identifier, potentially exposing a patron's authenticated vendor state. Inconsistent cookie policy makes reverse-proxy mistakes more damaging.
 - **Recommended fix:** inject a centralized cookie policy into both stores and force `Secure` in production; validate that production public URL is HTTPS; consider `__Host-` cookie names; retain `HttpOnly` for session cookies and use a standard CSRF construction for the readable token.
 - **Test to add:** assert `Secure`, `HttpOnly`, `SameSite`, path, and expiry under direct TLS, trusted reverse proxy, production, and development cases.
+- **Fix implemented:** `internal/cookiepolicy` now applies one policy to browser-session, proxy-session, CSRF, and cookie-clearing paths. Direct TLS, a configured HTTPS public URL, or explicitly trusted forwarded HTTPS produces `Secure` cookies. Production startup already rejects a missing or non-HTTPS public URL. Main and proxy sessions remain `HttpOnly`; the CSRF cookie remains JavaScript-readable for the existing double-submit flow. All use `SameSite=Lax` and `Path=/`; proxy and CSRF cookies now have bounded expiry.
+- **Tests added:** centralized policy tests cover production HTTPS, local HTTP development, direct TLS, and trusted/untrusted forwarded HTTPS. API and proxy tests assert purpose-specific `Secure`, `HttpOnly`, `SameSite`, path, and expiry behavior while existing login, logout, CSRF, and proxy-session regressions remain in the full suite.
+- **Remaining risk:** `__Host-` prefixes, stricter `SameSite`, and narrower paths remain optional future hardening and require compatibility review.
 
 Positive observations: passwords use bcrypt; API keys and sessions use `crypto/rand`; API-key comparison is constant-time for the bootstrap key; stored API keys use HMAC-SHA-256 when configured; raw stored API tokens and password plaintext were not observed in database models or logs.
 
@@ -162,7 +164,7 @@ Positive observations: authentication failures use a generic message, disabled/l
 
 ### A08:2025 - Software and Data Integrity Failures
 
-ODO-2025-002 is the confirmed integrity/data-handling finding for this category.
+ODO-2025-002 was the confirmed integrity/data-handling finding for this category and is resolved as described above.
 
 Resource imports are validated before persistence, SQL updates are parameterized, revisions and key/user/resource mutations receive audit records, and the installer preserves an existing environment unless explicitly forced. However, administrative resource configuration intentionally controls proxy destinations, anonymous access, rewrites, and header behavior; it is therefore security policy, not ordinary content. Add atomic import semantics (validate the complete set, detect ambiguous/conflicting rules, then commit in one transaction), actor identity and before/after digests to audit events, an approval/export workflow for pilot changes, and signed release/config provenance where operationally appropriate.
 

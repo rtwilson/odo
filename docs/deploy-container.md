@@ -89,7 +89,7 @@ Set `APP_PUBLIC_URL` to the real HTTPS URL users will open:
 APP_PUBLIC_URL=https://access.example.edu
 ```
 
-Odo uses this value when it needs a public base URL, including SAML Service Provider defaults and secure browser cookie decisions. If it is unset in development, Odo can infer a local request URL. In production, Odo logs a warning.
+Odo uses this value when it needs a public base URL, including SAML Service Provider defaults and secure browser cookie decisions. In production it must be an absolute HTTPS URL or Odo refuses to start. All Odo-owned browser-session, proxy-session, and CSRF cookies are marked `Secure` for that HTTPS deployment. Local HTTP development may use non-`Secure` cookies.
 
 ## Reverse proxy headers
 
@@ -154,7 +154,7 @@ APP_ENV=production
 APP_PROXY_REQUIRE_LOGIN=true
 ```
 
-When `APP_ENV=production`, Odo logs warnings if important settings are missing or unsafe:
+When `APP_ENV=production`, Odo refuses to start if important settings are missing or unsafe, including:
 
 - `APP_PUBLIC_URL` is not set.
 - `APP_KEY_HASH_SECRET` is not set.

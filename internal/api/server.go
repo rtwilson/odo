@@ -27,6 +27,7 @@ import (
 	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/auth/saml"
 	"example.org/odo/internal/config"
+	"example.org/odo/internal/cookiepolicy"
 	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
@@ -343,7 +344,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.SubjectType == "user" {
-		http.SetCookie(w, csrfCookie(auth.csrfToken))
+		http.SetCookie(w, csrfCookie(r, auth.csrfToken))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(ui.AdminHTML()))
@@ -408,7 +409,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.Audit("login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"next_path":%q}`, user.ID, pathOnly(next)))
 	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
-	http.SetCookie(w, csrfCookie(csrfTokenForSessionToken(token)))
+	http.SetCookie(w, csrfCookie(r, csrfTokenForSessionToken(token)))
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
@@ -426,7 +427,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
-	return &http.Cookie{Name: name, Path: "/", MaxAge: -1, HttpOnly: httpOnly, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(r)}
+	return cookiepolicy.Apply(r, &http.Cookie{Name: name, MaxAge: -1, HttpOnly: httpOnly})
 }
 
 func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
@@ -518,29 +519,22 @@ func randomBootSecret() string {
 
 func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 	expiresAt, _ := time.Parse(time.RFC3339, expires)
-	return &http.Cookie{
+	return cookiepolicy.Apply(r, &http.Cookie{
 		Name:     browserSessionCookieName,
 		Value:    token,
-		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   sessionCookieSecure(r),
 		Expires:  expiresAt,
-	}
+	})
 }
 
-func sessionCookieSecure(r *http.Request) bool {
-	return r.TLS != nil || strings.HasPrefix(strings.ToLower(os.Getenv("APP_PUBLIC_URL")), "https://")
-}
-
-func csrfCookie(token string) *http.Cookie {
-	return &http.Cookie{
+func csrfCookie(r *http.Request, token string) *http.Cookie {
+	return cookiepolicy.Apply(r, &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    token,
-		Path:     "/",
 		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-	}
+		MaxAge:   int(sessionTTL() / time.Second),
+		Expires:  time.Now().UTC().Add(sessionTTL()),
+	})
 }
 
 func csrfTokenForSessionToken(token string) string {
@@ -925,7 +919,7 @@ func (s *Server) sessionMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.SubjectType == "user" {
-		http.SetCookie(w, csrfCookie(auth.csrfToken))
+		http.SetCookie(w, csrfCookie(r, auth.csrfToken))
 	}
 	writeJSON(w, http.StatusOK, auth)
 }

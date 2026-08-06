@@ -994,6 +994,7 @@ func TestSafeNextPathValidation(t *testing.T) {
 }
 
 func TestLoginPageAndPostRedirects(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 	server := newTestServer(t, "secret")
 	createLocalTestUser(t, server, "alice", "correct horse battery")
@@ -1022,6 +1023,10 @@ func TestLoginPageAndPostRedirects(t *testing.T) {
 	}
 	if !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode || !sessionCookie.Secure || sessionCookie.Path != "/" {
 		t.Fatalf("session cookie missing security attributes: %#v", sessionCookie)
+	}
+	csrfCookie := findCookie(postRec.Result().Cookies(), csrfCookieName)
+	if csrfCookie == nil || csrfCookie.HttpOnly || !csrfCookie.Secure || csrfCookie.SameSite != http.SameSiteLaxMode || csrfCookie.Path != "/" || csrfCookie.Expires.IsZero() || csrfCookie.MaxAge <= 0 {
+		t.Fatalf("CSRF cookie missing security attributes: %#v", csrfCookie)
 	}
 	session, found, err := server.store.GetSession(local.SessionIDFromToken(sessionCookie.Value))
 	if err != nil || !found {

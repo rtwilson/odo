@@ -7,6 +7,8 @@ import (
 	"net/http/cookiejar"
 	"sync"
 	"time"
+
+	"example.org/odo/internal/cookiepolicy"
 )
 
 const ProxySessionCookieName = "odo_proxy_sid"
@@ -60,14 +62,13 @@ func (s *SessionStore) GetOrCreate(r *http.Request, w http.ResponseWriter) Sessi
 	jar, _ := cookiejar.New(nil)
 	id = randomSessionID()
 	s.sessions[id] = &proxySession{jar: jar, lastAccess: now}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, cookiepolicy.Apply(r, &http.Cookie{
 		Name:     ProxySessionCookieName,
 		Value:    id,
-		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   false,
-	})
+		MaxAge:   int(s.idleTimeout / time.Second),
+		Expires:  now.Add(s.idleTimeout),
+	}))
 	return SessionInfo{ID: id, Jar: jar, Created: true}
 }
 

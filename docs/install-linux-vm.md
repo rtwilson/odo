@@ -29,6 +29,8 @@ Odo normally listens on `127.0.0.1:8080`. Public HTTPS should be handled by a re
 
 Odo should not be exposed directly to the public Internet without a reverse proxy and TLS.
 
+Production requires an HTTPS `APP_PUBLIC_URL` and Odo marks all of its browser-session, proxy-session, and CSRF cookies `Secure`. Local HTTP development may use non-`Secure` cookies. Keep production Odo behind a trusted TLS reverse proxy and prevent direct public access to its HTTP listener.
+
 ## Build or Download Odo
 
 Build from the repository:

@@ -184,6 +184,8 @@ func TestFetchHandlerFetchesAllowedURL(t *testing.T) {
 }
 
 func TestFetchHandlerCreatesProxySessionCookie(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 	handler := FetchHandler(roundTripFunc(okResponse).client(), allowedTargetCheck)
 
 	req := httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/stable/example", nil)
@@ -194,11 +196,21 @@ func TestFetchHandlerCreatesProxySessionCookie(t *testing.T) {
 	if cookie == nil {
 		t.Fatalf("expected %s cookie, got %#v", ProxySessionCookieName, rec.Result().Cookies())
 	}
-	if !cookie.HttpOnly {
-		t.Fatal("expected proxy session cookie to be HttpOnly")
+	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/" || cookie.Expires.IsZero() || cookie.MaxAge <= 0 {
+		t.Fatalf("proxy session cookie missing production security attributes: %#v", cookie)
 	}
-	if cookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("expected SameSite=Lax, got %#v", cookie.SameSite)
+}
+
+func TestFetchHandlerAllowsNonSecureProxySessionCookieForLocalDevelopment(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_PUBLIC_URL", "")
+	t.Setenv("APP_TRUST_PROXY_HEADERS", "false")
+	handler := FetchHandler(roundTripFunc(okResponse).client(), allowedTargetCheck)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/odo?url=https://www.jstor.org/", nil))
+	cookie := findCookie(rec.Result().Cookies(), ProxySessionCookieName)
+	if cookie == nil || cookie.Secure {
+		t.Fatalf("expected explicit local HTTP development cookie policy, got %#v", cookie)
 	}
 }
 
