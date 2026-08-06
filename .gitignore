@@ -29,6 +29,16 @@ go.work.sum
 # env file
 .env
 
+# Runtime data (never commit local users, sessions, keys, logs, or SQLite state)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/
+var/
+tmp/
+
 # Editor/IDE
 # .idea/
 # .vscode/

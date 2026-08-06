@@ -7,14 +7,12 @@
 - **Scope reviewed:** `cmd/odo`, `internal/api`, `internal/auth`, `internal/db`, `internal/proxy`, `internal/resources`, `internal/accesslog`, `internal/audit`, `internal/config`, `internal/ui`, OpenAPI, sample resource and SAML configuration, tracked data files, dependency manifests, container and systemd packaging, install/uninstall scripts, and deployment documentation.
 - **Commands run:** `rg --files`; targeted `rg`, `sed`, `file`, `strings`, `git ls-files`, and `git status` inspection; Go 1.23.12 container runs of `go test ./...`, `go vet ./...`, `go mod verify`, and `go list -m all`.
 - **Command results:** tests passed; vet passed; all modules verified; module inventory completed. `govulncheck`, `staticcheck`, and `gosec` were not installed in the available Go image and were not run. The host had no Go executable, so Go commands were run in the project container image.
-- **Overall risk:** **High for an Internet-facing pilot.** API routes are default-deny, role/scope checks and CSRF checks exist, SQL statements are parameterized, and proxy destinations require configured resource matches. However, the outbound connection does not use the IP addresses that passed SSRF validation, tracked databases expose authentication-related data, and production-critical settings only generate warnings. Login throttling, secure proxy-session cookies, generic server errors, and baseline browser headers also need attention.
-- **Review constraint:** `scripts/install-linux.sh` and `scripts/uninstall-linux.sh` already had uncommitted user changes. They were reviewed but not modified. No application code was changed because the highest-risk fixes require design and regression testing rather than a small isolated patch.
+- **Overall risk after remediation:** **Medium, with one operational prerequisite before an Internet-facing pilot.** The proxy now connects only to IPs validated at dial time, production configuration fails closed, and runtime databases are no longer tracked. The repository owner must still determine whether the removed databases contained real data and clean history/rotate affected credentials if so. The remaining medium findings should be addressed before pilot where noted.
+- **Remediation review:** `scripts/install-linux.sh` and `scripts/uninstall-linux.sh` had pre-existing uncommitted user changes and were not modified.
 
 ### MVP blockers
 
-1. **ODO-2025-001:** bind outbound proxy connections to an IP that passed validation, with hostname/TLS verification preserved, and revalidate every new connection.
-2. **ODO-2025-002:** remove `data/app.db` and `data/odo.db` from the repository and its distributable history as appropriate; determine whether their users, password hashes, API-key hashes, session records, and audit data were ever real; revoke/rotate affected credentials; add database ignores and a synthetic fixture process.
-3. **ODO-2025-003:** make unsafe production configuration fail startup, especially missing `APP_PUBLIC_URL`, missing `APP_KEY_HASH_SECRET`, disabled proxy login, placeholder bootstrap secrets, and non-loopback direct binding without an explicitly accepted deployment mode.
+The three implementation blockers are remediated in the current tree. **One operational blocker remains:** complete the provenance review for the formerly tracked databases and, if any data was real, rewrite published history as appropriate and rotate/reset affected passwords, API keys, and sessions (ODO-2025-002). History rewriting was intentionally not performed by this change.
 
 ### Should fix before pilot
 
@@ -36,9 +34,9 @@
 
 | ID | OWASP category | Severity | Status | Short title | Affected files | Recommended fix |
 |---|---|---:|---|---|---|---|
-| ODO-2025-001 | A06 | High | Confirmed | DNS rebinding/TOCTOU gap in SSRF defense | `internal/proxy/safety.go`, `internal/proxy/proxy.go` | Dial only validated IPs while retaining hostname TLS/SNI; revalidate each connection |
-| ODO-2025-002 | A08, A04 | High | Confirmed | Runtime SQLite databases containing auth data are tracked | `data/app.db`, `data/odo.db`, `.gitignore` | Remove from tree/history as appropriate, rotate affected credentials, ignore DB files |
-| ODO-2025-003 | A02 | High | Confirmed | Production security requirements warn but do not fail closed | `cmd/odo/main.go`, `Containerfile`, deployment examples | Enforce production invariants at startup and ship production-safe examples |
+| ODO-2025-001 | A06 | High | Fixed | DNS rebinding/TOCTOU gap in SSRF defense | `internal/proxy/safety.go`, `internal/proxy/proxy.go` | Validated-IP dialer implemented; retain regression coverage |
+| ODO-2025-002 | A08, A04 | High | Partially fixed | Runtime SQLite databases containing auth data are tracked | `data/app.db`, `data/odo.db`, `.gitignore` | Current tracking fixed; assess history and rotate affected credentials if data was real |
+| ODO-2025-003 | A02 | High | Fixed | Production security requirements warn but do not fail closed | `cmd/odo/main.go`, `cmd/odo/main_test.go` | Production startup validation implemented; retain regression coverage |
 | ODO-2025-004 | A07 | Medium | Confirmed | Login has no brute-force throttling | `internal/api/server.go` | Add per-account and per-source throttling with bounded lockout/backoff |
 | ODO-2025-005 | A04, A07 | Medium | Confirmed | Proxy and CSRF cookies are not consistently `Secure` | `internal/proxy/session.go`, `internal/api/server.go` | Derive secure mode centrally and force it in production |
 | ODO-2025-006 | A10 | Medium | Confirmed | Internal errors are returned verbatim | `internal/api/server.go` | Return stable public messages; log internal cause and request ID |
@@ -64,12 +62,15 @@ Tests to add: enumerate every registered `/api/v1` route as anonymous, viewer, e
 #### ODO-2025-003 — Production security requirements warn but do not fail closed
 
 - **Severity:** High
-- **Status:** Confirmed
+- **Status:** Fixed
 - **Evidence:** the default listener is `:8080`; production checks only call `logger.Warn`; missing key-hash secret falls back to plain SHA-256; and proxy login can be explicitly disabled (`cmd/odo/main.go:18-36,59-64`). The container advertises `APP_ENV=development`, listens on all interfaces, and embeds writable configuration (`Containerfile:15-25`). Deployment examples contain literal `change-me` values and enable trusted proxy headers without a trusted-proxy CIDR mechanism.
 - **Affected files:** `cmd/odo/main.go`, `Containerfile`, `deploy/odo.env.example`, `packaging/systemd/odo.env.example`, `docs/deploy-container.md`, `docs/install-linux-vm.md`.
 - **Risk:** a production deployment can start in a materially unsafe state and be exposed through an unnoticed packaging or environment mistake.
 - **Recommended fix:** validate a typed configuration before opening the database/listener. In production, reject missing/invalid HTTPS public URL, missing hash secret, placeholder secrets, disabled login, development local HTTP, and ambiguous trust-proxy settings. Default the runtime image to production and loopback or require an explicit acknowledgement for public binding. Do not make `/etc/odo` writable by the service unless runtime edits are required.
 - **Test to add:** table-driven startup validation for every unsafe combination; container smoke test asserting production defaults and non-root read-only configuration.
+- **Fix implemented:** production startup now rejects missing/non-HTTPS `APP_PUBLIC_URL`, missing or placeholder key-hash/bootstrap secrets, absent admin bootstrap paths, explicitly disabled proxy login, empty/temporary database paths, and inconsistent trusted-proxy/public-URL settings. An active unexpired stored admin key or an explicit strong local-admin bootstrap permits omission of the environment bootstrap API key. Development remains permissive.
+- **Tests added:** fail-closed cases for each required setting, valid stored-key configuration, explicit local-admin bootstrap, and development behavior.
+- **Remaining risk:** the container intentionally defaults to development and deployment still depends on operators selecting production; add a production container smoke test and reject additional organization-specific placeholder values as needed.
 
 #### ODO-2025-007 — Application HTML lacks baseline security headers
 
@@ -100,12 +101,15 @@ Tests to add: enumerate every registered `/api/v1` route as anonymous, viewer, e
 #### ODO-2025-002 — Runtime SQLite databases containing authentication data are tracked
 
 - **Severity:** High
-- **Status:** Confirmed
+- **Status:** Partially fixed
 - **Evidence:** Git tracks `data/app.db` and `data/odo.db`. Both are SQLite databases; inspection found user names/IDs, audit events, session IDs and hashes, user-agent/IP hashes, and authentication table schemas. `.gitignore` does not ignore database files. Passwords use bcrypt and API/session tokens are hashed, so plaintext credential storage was not observed, but committed password hashes permit offline guessing and the data represents an avoidable disclosure.
 - **Affected files:** `data/app.db`, `data/odo.db`, `.gitignore`.
 - **Risk:** a public clone exposes identity/activity metadata and password verifiers. If these are not purely synthetic, users and credentials are compromised regardless of later deletion from the tip.
 - **Recommended fix:** determine provenance immediately; revoke sessions/API keys and reset passwords if any data is real; remove DB files from the current tree and, after impact review, repository history; add `data/*.db`, SQLite WAL/SHM files, and local environment files to ignore rules; distribute migrations or deterministic synthetic fixtures instead.
 - **Test to add:** CI secret/data-artifact scan rejecting SQLite databases, key material, and runtime state.
+- **Fix implemented:** `data/app.db` and `data/odo.db` were removed from Git tracking without deleting the user's local copies. Ignore rules now cover database/WAL/SHM extensions and repository runtime directories. Linux deployment documentation continues to use `/var/lib/odo/odo.db`.
+- **Tests/checks added:** Git ignore matching and tracked-file status were checked; the full Go suite remains green.
+- **Remaining risk:** existing commits may still expose the prior database contents. Determine whether the data was synthetic; if not, rotate/reset credentials and clean published history using a separately approved, coordinated procedure.
 
 #### ODO-2025-005 — Proxy and CSRF cookies are not consistently `Secure`
 
@@ -130,12 +134,15 @@ The security-header finding ODO-2025-007 applies as defense-in-depth. Add fuzz t
 #### ODO-2025-001 — DNS rebinding/TOCTOU gap in SSRF defense
 
 - **Severity:** High
-- **Status:** Confirmed
+- **Status:** Fixed
 - **Evidence:** `ValidateTargetURL` resolves the hostname and rejects any non-public result (`internal/proxy/safety.go:89-112`), but returns the hostname URL. The default `http.Transport` subsequently resolves that hostname again when `client.Do` connects (`internal/proxy/proxy.go:29-41,140-142`). The validated IP is neither retained nor used by the dialer. Redirects are returned rather than automatically followed, which correctly limits redirect-based SSRF.
 - **Affected files:** `internal/proxy/safety.go`, `internal/proxy/proxy.go`, `internal/api/server.go`.
 - **Risk:** an allowed attacker-controlled hostname can return a public address during validation and a private/link-local address during connection, reaching internal services through Odo. Resource allowlisting reduces who can introduce such a hostname but does not remove the impact of a compromised or malicious configured domain.
 - **Recommended fix:** resolve once per connection attempt, reject if any candidate is unsafe, connect to a selected validated IP via a custom `DialContext`, and preserve the original hostname for TLS SNI/certificate verification and the HTTP Host header. Disable unintended proxy-environment behavior if present. Do not globally cache DNS longer than intended; repeat validation for fresh connections and control connection reuse across resource/security boundaries.
 - **Test to add:** deterministic resolver/dialer test that returns public then loopback/private addresses; IPv4/IPv6, link-local, CGNAT and special-range cases; connection reuse; redirects; and TLS hostname verification.
+- **Fix implemented:** the default outbound transport now resolves on each new connection, rejects the complete answer set if any address is unsafe, and dials a validated numeric IP. The request URL retains the vendor hostname, preserving the HTTP Host header and Go's TLS SNI/certificate verification. Automatic upstream redirect following remains disabled (an effective per-fetch limit of zero); returned redirects are passed through target/resource validation before Odo rewrites them. Blocked-target diagnostics contain only a stable type/reason and target hostname.
+- **Tests added:** public IPv4 and IPv6 dialing, numeric validated dial target, DNS rebinding between pre-check and connect, private/loopback/link-local/unique-local/multicast/unspecified/documentation ranges, invalid schemes, blocked redirect diagnostics, and diagnostic privacy.
+- **Remaining risk:** DNS and network policy are process-local; deployments should also apply egress firewall policy. Connection reuse intentionally avoids repeat DNS lookup until Go opens a new connection, so keep-alive lifetime remains part of the operational threat model.
 
 Design positives: proxy targets must match active resource rules; targets default to HTTPS/443; IP literals, localhost, `.local`, and `.internal` are rejected; all resolved addresses are screened; redirects are not automatically followed; cookie jars are isolated by random proxy-session ID; response bodies and request bodies have size controls in the proxy path.
 
