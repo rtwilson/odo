@@ -197,3 +197,9 @@ Admin/staff users access `/admin` through browser sessions; regular users use `/
 Backend scopes enforce API authorization. Unsafe browser-session API methods require `X-Odo-CSRF`, which the admin UI sends; bearer API-key requests do not require it.
 
 SAML SP provider configuration and metadata exist, but SAML login initiation and ACS assertion validation return HTTP 501. Institutional SAML login and OIDC login are not implemented.
+
+## Local login throttling
+
+Odo limits local login failures per normalized account and connection-peer IP: 5 account failures or 20 source failures per fixed 10-minute window, with cooldowns of up to 60 seconds. State is per-process and resets on restart. Behind a reverse proxy, its clients share Odo's source bucket; forwarded client-IP headers are not used by the limiter.
+
+Before an Internet-facing pilot or future production use, configure client-level reverse-proxy rate limiting and alerts for `login_failures_excessive` and `login_throttled`. Distributed throttling is recommended if Odo later supports multi-node deployments. See [login throttling](security/login-throttling.md) for the complete policy, memory cap, audit behavior, and limitations.

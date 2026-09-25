@@ -20,7 +20,7 @@ The container build file is now named `Dockerfile`; `Containerfile` references b
 
 ### Should fix before Internet-facing pilot
 
-- Add login throttling and operational alerting (ODO-2025-004).
+- Configure reverse-proxy login rate limiting and operational alerting; local per-process throttling is implemented (ODO-2025-004).
 - Stop returning internal error text to clients; log it with a request ID (ODO-2025-006).
 - Add application-page security headers and document proxy-response header policy (ODO-2025-007).
 - Add dependency scanning, update automation, immutable container inputs, and release provenance (ODO-2025-008).
@@ -41,7 +41,7 @@ The container build file is now named `Dockerfile`; `Containerfile` references b
 | ODO-2025-001 | A06 | High | Fixed | DNS rebinding/TOCTOU gap in SSRF defense | `internal/proxy/safety.go`, `internal/proxy/proxy.go` | Validated-IP dialer implemented; retain regression coverage |
 | ODO-2025-002 | A08, A04 | High | Fixed | Runtime SQLite databases containing auth data are tracked | `data/app.db`, `data/odo.db`, `.gitignore` | Retain CI checks preventing runtime databases from being committed |
 | ODO-2025-003 | A02 | High | Fixed | Production security requirements warn but do not fail closed | `cmd/odo/main.go`, `cmd/odo/main_test.go` | Production startup validation implemented; retain regression coverage |
-| ODO-2025-004 | A07 | Medium | Confirmed | Login has no brute-force throttling | `internal/api/server.go` | Add per-account and per-source throttling with bounded lockout/backoff |
+| ODO-2025-004 | A07 | Medium | Fixed (local process) | Login has no brute-force throttling | `internal/api/auth_handlers.go`, `internal/api/login_throttle.go` | Retain regression tests; configure edge rate limiting and alerting |
 | ODO-2025-005 | A04, A07 | Medium | Fixed | Proxy and CSRF cookies are not consistently `Secure` | `internal/cookiepolicy/policy.go`, `internal/proxy/session.go`, `internal/api/server.go` | Retain production/development cookie-policy regression coverage |
 | ODO-2025-006 | A10 | Medium | Confirmed | Internal errors are returned verbatim | `internal/api/server.go` | Return stable public messages; log internal cause and request ID |
 | ODO-2025-007 | A02, A05 | Medium | Confirmed | Application HTML lacks baseline security headers | `internal/api/server.go` | Add CSP, frame protection, nosniff, referrer and permissions policies |
@@ -158,12 +158,13 @@ Design positives: proxy targets must match active resource rules; targets defaul
 #### ODO-2025-004 — Login has no brute-force throttling
 
 - **Severity:** Medium
-- **Status:** Confirmed
-- **Evidence:** `loginPost` performs a database lookup and bcrypt comparison for every request and immediately returns 401 on failure (`internal/api/server.go:369-382`). No rate limiter, attempt counter, progressive delay, or edge requirement is present. Failed attempts are audited with the supplied username, but logging alone does not constrain attempts.
-- **Affected files:** `internal/api/server.go`, `internal/db/db.go`, deployment documentation.
-- **Risk:** Internet-accessible local accounts are susceptible to password spraying and credential stuffing; repeated bcrypt work also enables application-level resource exhaustion.
-- **Recommended fix:** add bounded per-source and per-normalized-account throttles with progressive delay, generic responses, and safe audit/alert events. Prefer an external distributed limiter when horizontally scaled. Avoid permanent attacker-triggerable account lockout; document reverse-proxy rate limits as an additional layer.
-- **Test to add:** threshold/window/reset/concurrency tests, username-case behavior, source spoofing tests when proxy headers are trusted, and assurance that success clears only appropriate counters.
+- **Status:** Fixed for local per-process browser login; edge controls and operational alerting remain deployment requirements.
+- **Evidence at review time:** `loginPost` had no attempt limiter before user lookup/password verification. Failed attempts were audited with supplied usernames, but logging alone did not constrain attempts.
+- **Affected files:** `internal/api/auth_handlers.go`, `internal/api/login_throttle.go`, `internal/api/server.go`, deployment documentation.
+- **Fix implemented:** mutex-protected account/source throttling before database/bcrypt work. Limits are 5 account failures or 20 source failures in a fixed 10-minute window, with cooldowns of up to 60 seconds and one probe at a time after cooldown. Rejected attempts do not extend lockouts. Successful session creation clears account failures; source failures expire. Pending attempts reserve capacity, and storage is capped at 10,000 combined keys with expiry pruning.
+- **Responses and events:** existing generic credential-failure body is preserved for unknown, disabled, locked, and incorrect-password accounts; throttled responses use HTTP 429 with the same body. Failed-login details no longer include supplied usernames. Threshold crossings and sampled throttling events contain no account/source identifiers or credentials.
+- **Tests added:** threshold, cooldown, non-extension, window expiry, account normalization, source isolation, success reset, generic responses, audit privacy, forwarded-header spoofing, capacity/pruning, and concurrent reservation tests.
+- **Remaining limitations:** state resets on process restart; connection-peer source keys aggregate users behind a reverse proxy. Attackers can still cause temporary denial or capacity pressure. Configure reverse-proxy rate limiting and alerting before pilot; recommend distributed throttling if multi-node/HA support is added. No constant-time authentication claim is made. See the [policy and deployment limits](login-throttling.md).
 
 Positive observations: authentication failures use a generic message, disabled/locked users cannot log in, sessions have absolute and idle expiry, sessions are rotated on login and revocable, user disablement invalidates use, bearer keys support scopes/status/expiry/revocation, and unsafe cookie-authenticated API methods require CSRF tokens.
 

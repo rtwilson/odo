@@ -31,7 +31,7 @@ Odo is not ready for production use. `APP_ENV=production` enables startup safegu
 
 - **Controlled demo:** Local or access-restricted evaluation using synthetic data and selected resource flows.
 - **Design-partner testing:** Limited, supervised testing with named partners, restricted access, and explicit checks of each resource and workflow. Compatibility and operational suitability remain to be validated.
-- **Internet-facing pilot:** Before exposure, complete login throttling, sanitized internal errors, application security headers, supply-chain CI, security-event coverage, and HTTP server timeouts/graceful shutdown. TLS and startup checks alone are insufficient.
+- **Internet-facing pilot:** Before exposure, configure edge login rate limiting and alerting; sanitize internal errors; and complete application security headers, supply-chain CI, security-event coverage, and HTTP server timeouts/graceful shutdown. TLS and startup checks alone are insufficient.
 - **Production use:** Not currently supported as a readiness claim; requires further security, operational, and compatibility validation beyond pilot hardening.
 
 The [OWASP review](docs/security/owasp-top10-2025-review.md) records no remaining original MVP implementation blockers. Formerly tracked databases contained synthetic/dev data only; no real-data credential rotation or history rewrite was required or performed. Remaining before-pilot work is still open.
@@ -307,6 +307,8 @@ Once local users exist, `/odo` proxy access requires login by default. When `APP
 ```sh
 APP_PROXY_REQUIRE_LOGIN=false go run ./cmd/odo
 ```
+
+Local browser login has bounded per-account and per-source throttling. See the [login-throttling policy](docs/security/login-throttling.md) for thresholds, generic responses, per-process limits, and required edge controls.
 
 ## Login and return-to-resource flow
 

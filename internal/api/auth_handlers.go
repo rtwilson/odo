@@ -30,13 +30,30 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid login request")
 		return
 	}
+	// Source attribution intentionally uses the connection peer: there is no
+	// existing trusted client-IP extraction policy for forwarded headers.
+	attempt, reason, audit := s.loginThrottle.begin(r.Form.Get("username"), loginSourceKey(r.RemoteAddr), time.Now())
+	if attempt == nil {
+		if audit {
+			_ = s.store.Audit("login_throttled", fmt.Sprintf(`{"path":"/login","reason":%q}`, reason))
+		}
+		writeError(w, http.StatusTooManyRequests, "invalid username or password")
+		return
+	}
+	failed, success := false, false
+	defer func() {
+		if s.loginThrottle.finish(attempt, failed, success, time.Now()) {
+			_ = s.store.Audit("login_failures_excessive", `{"path":"/login"}`)
+		}
+	}()
 	user, found, err := s.store.GetUserByUsername(strings.TrimSpace(r.Form.Get("username")))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if !found || user.Status != "active" || !local.CheckPassword(user.PasswordHash, r.Form.Get("password")) {
-		_ = s.store.Audit("login_failed", fmt.Sprintf(`{"username":%q}`, strings.TrimSpace(r.Form.Get("username"))))
+		failed = true
+		_ = s.store.Audit("login_failed", `{"path":"/login"}`)
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -49,6 +66,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	success = true
 	_ = s.store.MarkUserLogin(user.ID)
 	next := r.Form.Get("next")
 	if next == "" {

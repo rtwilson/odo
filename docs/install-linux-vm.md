@@ -802,3 +802,9 @@ If direct access works, check reverse proxy configuration, SELinux, firewall, an
 - [ ] Confirm protected `/api/v1/*` routes require auth.
 - [ ] Import or create first resource.
 - [ ] Back up `/etc/odo` and `/var/lib/odo/odo.db`.
+
+## Local login throttling
+
+Odo limits local login failures per normalized account and connection-peer IP: 5 account failures or 20 source failures per fixed 10-minute window, with cooldowns of up to 60 seconds. State is per-process and resets on restart. Behind a reverse proxy, its clients share Odo's source bucket; forwarded client-IP headers are not used by the limiter.
+
+Before an Internet-facing pilot or future production use, configure client-level reverse-proxy rate limiting and alerts for `login_failures_excessive` and `login_throttled`. Distributed throttling is recommended if Odo later supports multi-node deployments. See [login throttling](security/login-throttling.md) for the complete policy, memory cap, audit behavior, and limitations.

@@ -26,6 +26,8 @@ type Server struct {
 	proxyH     http.Handler
 	startedAt  time.Time
 	bootSecret string
+
+	loginThrottle *loginThrottle
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -66,6 +68,8 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		missedDiag: proxy.NewMissedRewriteStore(200),
 		startedAt:  time.Now().UTC(),
 		bootSecret: randomBootSecret(),
+
+		loginThrottle: newLoginThrottle(),
 	}
 }
 
