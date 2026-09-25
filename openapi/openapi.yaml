@@ -106,12 +106,15 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: One resource JSON object, at most 1 MiB (1048576 bytes).
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/Resource"
       responses:
+        "413":
+          description: Resource JSON exceeds the 1 MiB request body limit.
         "200":
           description: Upserted resource
           content:
@@ -155,12 +158,15 @@ paths:
           schema:
             type: string
       requestBody:
+        description: One resource JSON object, at most 1 MiB (1048576 bytes).
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/Resource"
       responses:
+        "413":
+          description: Resource JSON exceeds the 1 MiB request body limit.
         "200":
           description: Upserted resource
           content:
@@ -204,12 +210,15 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: One resource JSON object, at most 1 MiB (1048576 bytes).
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/ResourceConfig"
       responses:
+        "413":
+          description: Resource JSON exceeds the 1 MiB request body limit.
         "200":
           description: Valid resource config
           content:

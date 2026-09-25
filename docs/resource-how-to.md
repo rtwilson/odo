@@ -29,11 +29,26 @@ Use a test account or staff account when possible. Keep the first version small,
 
 ## Basic and Advanced modes
 
-The Resources page opens in **Basic** mode, with resource cards, details, the JSON editor, validation, export, and proxy testing. Paste a resource into the JSON editor and select **Validate JSON** to use the existing server-side validator.
+The Resources page opens in **Basic** mode. Resource cards show title, ID, status, entry URL, domains, and tags, with actions to view, edit JSON, export, validate, or test. An updated timestamp is shown when supplied by the API.
 
-Choose **Advanced** to reveal the field-based Resource Config Builder. Switching modes preserves the current JSON draft and builder fields. Odo remembers only the selected mode in browser local storage; if storage is unavailable, each page load defaults to Basic.
+Choose **Advanced** to reveal the field-based Resource Config Builder for troubleshooting, development, or learning the model. Switching modes preserves the JSON draft and builder fields. Odo remembers only the mode in browser local storage; if storage is unavailable, each page load defaults to Basic.
 
-This first UI change separates the modes. File uploads, change previews, and a confirmation step before publishing are not implemented yet; saving currently uses the existing resource API directly, which validates the resource on save.
+## Import or update JSON
+
+1. Upload `.json` files or paste one resource JSON object into the editor. Uploads accept up to 20 files at a time, at most 1 MiB each. Each file must contain one object, not a resource array; split list exports into individual objects before importing.
+2. For uploaded files, select **Review JSON** beside a pending resource. Uploading alone does not save anything.
+3. Select **Validate JSON** or **Preview changes** for pasted JSON. Both use the server validator and load the existing resource by ID.
+4. Review errors, warnings, title, ID, status, URLs, and rule counts. The preview states whether the ID creates a new resource or updates an existing one. It summarizes top-level fields added, removed, or changed and array count changes. Expand the normalized JSON to see what will be saved.
+5. Check the confirmation box, then select **Save as new resource** or **Update existing resource**. Review and publish each uploaded resource individually.
+6. Use **Proxy Test** and **Diagnostics** to check the saved resource.
+
+Validation errors prevent publishing. Editing the draft clears its preview and confirmation. Before saving, Odo checks the current resource again and requires another review if it changed. This check is not an atomic concurrency guarantee: simultaneous writers can still overwrite one another. Conditional writes would require a future API change.
+
+The UI uses the existing resource validation, read, create, and update APIs. Existing scopes, browser-session CSRF checks, server validation, and create/update audit events apply. Resource create, update, and validation requests have a 1 MiB body limit, including for API clients. The preview confirmation is a UI safeguard; automation can still call the validated write APIs directly.
+
+## Resource repositories — planned
+
+The UI contains a placeholder only; it does not fetch repository URLs. A future workflow should use approved HTTPS sources, SSRF-safe outbound checks, and bounded file counts and sizes. Candidates must remain pending until server validation, preview, and explicit publication per resource. Private repository credentials and execution of repository code are outside this workflow.
 
 ## Quick add with the Advanced builder
 
@@ -46,7 +61,7 @@ To create a resource using individual fields, open the Resource Config Builder:
 5. Leave the default methods and cookie policy enabled.
 6. Select **Generate JSON**.
 7. Select **Validate JSON**.
-8. If validation passes, select **Save as Resource**.
+8. **Save as Resource** opens the same review workflow. Review the preview, check the confirmation box, and explicitly save or update.
 9. Use the integrated **Proxy Test** area in the Resources tab and **Diagnostics** to test the entry URL and a few real pages.
 
 The built-in admin UI is intentionally simple. Advanced customization, bulk updates, and automation should use the documented JSON APIs, and sites can build their own local tools on top of those endpoints.

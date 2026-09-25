@@ -29,7 +29,7 @@ The container build file is now named `Dockerfile`; `Containerfile` references b
 ### Later hardening
 
 - Strengthen the systemd sandbox (`ProtectSystem=strict`, `ProtectKernel*`, `ProtectControlGroups`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, and an appropriate `SystemCallFilter`) after compatibility testing.
-- Add request/body limits to login and JSON administration endpoints and structured error codes.
+- Resource create, update, and validation endpoints now enforce a 1 MiB request body limit. Add limits to remaining login/JSON administration endpoints and extend structured error codes.
 - Add an explicit retention policy and optional keyed pseudonymization for user, session, and IP identifiers in access/audit logs.
 - Pin container base images by digest and build from a minimal context.
 

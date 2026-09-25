@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,10 +25,8 @@ func (s *Server) listResources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
 	var resource resources.Resource
-	if err := json.NewDecoder(r.Body).Decode(&resource); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeResourceJSON(w, r, &resource) {
 		return
 	}
 	resource, err := resources.Validate(resource)
@@ -43,10 +42,8 @@ func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) validateResource(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
 	var resource resources.Resource
-	if err := json.NewDecoder(r.Body).Decode(&resource); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeResourceJSON(w, r, &resource) {
 		return
 	}
 	result := resources.ValidateDetailed(resource)
@@ -72,11 +69,9 @@ func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) putResource(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
 	id := strings.TrimSpace(r.PathValue("id"))
 	var resource resources.Resource
-	if err := json.NewDecoder(r.Body).Decode(&resource); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeResourceJSON(w, r, &resource) {
 		return
 	}
 	if strings.TrimSpace(resource.ID) != id {
@@ -248,4 +243,28 @@ func safeHeaderSummary(headers http.Header) map[string]string {
 		}
 	}
 	return summary
+}
+
+const maxResourceJSONBytes = 1 << 20
+
+// Read the entire bounded body so trailing data cannot bypass the size limit
+// or be silently ignored by decoding only the first JSON value.
+func decodeResourceJSON(w http.ResponseWriter, r *http.Request, resource *resources.Resource) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxResourceJSONBytes)
+	defer r.Body.Close()
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "resource JSON must be at most 1 MiB")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		}
+		return false
+	}
+	if err := json.Unmarshal(data, resource); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
 }

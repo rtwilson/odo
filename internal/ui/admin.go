@@ -54,6 +54,15 @@ func AdminHTML() string {
     th, td { border-bottom: 1px solid #2b3138; padding: 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { color: #c5d0db; font-weight: 600; }
     .output-title { margin-top: 22px; }
+    #section-resources .workspace { grid-template-columns: minmax(0, 1fr); }
+    #resource-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+    #section-resources .field { min-width: 0; max-width: 100%; flex: 1 1 200px; }
+    #section-resources input, #section-resources select { min-width: 0; max-width: 100%; box-sizing: border-box; }
+    #resource-preview, #resource-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #resource-preview ul { padding-left: 20px; }
+    .validation-error { color: #ffb4b4; }
+    .validation-warning { color: #f5d48a; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
     .resource-mode-button[aria-pressed="false"] { background: #1d242a; border-color: #303943; }
     #section-resources[data-resource-mode="basic"] .resource-advanced-only { display: none; }
     @media (max-width: 860px) { .layout, .workspace { grid-template-columns: 1fr; } nav { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -111,7 +120,6 @@ func AdminHTML() string {
           <div class="toolbar">
             <button id="load">Load Resources</button>
             <button id="new-resource">New Resource</button>
-            <button id="save-resource">Save Resource</button>
             <button id="delete-resource" class="danger">Delete Resource</button>
             <button id="export-filtered-json">Export Filtered JSON</button>
           </div>
@@ -130,9 +138,20 @@ func AdminHTML() string {
             <aside><div id="resource-list" class="card-list">No resources loaded.</div></aside>
             <div>
               <div id="resource-detail" class="table-wrap">Select a resource to inspect domains, rules, compatibility, and actions.</div>
+              <h3>Add or import resource</h3>
+              <label class="field">Upload resource JSON files<input id="resource-files" type="file" accept=".json,application/json" multiple></label>
+              <p class="muted">Up to 20 .json files, 1 MiB each. Uploads remain pending review; each resource must be validated and explicitly saved.</p>
+              <div id="resource-file-queue" class="card-list" aria-live="polite"></div>
               <h3>Raw JSON Editor</h3>
+              <p class="muted">Paste one resource JSON object. Validation shows the normalized JSON and changes before you publish.</p>
               <textarea id="editor" spellcheck="false" aria-label="Resource JSON editor"></textarea>
-              <div class="toolbar"><button id="validate-resource-editor">Validate JSON</button></div>
+              <div class="toolbar"><button id="validate-resource-editor">Validate JSON</button><button id="preview-resource">Preview changes</button></div>
+              <div id="resource-preview" class="resource-card" aria-live="polite">Validate and preview JSON before saving.</div>
+              <div class="toolbar">
+                <label><input id="confirm-resource-publish" type="checkbox" disabled> I reviewed the changes and want to publish this resource.</label>
+                <button id="save-resource" disabled>Save Resource</button>
+              </div>
+              <details><summary>Resource repositories — planned</summary><p>Future workflow: choose an approved HTTPS source, fetch a bounded set of JSON files with SSRF protection, review and validate each candidate, preview changes, then explicitly publish. No remote fetching or credential storage is available here.</p></details>
             </div>
           </div>
           <h3>Proxy Test</h3>
@@ -312,6 +331,229 @@ func AdminHTML() string {
       document.querySelector('#resource-mode-advanced').setAttribute('aria-pressed', String(mode === 'advanced'));
       if (remember) {
         try { localStorage.setItem('odo.resources.mode', mode); } catch (_) { /* Browsing still works when storage is blocked. */ }
+      }
+    }
+
+    const resourceJSONLimit = 1024 * 1024;
+    let resourcePreview = null;
+    let resourcePreviewVersion = 0;
+    let resourcePublishBusy = false;
+    let resourceUploadVersion = 0;
+
+    function updateResourcePublishControls() {
+      const ready = !!resourcePreview && hasScope('resources:write') && !resourcePublishBusy;
+      document.querySelector('#confirm-resource-publish').disabled = !ready;
+      document.querySelector('#save-resource').disabled = !ready || !document.querySelector('#confirm-resource-publish').checked;
+    }
+
+    function invalidateResourcePreview() {
+      resourcePreviewVersion++;
+      resourcePreview = null;
+      document.querySelector('#confirm-resource-publish').checked = false;
+      document.querySelector('#save-resource').textContent = 'Save Resource';
+      document.querySelector('#resource-preview').textContent = 'Validate and preview JSON before saving.';
+      updateResourcePublishControls();
+    }
+
+    function stableResourceJSON(value) {
+      if (Array.isArray(value)) return '[' + value.map(stableResourceJSON).join(',') + ']';
+      if (value && typeof value === 'object') {
+        return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stableResourceJSON(value[key])).join(',') + '}';
+      }
+      return JSON.stringify(value);
+    }
+
+    function resourceChangeSummary(before, after) {
+      if (!before) return ['New resource; no existing definition will be replaced.'];
+      const changes = [];
+      const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+      for (const key of Array.from(keys).sort()) {
+        const oldValue = before[key], newValue = after[key];
+        if (stableResourceJSON(oldValue) === stableResourceJSON(newValue)) continue;
+        let action = !Object.prototype.hasOwnProperty.call(before, key) ? 'Added' : !Object.prototype.hasOwnProperty.call(after, key) ? 'Removed' : 'Changed';
+        let detail = '';
+        if (Array.isArray(oldValue) || Array.isArray(newValue)) {
+          detail = ': ' + (Array.isArray(oldValue) ? oldValue.length : 0) + ' → ' + (Array.isArray(newValue) ? newValue.length : 0) + ' items';
+        }
+        changes.push(action + ' ' + key + detail);
+      }
+      return changes.length ? changes : ['No changes to the saved definition.'];
+    }
+
+    function resourcePreviewList(container, heading, values, className = '') {
+      const title = document.createElement('h4');
+      title.textContent = heading;
+      title.className = className;
+      const list = document.createElement('ul');
+      for (const value of values) {
+        const item = document.createElement('li');
+        item.textContent = String(value);
+        list.appendChild(item);
+      }
+      container.appendChild(title);
+      container.appendChild(list);
+    }
+
+    function resourceWorkflowError(err) {
+      const body = unwrap(err);
+      if (err && err.status === 400 && body && Array.isArray(body.errors)) return body.errors;
+      if (err && err.status >= 500) return ['Unable to complete the request.' + (body && body.request_id ? ' Request ID: ' + body.request_id : '')];
+      if (err && err.status === 401) return ['Sign in before managing resources.'];
+      if (err && err.status === 403) return ['Resource read/write permissions and a valid session are required.'];
+      if (err && err.status === 413) return ['Resource JSON must be at most 1 MiB.'];
+      return ['Unable to complete the request. Check your connection and try again.'];
+    }
+
+    async function existingResource(id) {
+      try { return unwrap(await api('/api/v1/resources/' + encodeURIComponent(id))); }
+      catch (err) { if (err.status === 404) return null; throw err; }
+    }
+
+    async function previewResource() {
+      invalidateResourcePreview();
+      const version = resourcePreviewVersion;
+      const draft = editor.value;
+      const panel = document.querySelector('#resource-preview');
+      if (new Blob([draft]).size > resourceJSONLimit) {
+        resourcePreviewList(panel, 'Errors', ['Resource JSON must be at most 1 MiB.'], 'validation-error');
+        return;
+      }
+      let parsed;
+      try { parsed = JSON.parse(draft); }
+      catch (_) {
+        resourcePreviewList(panel, 'Errors', ['Invalid JSON. Check quotes, commas, and brackets.'], 'validation-error');
+        return;
+      }
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+        resourcePreviewList(panel, 'Errors', ['Provide one resource JSON object, not an array or another JSON value.'], 'validation-error');
+        return;
+      }
+      panel.textContent = 'Validating with Odo…';
+      try {
+        const validation = unwrap(await api('/api/v1/resources/validate', { method: 'POST', body: draft }));
+        const candidate = validation.normalized;
+        if (new Blob([JSON.stringify(candidate)]).size > resourceJSONLimit) {
+          if (version !== resourcePreviewVersion || editor.value !== draft) return;
+          panel.textContent = '';
+          resourcePreviewList(panel, 'Errors', ['Normalized resource JSON exceeds 1 MiB. Reduce it before saving.'], 'validation-error');
+          return;
+        }
+        const before = await existingResource(candidate.id);
+        if (version !== resourcePreviewVersion || editor.value !== draft) return;
+        panel.textContent = '';
+        const heading = document.createElement('h4');
+        heading.textContent = before ? 'This will update existing resource: ' + candidate.id : 'This will create a new resource: ' + candidate.id;
+        panel.appendChild(heading);
+        resourcePreviewList(panel, 'Validation successful', [
+          'Title: ' + resourceTitle(candidate), 'ID: ' + candidate.id, 'Status: ' + candidate.status,
+          'Entry URLs: ' + ((candidate.entry_urls || candidate.sample_urls || []).join(', ') || 'none'),
+          'Domains: ' + (candidate.domains || []).length,
+          'Anonymous URL rules: ' + (candidate.anonymous_url_rules || []).length,
+          'Content rewrite rules: ' + (candidate.content_rewrite_rules || []).length,
+          'Request header rules: ' + (candidate.request_header_rules || []).length
+        ]);
+        resourcePreviewList(panel, 'Warnings', validation.warnings && validation.warnings.length ? validation.warnings : ['None.'], 'validation-warning');
+        resourcePreviewList(panel, 'Changes', resourceChangeSummary(before, candidate));
+        const raw = document.createElement('details');
+        const label = document.createElement('summary');
+        label.textContent = 'JSON that will be saved (after server normalization)';
+        const json = document.createElement('pre');
+        json.textContent = JSON.stringify(candidate, null, 2);
+        raw.appendChild(label);
+        raw.appendChild(json);
+        panel.appendChild(raw);
+        resourcePreview = { candidate, before, draft, version };
+        document.querySelector('#save-resource').textContent = before ? 'Update existing resource' : 'Save as new resource';
+        updateResourcePublishControls();
+      } catch (err) {
+        if (version !== resourcePreviewVersion || editor.value !== draft) return;
+        panel.textContent = '';
+        resourcePreviewList(panel, 'Errors', resourceWorkflowError(err), 'validation-error');
+        const body = unwrap(err);
+        if (err.status === 400 && body && Array.isArray(body.warnings) && body.warnings.length) {
+          resourcePreviewList(panel, 'Warnings', body.warnings, 'validation-warning');
+        }
+      }
+    }
+
+    async function publishResource() {
+      if (resourcePublishBusy || !resourcePreview || !document.querySelector('#confirm-resource-publish').checked || !hasScope('resources:write')) return;
+      const preview = resourcePreview;
+      if (editor.value !== preview.draft) { invalidateResourcePreview(); return; }
+      resourcePublishBusy = true;
+      updateResourcePublishControls();
+      let saved = false;
+      let resultVersion = preview.version;
+      try {
+        const current = await existingResource(preview.candidate.id);
+        if (resourcePreview !== preview || editor.value !== preview.draft) return;
+        if (stableResourceJSON(current) !== stableResourceJSON(preview.before)) {
+          await previewResource();
+          const notice = document.createElement('p');
+          notice.textContent = 'The saved resource changed since your preview. Review it again and confirm before saving.';
+          document.querySelector('#resource-preview').prepend(notice);
+          return;
+        }
+        const path = preview.before ? '/api/v1/resources/' + encodeURIComponent(preview.candidate.id) : '/api/v1/resources';
+        const result = await api(path, { method: preview.before ? 'PUT' : 'POST', body: JSON.stringify(preview.candidate) });
+        saved = true;
+        if (resourcePreview === preview && editor.value === preview.draft) {
+          setEditor(unwrap(result));
+          resultVersion = resourcePreviewVersion;
+          document.querySelector('#resource-preview').textContent = 'Saved resource: ' + preview.candidate.id;
+        }
+        await loadResources();
+      } catch (err) {
+        // Do not overwrite a newer draft's preview with a stale request result.
+        if (resourcePreviewVersion === resultVersion) {
+          invalidateResourcePreview();
+          const panel = document.querySelector('#resource-preview');
+          panel.textContent = saved ? 'The resource was saved, but the list could not be refreshed.' : 'Save was not confirmed. Preview again before retrying.';
+          resourcePreviewList(panel, 'Errors', resourceWorkflowError(err), 'validation-error');
+        }
+      } finally {
+        resourcePublishBusy = false;
+        updateResourcePublishControls();
+      }
+    }
+
+    async function queueResourceFiles(files) {
+      const version = ++resourceUploadVersion;
+      const queue = document.querySelector('#resource-file-queue');
+      queue.textContent = '';
+      if (files.length > 20) { queue.textContent = 'Select at most 20 JSON files at a time.'; return; }
+      for (const file of files) {
+        if (version !== resourceUploadVersion) return;
+        const row = document.createElement('div');
+        row.className = 'resource-card';
+        const label = document.createElement('p');
+        label.textContent = file.name;
+        row.appendChild(label);
+        queue.appendChild(row);
+        if (!file.name.toLowerCase().endsWith('.json')) { label.textContent += ' — Only .json files are accepted.'; continue; }
+        if (file.size > resourceJSONLimit) { label.textContent += ' — File exceeds 1 MiB.'; continue; }
+        let text, resource;
+        try {
+          text = await file.text();
+          if (version !== resourceUploadVersion) return;
+          resource = JSON.parse(text);
+          if (!resource || Array.isArray(resource) || typeof resource !== 'object') throw new Error('not an object');
+        } catch (_) {
+          if (version !== resourceUploadVersion) return;
+          label.textContent += ' — Could not read a resource JSON object.';
+          continue;
+        }
+        label.textContent += ' — ' + resourceTitle(resource) + ' (ID: ' + (resource.id || 'missing') + ') — Pending review';
+        const review = document.createElement('button');
+        review.textContent = 'Review JSON';
+        review.addEventListener('click', async () => {
+          // Merely selecting/uploading a file never writes a resource.
+          invalidateResourcePreview();
+          editor.value = text;
+          await previewResource();
+          document.querySelector('#resource-preview').scrollIntoView({ block: 'nearest' });
+        });
+        row.appendChild(review);
       }
     }
 
@@ -495,10 +737,11 @@ func AdminHTML() string {
         button.hidden = !hasAnyScope(button.dataset.scopes);
       }
       const canWriteResources = hasScope('resources:write');
-      for (const id of ['new-resource', 'save-resource', 'delete-resource', 'save-builder-resource', 'validate-resource-editor']) {
+      for (const id of ['new-resource', 'delete-resource', 'save-builder-resource', 'validate-resource-editor', 'preview-resource', 'resource-files']) {
         const el = document.querySelector('#' + id);
         if (el) el.disabled = !canWriteResources;
       }
+      updateResourcePublishControls();
       document.querySelector('#session-summary').textContent = currentSession.authenticated
         ? ((currentSession.display_name || currentSession.username || currentSession.name || currentSession.subject_type) + ' | roles: ' + (currentSession.roles || []).join(', ') + ' | scopes: ' + (currentSession.scopes || []).join(', '))
         : 'Not signed in';
@@ -534,6 +777,7 @@ func AdminHTML() string {
     }
 
     function setEditor(value) {
+      invalidateResourcePreview();
       editor.value = JSON.stringify(value, null, 2);
       selectedResourceId = value.id || '';
       const entry = firstEntryURL(value);
@@ -810,6 +1054,8 @@ func AdminHTML() string {
         addSummary('Entry URL', firstEntryURL(resource));
         addSummary('Main domains', (resource.domains || []).slice(0, 3).map(domain => domain.host).join(', '));
         addSummary('Tags', (resource.tags || []).join(', '));
+        addSummary('Domain count', String((resource.domains || []).length));
+        if (resource.updated_at) addSummary('Updated at', resource.updated_at);
         addSummary('Complexity', resourceComplexity(resource));
         const details = document.createElement('details');
         const detailsSummary = document.createElement('summary');
@@ -835,7 +1081,7 @@ func AdminHTML() string {
         const actions = document.createElement('div');
         actions.className = 'resource-actions';
         const select = document.createElement('button');
-        select.textContent = 'Select';
+        select.textContent = 'View';
         select.addEventListener('click', () => setEditor(resource));
         const edit = document.createElement('button');
         edit.textContent = 'Edit JSON';
@@ -854,7 +1100,7 @@ func AdminHTML() string {
         open.textContent = 'Open';
         open.addEventListener('click', () => { const entry = firstEntryURL(resource); if (entry) window.open(proxyURL(entry), '_blank', 'noopener'); });
         const exportButton = document.createElement('button');
-        exportButton.textContent = 'Export';
+        exportButton.textContent = 'Export JSON';
         exportButton.addEventListener('click', () => downloadJSON('resource-' + (resource.id || 'selected') + '.json', resource));
         const del = document.createElement('button');
         del.textContent = 'Delete';
@@ -1012,7 +1258,9 @@ func AdminHTML() string {
     }
 
     async function validateResource(resource) {
-      try { show(await api('/api/v1/resources/validate', { method: 'POST', body: JSON.stringify(resource) })); } catch (err) { show(err); }
+      setEditor(resource);
+      await previewResource();
+      document.querySelector('#resource-preview').scrollIntoView({ block: 'nearest' });
     }
 
     function downloadJSON(filename, value) {
@@ -1103,23 +1351,15 @@ func AdminHTML() string {
 
     document.querySelector('#resource-mode-basic').addEventListener('click', () => setResourceMode('basic'));
     document.querySelector('#resource-mode-advanced').addEventListener('click', () => setResourceMode('advanced'));
-    document.querySelector('#validate-resource-editor').addEventListener('click', async () => {
-      const resource = parseJSONEditor(editor, 'resource');
-      if (resource) await validateResource(resource);
-    });
+    document.querySelector('#validate-resource-editor').addEventListener('click', previewResource);
+    document.querySelector('#preview-resource').addEventListener('click', previewResource);
+    document.querySelector('#confirm-resource-publish').addEventListener('change', updateResourcePublishControls);
+    document.querySelector('#editor').addEventListener('input', invalidateResourcePreview);
+    document.querySelector('#resource-files').addEventListener('change', event => queueResourceFiles(Array.from(event.target.files)));
 
     document.querySelector('#load').addEventListener('click', async () => { try { await loadResources(); } catch (err) { show(err); } });
     document.querySelector('#new-resource').addEventListener('click', () => { setEditor(template); show('New resource template loaded.'); });
-    document.querySelector('#save-resource').addEventListener('click', async () => {
-      const resource = parseJSONEditor(editor, 'resource');
-      if (!resource) return;
-      try {
-        const result = await api('/api/v1/resources', { method: 'POST', body: JSON.stringify(resource) });
-        show(result);
-        await loadResources();
-        setEditor(unwrap(result));
-      } catch (err) { show(err); }
-    });
+    document.querySelector('#save-resource').addEventListener('click', publishResource);
     document.querySelector('#delete-resource').addEventListener('click', async () => {
       const resource = parseJSONEditor(editor, 'resource');
       if (!resource) return;
@@ -1128,6 +1368,7 @@ func AdminHTML() string {
       try {
         show(await api('/api/v1/resources/' + encodeURIComponent(resource.id), { method: 'DELETE' }));
         editor.value = '';
+        invalidateResourcePreview();
         selectedResourceId = '';
         await loadResources();
       } catch (err) { show(err); }
@@ -1142,17 +1383,11 @@ func AdminHTML() string {
       show(resource);
     });
     document.querySelector('#validate-json').addEventListener('click', async () => {
-      const resource = parseJSONEditor(editor, 'resource') || buildResourceConfig();
-      await validateResource(resource);
+      const resource = parseJSONEditor(editor, 'resource');
+      if (resource) await validateResource(resource);
     });
     document.querySelector('#save-builder-resource').addEventListener('click', async () => {
-      const resource = buildResourceConfig();
-      setEditor(resource);
-      try {
-        const result = await api('/api/v1/resources', { method: 'POST', body: JSON.stringify(resource) });
-        show(result);
-        await loadResources();
-      } catch (err) { show(err); }
+      await validateResource(buildResourceConfig());
     });
     document.querySelector('#export-json').addEventListener('click', () => {
       const resource = parseJSONEditor(editor, 'resource') || buildResourceConfig();
