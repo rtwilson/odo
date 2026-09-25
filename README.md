@@ -1,6 +1,6 @@
 # odo
 
-`odo` is an early MVP skeleton for a Go-based, self-hostable, API-first FOSS library access middleware/proxy application.
+`odo` is an early MVP for a Go-based, self-hostable, API-first FOSS library access middleware/proxy application.
 
 The important architectural rule is that management and configuration happen through versioned JSON APIs. The admin UI at `/admin` uses those same APIs with `fetch`; it is not a separate control plane.
 
@@ -15,14 +15,28 @@ The important architectural rule is that management and configuration happen thr
 - A minimal safe outbound `GET`/`HEAD` proxy for configured and allowed targets.
 - Partial HTML/CSS asset URL rewriting for basic proxied page rendering.
 - Privacy-conscious first-pass request logging that avoids logging full query strings.
+- Local users and browser sessions with `/login` and `/logout`; `/admin` for admin/staff roles and `/resources` for regular users.
+- Hashed API keys for automation/bootstrap, scoped API authorization, and CSRF protection for unsafe browser-session API methods.
 
 ## What It Is Not Yet
 
 - A full JavaScript-aware browser compatibility proxy.
-- A full admin login/session system. Management APIs use bearer API keys with hashed database storage and bootstrap/dev fallback support.
-- A SAML/Shibboleth Service Provider.
+- Complete institutional SAML/Shibboleth or OIDC login. SAML SP configuration and metadata scaffolding exist; login initiation and assertion validation are not implemented.
 - A production HA deployment.
 - A complete audit implementation.
+
+## Readiness and security
+
+Odo is not ready for production use. `APP_ENV=production` enables startup safeguards; it is not a readiness certification.
+
+- **Controlled demo:** Local or access-restricted evaluation using synthetic data and selected resource flows.
+- **Design-partner testing:** Limited, supervised testing with named partners, restricted access, and explicit checks of each resource and workflow. Compatibility and operational suitability remain to be validated.
+- **Internet-facing pilot:** Before exposure, complete login throttling, sanitized internal errors, application security headers, supply-chain CI, security-event coverage, and HTTP server timeouts/graceful shutdown. TLS and startup checks alone are insufficient.
+- **Production use:** Not currently supported as a readiness claim; requires further security, operational, and compatibility validation beyond pilot hardening.
+
+The [OWASP review](docs/security/owasp-top10-2025-review.md) records no remaining original MVP implementation blockers. Formerly tracked databases contained synthetic/dev data only; no real-data credential rotation or history rewrite was required or performed. Remaining before-pilot work is still open.
+
+Vendor and library-database compatibility must be tested per resource; sample configurations do not establish broad support. SQLite is the implemented storage backend; PostgreSQL/Redis support is future work.
 
 ## AI assistance disclosure
 
@@ -34,7 +48,7 @@ The project maintainer and contributors remain responsible for what is committed
 
 ## Installation
 
-- Local development: run `go run ./cmd/odo` and open `http://127.0.0.1:8080/admin`.
+- Local development: create a local admin using the [bootstrap instructions](#local-users-and-browser-sessions), then sign in at `http://127.0.0.1:8080/login`.
 - Linux VM install: build a binary, install the systemd unit, keep config in `/etc/odo`, data in `/var/lib/odo`, and logs in `/var/log/odo`. See [Installing Odo on a Linux VM](docs/install-linux-vm.md).
 - Container install: build the image, mount persistent data/config volumes, and put a reverse proxy in front. See [Deploying Odo with a Container](docs/deploy-container.md).
 
@@ -58,15 +72,11 @@ For stored API keys, set a hash secret:
 APP_ADMIN_API_KEY=devsecret APP_KEY_HASH_SECRET='change-me-long-random-secret' go run ./cmd/odo
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8080/admin
-```
+For browser access, first [create a local admin](#local-users-and-browser-sessions), then open `/login` and sign in before opening `/admin`.
 
 ## Deployment
 
-For local development, use `go run ./cmd/odo`. For a Linux VM or container behind a real FQDN, set `APP_PUBLIC_URL`, use a persistent data volume for SQLite, and keep config under a persistent config directory. Production deployments need real secrets for `APP_ADMIN_API_KEY` and `APP_KEY_HASH_SECRET`; do not expose a dev instance or `devsecret` publicly.
+For local development, use `go run ./cmd/odo`. For a Linux VM or container behind a real FQDN, set `APP_PUBLIC_URL`, use a persistent data volume for SQLite, and keep config under a persistent config directory. Server deployments need a strong `APP_KEY_HASH_SECRET` and an admin bootstrap path (a strong bootstrap API key, an active stored admin key, or strong local-admin bootstrap settings); do not expose a dev instance or `devsecret` publicly.
 
 See [Installing Odo on a Linux VM](docs/install-linux-vm.md) for binary/systemd installs, or [Deploying Odo with a Container](docs/deploy-container.md) for Podman, Quadlet, persistent volume, and reverse proxy examples.
 
@@ -86,7 +96,7 @@ Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for 
 
 The built-in admin UI is intentionally minimal: plain, readable, and focused on common sysadmin and library-staff tasks. All key operations use the documented `/api/v1` JSON endpoints, so sites can build their own custom UI, scripts, or automation against the same API instead of customizing the bundled page.
 
-Enter an `APP_ADMIN_API_KEY` bootstrap token or stored API key in the global Admin API Key field for protected actions. The key is kept only in the page runtime and is not stored in browser storage. Resources can still be created, edited, and deleted using a raw JSON editor.
+Sign in at `/login` with a local admin/staff account. The global Admin API Key field accepts a bootstrap or stored API key as an optional override for protected actions. The key is kept only in the page runtime and is not stored in browser storage. Resources can still be created, edited, and deleted using a raw JSON editor.
 
 API key management is available in the API Keys section. Newly created or rotated tokens are shown once with a copy warning and are not persisted by the UI. The UI uses the same documented `/api/v1` endpoints available to scripts and integrations; it is not a separate control plane.
 
@@ -126,7 +136,7 @@ Environment variables:
 - `APP_DATA_DIR`, default `./data` in development and `/var/lib/odo` in production
 - `APP_DB_PATH`, default `$APP_DATA_DIR/odo.db`; production preference is `/var/lib/odo/odo.db`
 - `APP_CONFIG_DIR`, default `./config` in development and `/etc/odo` in production
-- `APP_PUBLIC_URL`, optional public base URL used for generated SAML SP metadata defaults
+- `APP_PUBLIC_URL`, public base URL used for SAML SP metadata defaults and cookie security; an absolute HTTPS URL is required in production mode
 - `APP_ADMIN_API_KEY`, optional bootstrap/dev fallback for creating and managing stored API keys
 - `APP_BOOTSTRAP_ADMIN_USERNAME`, optional username used to create the first local admin user when no users exist
 - `APP_BOOTSTRAP_ADMIN_PASSWORD`, optional password used to create the first local admin user when no users exist
@@ -135,7 +145,7 @@ Environment variables:
 - `APP_SESSION_PERSIST_ON_RESTART`, default `true` in production and `false` in development; when `false`, existing browser sessions are rejected after Odo restarts
 - `APP_SESSION_TTL_MINUTES`, default `480`; absolute browser session lifetime
 - `APP_SESSION_IDLE_TIMEOUT_MINUTES`, default `60`; idle browser session timeout based on throttled `last_seen_at` updates
-- `APP_KEY_HASH_SECRET`, recommended secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
+- `APP_KEY_HASH_SECRET`, required in production mode; secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
@@ -187,13 +197,15 @@ curl http://127.0.0.1:8080/api/v1/config/revisions/1 \
 List resources:
 
 ```sh
-curl -s http://127.0.0.1:8080/api/v1/resources
+curl -s http://127.0.0.1:8080/api/v1/resources \
+  -H 'Authorization: Bearer devsecret'
 ```
 
 Get one resource:
 
 ```sh
-curl http://127.0.0.1:8080/api/v1/resources/jstor | jq
+curl http://127.0.0.1:8080/api/v1/resources/jstor \
+  -H 'Authorization: Bearer devsecret' | jq
 ```
 
 Delete a resource:
@@ -207,6 +219,7 @@ Test a URL:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/api/v1/rules/test-url \
+  -H 'Authorization: Bearer devsecret' \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://www.jstor.org/stable/example"}'
 ```
@@ -285,7 +298,7 @@ APP_ADMIN_API_KEY=devsecret \
 go run ./cmd/odo
 ```
 
-Open `http://127.0.0.1:8080/login` to sign in. Signed-in users can open `http://127.0.0.1:8080/resources` for a simple patron resource portal. Browser sessions use an HttpOnly `odo_session` cookie and proxy browsing also keeps upstream/vendor cookies in a separate server-side jar.
+Open `http://127.0.0.1:8080/login` to sign in; `/logout` revokes the session and clears session/CSRF cookies. Signed-in users can open `http://127.0.0.1:8080/resources` for a simple patron resource portal. Browser sessions use an HttpOnly `odo_session` cookie and proxy browsing also keeps upstream/vendor cookies in a separate server-side jar.
 
 In production, browser sessions can persist across Odo restarts because session rows live in SQLite until they expire or are revoked. In development, `APP_SESSION_PERSIST_ON_RESTART` defaults to `false`, so an existing browser cookie is rejected after a restart without deleting the session row. Set `APP_SESSION_PERSIST_ON_RESTART=true` when you want restart-persistent sessions during local testing. Use `APP_SESSION_TTL_MINUTES` and `APP_SESSION_IDLE_TIMEOUT_MINUTES` to control absolute and idle session limits. `last_seen_at` updates are throttled so normal browsing does not write the session row on every proxied asset request.
 
@@ -346,7 +359,7 @@ Placeholder routes are also present for future integration:
 - `GET /auth/saml/login`
 - `POST /auth/saml/acs`
 
-A sample provider config lives at `config/auth/saml/campus-shibboleth.json`. The current scaffold omits signing certificates and does not validate SAML assertions yet.
+A sample provider config lives at `config/auth/saml/campus-shibboleth.json`. The current scaffold omits signing certificates and does not validate SAML assertions yet. Login and ACS routes return HTTP 501. OIDC login is not implemented.
 
 ## Admin Troubleshooting Tools
 
@@ -488,7 +501,7 @@ podman run --rm -p 8080:8080 \
 
 ## Next Steps
 
-- Hardened API-key storage and rotation.
+- Before-pilot hardening listed in the [OWASP review](docs/security/owasp-top10-2025-review.md).
 - SAML SP support as a first-class module.
 - Signed proxy links.
 - Deeper JavaScript-aware proxy rewriting.

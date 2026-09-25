@@ -6,7 +6,7 @@ Odo currently uses path-based proxy URLs by default:
 /odo/https/www.jstor.org/stable/123
 ```
 
-Path mode is the MVP default because it is easy to run behind ordinary reverse proxies, does not require wildcard DNS, and works well for many resources while Odo is still building out compatibility features.
+Path mode is the MVP default because it is easy to run behind ordinary reverse proxies, does not require wildcard DNS, and supports initial resource testing while compatibility features are still being developed. Validate each vendor/resource workflow; broad compatibility is not established.
 
 ## Why virtual-host mode may be needed
 

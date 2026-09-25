@@ -1,6 +1,8 @@
 # Deploying Odo with a Container
 
-This guide shows a small production-oriented deployment using Podman or Docker-compatible container images. It keeps TLS and public routing in a reverse proxy such as Caddy, nginx, or Apache.
+This guide shows a small server deployment for controlled demos and restricted design-partner testing using Podman or Docker-compatible container images. It keeps TLS and public routing in a reverse proxy such as Caddy, nginx, or Apache.
+
+This guide does not establish production readiness. Before an Internet-facing pilot, complete the [OWASP before-pilot hardening](security/owasp-top10-2025-review.md#should-fix-before-internet-facing-pilot). See [readiness stages](../README.md#readiness-and-security); `APP_ENV=production` enables safeguards, not a readiness certification.
 
 ## Build an image with Podman
 
@@ -15,7 +17,7 @@ The image listens on port 8080, runs as a non-root user, stores data under `/var
 ## Run locally with Podman
 
 ```sh
-podman run --rm -p 8080:8080 \
+podman run --rm -p 127.0.0.1:8080:8080 \
   -e APP_ENV=development \
   -e APP_ADMIN_API_KEY=devsecret \
   -e APP_KEY_HASH_SECRET=local-secret \
@@ -28,11 +30,7 @@ Test health:
 curl -s http://127.0.0.1:8080/api/v1/health
 ```
 
-Then open:
-
-```text
-http://127.0.0.1:8080/admin
-```
+For browser access, create a local admin through `POST /api/v1/users` using the bootstrap key, as shown below (use the local HTTP URL and `devsecret` for this development instance). Sign in at `http://127.0.0.1:8080/login`, then open `/admin`.
 
 Do not expose a development instance publicly.
 
@@ -57,13 +55,13 @@ podman run -d --name odo \
   odo:dev
 ```
 
-Preferred production paths:
+Preferred server paths:
 
 - `APP_DATA_DIR=/var/lib/odo`
 - `APP_DB_PATH=/var/lib/odo/odo.db`
 - `APP_CONFIG_DIR=/etc/odo`
 
-`APP_DB_PATH` is still supported for compatibility, but production deployments should put the database on persistent storage.
+`APP_DB_PATH` is still supported for compatibility, but server deployments should put the database on persistent storage.
 
 ## Run with systemd and Quadlet
 
@@ -145,7 +143,7 @@ server {
 
 These reverse proxy snippets are starting points. Add your normal TLS, logging, header, firewall, and monitoring policy.
 
-## Production checks
+## Production-mode startup checks
 
 Use production mode on a server:
 
@@ -164,23 +162,38 @@ When `APP_ENV=production`, Odo refuses to start if important settings are missin
 
 ## Create the first API key
 
-If you start with `APP_ADMIN_API_KEY=change-me`, use it only as a bootstrap token. Create a stored API key, then rotate away from the bootstrap value:
+Set `APP_ADMIN_API_KEY` to a strong random bootstrap secret; production mode rejects placeholders such as `change-me`. Substitute that secret in the example below. Create a stored API key, then rotate away from the bootstrap value:
 
 ```sh
 curl -X POST https://access.example.edu/api/v1/api-keys \
-  -H 'Authorization: Bearer change-me' \
+  -H 'Authorization: Bearer <bootstrap-secret>' \
   -H 'Content-Type: application/json' \
   -d '{"name":"Initial admin","scopes":["admin"]}'
 ```
 
 The returned token is shown once.
 
-## Open the admin UI
+## Create a local admin and sign in
 
-Open:
+Create a local user using the stored admin API key:
+
+```sh
+curl -X POST https://access.example.edu/api/v1/users \
+  -H 'Authorization: Bearer <stored-admin-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<long-random-password>","roles":["super_admin"],"status":"active"}'
+```
+
+Replace the token and password placeholders before running. Alternatively, set `APP_BOOTSTRAP_ADMIN_USERNAME` and `APP_BOOTSTRAP_ADMIN_PASSWORD` before first startup on an empty user database.
+
+Sign in at `/login` with this local account, then open:
 
 ```text
 https://access.example.edu/admin
 ```
 
-Enter an admin API key in the page field for protected actions. The key is kept only in the page runtime and is not stored in browser storage.
+Admin/staff users access `/admin` through browser sessions; regular users use `/resources`. `/logout` revokes the session and clears session/CSRF cookies. API keys remain available for automation/bootstrap and as an optional admin UI override kept only in page memory.
+
+Backend scopes enforce API authorization. Unsafe browser-session API methods require `X-Odo-CSRF`, which the admin UI sends; bearer API-key requests do not require it.
+
+SAML SP provider configuration and metadata exist, but SAML login initiation and ACS assertion validation return HTTP 501. Institutional SAML login and OIDC login are not implemented.

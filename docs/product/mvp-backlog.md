@@ -2,6 +2,8 @@
 
 This backlog is based only on the current repository state. Items marked **Uncertain** need confirmation through manual testing, stakeholder review, or production-like usage.
 
+The original MVP security implementation blockers are fixed; this does not establish production readiness. Formerly tracked databases were synthetic/dev data only, so no real-data credential rotation or history rewrite was required. See the [OWASP review](../security/owasp-top10-2025-review.md) and [readiness stages](../../README.md#readiness-and-security).
+
 ## Current Implemented Features
 
 - Single Go application with local HTTP service, embedded OpenAPI spec, and SQLite persistence.
@@ -13,7 +15,7 @@ This backlog is based only on the current repository state. Items marked **Uncer
 - Resource Config Builder in the admin UI for practical resource creation, validation, saving, export, and proxy testing.
 - Large-resource-collection admin UI support with readable resource rows, search, filters, sorting, details, raw JSON editing, selected export, and filtered export.
 - API key management with stored hashed API keys, token rotation, revocation, expiration handling, scopes, and one-time token display.
-- Local users, roles, browser login, browser sessions, `/resources` patron portal, logout, password hashing, status/lock/disable handling, session revocation, and CSRF protection for unsafe browser-session admin API calls.
+- Local users, roles, `/login`, browser sessions, `/resources` patron portal, `/logout`, password hashing, status/lock/disable handling, session revocation, and CSRF protection for unsafe browser-session admin API calls.
 - Configurable session behavior: TTL, idle timeout, restart persistence behavior, secure cookie decisions, and throttled `last_seen_at` updates.
 - Proxy login enforcement for `/odo` path/query proxy requests, including resource entry URLs, with explicit `anonymous_url_rule` as the only unauthenticated proxy bypass.
 - Safe `next` handling for login return flows, including return to proxied resources and `/admin` only for admin-like users.
@@ -43,20 +45,21 @@ This backlog is based only on the current repository state. Items marked **Uncer
 - **Session cleanup:** Expired/revoked sessions are rejected and proxy cookie jars have idle cleanup, but there is no obvious persistent-session cleanup scheduler. The load-test docs call cleanup candidates future maintenance work.
 - **Audit implementation:** Many audit events exist, but README still says this is not a complete audit implementation.
 - **HA/storage:** SQLite is used for the MVP. README and load-test docs identify Postgres/Redis as possible future needs for larger/HA deployments.
-- **OpenAPI/docs alignment:** OpenAPI is extensive, but some README wording appears stale or contradictory. Example: early README says this is not a full admin login/session system, while later sections and tests show local admin/user sessions now exist.
 
 ## Known Bugs
 
-- **Documentation drift:** README `What It Is Not Yet` says Odo is not a full admin login/session system, but current code and later docs include local admin login/session behavior. This can confuse adopters.
 - **SAML routes are visible but not functional:** They intentionally return not implemented, but users may misread the Auth/SAML UI as production-ready unless docs/UI wording remains clear.
 - **Virtual-host mode accepts configuration only as fallback/warning:** `APP_PROXY_URL_MODE=virtual_host` falls back to path mode. This is documented, but operators may still assume the mode works if they miss the warning.
 - **Runtime cleanup gap:** Expired/revoked login sessions can remain in SQLite. They are ignored/rejected, but accumulation may become operational noise. **Uncertain:** actual growth rate has not been measured.
 - **Proxy compatibility is inherently incomplete:** Complex vendor SPAs may still fail because full JS rewriting, CSP rewriting, WebSockets, and virtual-host origin emulation are not implemented.
 
-## P0 Issues
+## Before Internet-Facing Pilot
+
+- Add login throttling, sanitized internal errors, application security headers, supply-chain CI, complete security-event coverage, and HTTP server timeouts/graceful shutdown. See the [OWASP findings](../security/owasp-top10-2025-review.md#should-fix-before-internet-facing-pilot).
+
+## P0 Follow-up Checks
 
 - Keep runtime SQLite files out of commits and release artifacts; verify `.gitignore`/workflow protects `data/*.db`.
-- Fix README product-positioning drift around admin login/session support.
 - Verify proxy login enforcement manually against a real configured entry URL and query-mode proxy URL after the latest changes.
 - Add an automated guard or repo hygiene rule to prevent committing runtime SQLite DB files from `data/`.
 - Confirm production safety defaults: `APP_PROXY_REQUIRE_LOGIN`, `APP_PUBLIC_URL`, API key secret handling, local HTTP load-test allowance, and virtual-host fallback warnings.
@@ -90,7 +93,7 @@ This backlog is based only on the current repository state. Items marked **Uncer
 ## Suggested Next 10 Issues In Order
 
 1. **Repo hygiene and release snapshot:** Verify runtime DB files are ignored, run `go test ./...`, and commit a clean baseline.
-2. **Fix README session wording:** Update `What It Is Not Yet` and any stale text so docs match implemented local admin/user sessions.
+2. **Before-pilot security hardening:** Address the remaining OWASP findings listed above before Internet-facing exposure.
 3. **Manual proxy login verification:** Follow the documented manual flow for `/odo/https/www.lib.umn.edu/`, a deeper path, and `/odo?url=...`; record results and any regression.
 4. **Add session cleanup maintenance:** Implement or document a simple cleanup command/job for expired/revoked sessions and stale cookie-jar candidates.
 5. **Production readiness checklist:** Create a checklist covering `APP_PUBLIC_URL`, secrets, proxy login, access logs, data/config paths, reverse proxy headers, backups, and SAML status.

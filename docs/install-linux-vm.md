@@ -4,7 +4,9 @@
 
 This guide is for traditional Linux VM installs using a compiled `odo` binary, `/etc` configuration, `/var/lib` data, `/var/log` logs, and systemd. It is intended for sysadmins and library systems staff who are comfortable with SSH, systemd, reverse proxies, and command-line administration.
 
-The standard production layout is:
+This is an installation guide for controlled demos and restricted design-partner testing, not a production-readiness claim. Before an Internet-facing pilot, complete the [OWASP before-pilot hardening](security/owasp-top10-2025-review.md#should-fix-before-internet-facing-pilot). See [readiness stages](../README.md#readiness-and-security). `APP_ENV=production` enables safeguards but does not establish readiness.
+
+The standard server layout is:
 
 - Binary: `/usr/local/bin/odo`
 - Environment file: `/etc/odo/odo.env`
@@ -427,7 +429,7 @@ Do not commit `/etc/odo/odo.env` or any real API key to Git.
 
 A browser login requires a local user.
 
-If your Odo build includes the user-management API, create the first admin user with a stored admin API key or the bootstrap API key.
+Create the first admin user with a stored admin API key or the bootstrap API key.
 
 Example using a stored admin API key:
 
@@ -439,32 +441,12 @@ curl -X POST https://access.example.edu/api/v1/users \
     "username": "admin",
     "display_name": "Odo Admin",
     "password": "replace-with-a-long-random-password",
-    "roles": ["admin"],
+    "roles": ["super_admin"],
     "status": "active"
   }'
 ```
 
-If your build uses `super_admin` instead of `admin`, use:
-
-```json
-"roles": ["super_admin"]
-```
-
-Check the current API index while authenticated to see whether the user endpoint exists:
-
-```bash
-curl https://access.example.edu/api/v1 \
-  -H 'Authorization: Bearer odo_live_...'
-```
-
-If `/api/v1/users` is not listed or returns `404`, this build does not expose user creation through the API. In that case, use the project’s documented first-user bootstrap mechanism, if available.
-
-If no first-user mechanism exists yet, that is an MVP blocker. A Linux VM install needs one of the following:
-
-- `POST /api/v1/users` protected by the bootstrap/stored admin API key
-- a CLI command such as `odo users create-admin`
-- a one-time setup token flow
-- documented environment-based first-admin seeding
+`super_admin` is the full-admin role; legacy `admin` is also accepted. Alternatively, on an empty user database, set `APP_BOOTSTRAP_ADMIN_USERNAME` and `APP_BOOTSTRAP_ADMIN_PASSWORD` (optionally `APP_BOOTSTRAP_ADMIN_EMAIL`) before startup to seed the first admin.
 
 Do not assume that an API key can log in through the browser. `/login` requires a local user account.
 
@@ -484,11 +466,11 @@ Then open:
 https://access.example.edu/admin
 ```
 
-The admin UI should use the logged-in browser session.
+The admin UI uses the logged-in browser session. Admin/staff roles can access `/admin`; regular users use `/resources`. Backend scopes enforce API permissions. Unsafe browser-session API methods require `X-Odo-CSRF`, which the admin UI sends; bearer API-key requests do not require it.
 
-If the admin UI still offers an API key input, you may paste a stored admin API key there for API-key-based administration. Normal browser administration should use the local admin login once users are configured.
+The optional Admin API Key field lets you paste a stored admin API key there for API-key-based administration. Normal browser administration should use the local admin login once users are configured.
 
-Logout should be available at:
+Logout revokes the browser session, clears session/CSRF cookies, and redirects to `/login`:
 
 ```text
 https://access.example.edu/logout
@@ -496,22 +478,22 @@ https://access.example.edu/logout
 
 ## API Authentication Behavior
 
-The API should be default-deny except for explicitly public endpoints.
+The API is default-deny except for explicitly public endpoints.
 
-Expected public endpoints:
+Public API endpoints:
 
 ```text
 GET /api/v1
 GET /api/v1/health
 ```
 
-Possibly public, if implemented:
+The OpenAPI schema is also public:
 
 ```text
 GET /openapi.yaml
 ```
 
-Protected endpoints should require a session or bearer token, for example:
+Protected endpoints require a session or bearer token with the required scopes, for example:
 
 ```text
 /api/v1/resources
@@ -524,7 +506,7 @@ Protected endpoints should require a session or bearer token, for example:
 /api/v1/auth/saml/providers
 ```
 
-Unauthenticated API requests should return JSON `401`, not login HTML.
+Unauthenticated protected API requests return JSON `401`; insufficient scopes return JSON `403`.
 
 Browser pages may redirect to login:
 
@@ -533,6 +515,8 @@ Browser pages may redirect to login:
 /resources
 /odo/...
 ```
+
+SAML provider configuration and SP metadata exist, but login initiation and ACS assertion validation return HTTP 501. Institutional SAML login and OIDC login are not implemented.
 
 ## Add First Resource
 
@@ -600,7 +584,7 @@ sudo systemctl status odo
 
 Database migrations run automatically on startup if implemented by the current Odo build.
 
-Before upgrading production systems, back up:
+Before upgrading server installations, back up:
 
 ```text
 /etc/odo
@@ -722,13 +706,13 @@ To log in through the browser, a local user must exist.
 Use the bootstrap API key from `/etc/odo/odo.env` to create either:
 
 - a stored admin API key
-- a local admin user, if the user API or first-user mechanism exists
+- a local admin user through `POST /api/v1/users`
 
 The bootstrap key is used in an HTTP `Authorization: Bearer ...` header. It is not typed into the login form.
 
 ### `/api/v1/users` does not exist
 
-If `/api/v1/users` does not exist, the current build may not have API user creation implemented.
+The current code implements `/api/v1/users`. If it returns `404`, check the installed version and reverse-proxy routing.
 
 Check the API index while authenticated:
 
@@ -737,7 +721,7 @@ curl https://access.example.edu/api/v1 \
   -H 'Authorization: Bearer odo_live_...'
 ```
 
-If there is no user-management endpoint, use the project’s current first-user bootstrap mechanism. If none exists, add one before treating the Linux VM install path as complete.
+Use a key with `users:write` or `admin` scope. API discovery lists only endpoints available to the authenticated caller.
 
 ### `/logout` does not work
 
@@ -750,10 +734,10 @@ https://access.example.edu/logout
 Expected behavior:
 
 - clears the session cookie
-- revokes or deletes the server-side session
-- redirects to `/login` or `/login?logged_out=1`
+- revokes the server-side session
+- redirects to `/login`
 
-If `/logout` is missing, update Odo before using the install in a real deployment.
+Both GET and POST `/logout` are implemented. If the route is missing, check the installed version and reverse-proxy routing.
 
 ### Protected API endpoints are callable without authentication
 

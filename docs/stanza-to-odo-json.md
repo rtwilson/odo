@@ -668,7 +668,7 @@ Example:
 }
 ```
 
-This makes it clear whether the JSON is production-ready or a draft.
+This records whether the resource configuration is a draft or has been locally validated; it does not establish Odo production readiness.
 
 Recommended `translation_status` values:
 

@@ -10,22 +10,25 @@
 - **Overall risk after remediation:** **Medium.** The proxy now connects only to IPs validated at dial time, production configuration fails closed, runtime databases are no longer tracked, and production Odo-owned security/session cookies are consistently `Secure`. The repository owner confirmed that the removed databases contained synthetic/development data only. The remaining medium findings should be addressed before pilot where noted.
 - **Remediation review:** `scripts/install-linux.sh` and `scripts/uninstall-linux.sh` had pre-existing uncommitted user changes and were not modified.
 
+This is a remediation record, not a production-readiness certification. See the [readiness stages](../../README.md#readiness-and-security) for controlled demos, design-partner testing, Internet-facing pilots, and production use. Evidence under fixed findings describes the original review state; fix and resolution entries describe remediation.
+
 ### MVP blockers
 
 **No MVP blockers remain.** The three implementation blockers are remediated, and the repository owner confirmed that the formerly tracked SQLite databases contained synthetic/development data only. No credential rotation or history rewrite was required for real user data; neither action was performed.
 
-### Should fix before pilot
+### Should fix before Internet-facing pilot
 
 - Add login throttling and operational alerting (ODO-2025-004).
 - Stop returning internal error text to clients; log it with a request ID (ODO-2025-006).
 - Add application-page security headers and document proxy-response header policy (ODO-2025-007).
 - Add dependency scanning, update automation, immutable container inputs, and release provenance (ODO-2025-008).
 - Complete security-event coverage without storing patron research trails (ODO-2025-009).
+- Add HTTP server read/write/idle timeouts and graceful shutdown (ODO-2025-010).
 
 ### Later hardening
 
 - Strengthen the systemd sandbox (`ProtectSystem=strict`, `ProtectKernel*`, `ProtectControlGroups`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, and an appropriate `SystemCallFilter`) after compatibility testing.
-- Add request/body limits to login and JSON administration endpoints, graceful shutdown, server read/write/idle timeouts, and structured error codes.
+- Add request/body limits to login and JSON administration endpoints and structured error codes.
 - Add an explicit retention policy and optional keyed pseudonymization for user, session, and IP identifiers in access/audit logs.
 - Pin container base images by digest and build from a minimal context.
 
@@ -101,7 +104,7 @@ Tests to add: enumerate every registered `/api/v1` route as anonymous, viewer, e
 
 - **Severity:** High
 - **Status:** Fixed
-- **Evidence:** Git tracks `data/app.db` and `data/odo.db`. Both are SQLite databases; inspection found user names/IDs, audit events, session IDs and hashes, user-agent/IP hashes, and authentication table schemas. `.gitignore` does not ignore database files. Passwords use bcrypt and API/session tokens are hashed, so plaintext credential storage was not observed, but committed password hashes permit offline guessing and the data represents an avoidable disclosure.
+- **Evidence at review time:** Git tracked `data/app.db` and `data/odo.db`. Both are SQLite databases; inspection found user names/IDs, audit events, session IDs and hashes, user-agent/IP hashes, and authentication table schemas. `.gitignore` did not ignore database files. Passwords use bcrypt and API/session tokens are hashed, so plaintext credential storage was not observed, but committed password hashes permit offline guessing and the data represents an avoidable disclosure.
 - **Affected files:** `data/app.db`, `data/odo.db`, `.gitignore`.
 - **Risk:** a public clone exposes identity/activity metadata and password verifiers. If these are not purely synthetic, users and credentials are compromised regardless of later deletion from the tip.
 - **Recommended fix:** determine provenance immediately; revoke sessions/API keys and reset passwords if any data is real; remove DB files from the current tree and, after impact review, repository history; add `data/*.db`, SQLite WAL/SHM files, and local environment files to ignore rules; distribute migrations or deterministic synthetic fixtures instead.
