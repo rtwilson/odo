@@ -12,6 +12,8 @@
 
 This is a remediation record, not a production-readiness certification. See the [readiness stages](../../README.md#readiness-and-security) for controlled demos, design-partner testing, Internet-facing pilots, and production use. Evidence under fixed findings describes the original review state; fix and resolution entries describe remediation.
 
+The container build file is now named `Dockerfile`; `Containerfile` references below retain the filename used at review time.
+
 ### MVP blockers
 
 **No MVP blockers remain.** The three implementation blockers are remediated, and the repository owner confirmed that the formerly tracked SQLite databases contained synthetic/development data only. No credential rotation or history rewrite was required for real user data; neither action was performed.

@@ -653,7 +653,7 @@ func TestLoadtestDocsAndFakeVendorResourceExist(t *testing.T) {
 func TestDeploymentPackagingAndDocsExist(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, path := range []string{
-		"Containerfile",
+		"Dockerfile",
 		filepath.Join("docs", "deploy-container.md"),
 		filepath.Join("docs", "install-linux-vm.md"),
 		filepath.Join("deploy", "odo.env.example"),
@@ -669,13 +669,13 @@ func TestDeploymentPackagingAndDocsExist(t *testing.T) {
 		}
 	}
 
-	containerfile, err := os.ReadFile(filepath.Join(root, "Containerfile"))
+	dockerfile, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
 	if err != nil {
-		t.Fatalf("read Containerfile: %v", err)
+		t.Fatalf("read Dockerfile: %v", err)
 	}
 	for _, want := range []string{"FROM golang:1.23-alpine AS build", "USER odo", "APP_DATA_DIR=/var/lib/odo", "APP_CONFIG_DIR=/etc/odo", "HEALTHCHECK", "EXPOSE 8080"} {
-		if !strings.Contains(string(containerfile), want) {
-			t.Fatalf("expected Containerfile to contain %q", want)
+		if !strings.Contains(string(dockerfile), want) {
+			t.Fatalf("expected Dockerfile to contain %q", want)
 		}
 	}
 

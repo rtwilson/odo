@@ -30,7 +30,7 @@ The original MVP security implementation blockers are fixed; this does not estab
 - Recent access log, proxy diagnostic, and missed rewrite diagnostic APIs and admin UI views.
 - Protected runtime metrics endpoint at `/api/v1/system/runtime`.
 - SAML provider configuration CRUD APIs, admin UI controls, SP metadata generation, and placeholder SAML login/ACS routes returning not implemented.
-- Linux VM installation docs, systemd unit/env examples, container deployment docs, Containerfile, Podman/Quadlet examples, install/uninstall scripts, and Makefile.
+- Linux VM installation docs, systemd unit/env examples, container deployment docs, Dockerfile, Podman/Quadlet examples, install/uninstall scripts, and Makefile.
 - Local load-testing setup with fake vendor server, fake resource config, k6 smoke/idle/active/spike/soak scripts, and load-test README.
 - Sample resource configs for JSTOR, JSTOR/ALUKA, Economist, and UMN Libraries.
 
