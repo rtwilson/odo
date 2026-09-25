@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"example.org/odo/internal/httperror"
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 )
@@ -15,7 +17,7 @@ import (
 func (s *Server) listResources(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListResources()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resources": items})
@@ -34,7 +36,7 @@ func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.UpsertResource(resource); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resource)
@@ -59,7 +61,7 @@ func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	resource, found, err := s.store.GetResource(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -87,7 +89,7 @@ func (s *Server) putResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.UpsertResource(resource); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resource)
@@ -97,7 +99,7 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	deleted, err := s.store.DeleteResource(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !deleted {
@@ -119,7 +121,12 @@ func (s *Server) testURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.testRawURL(req.URL))
+	result := s.testRawURL(req.URL)
+	if result.InternalError != nil {
+		s.internalError(w, r, result.InternalError)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) testRawURL(rawURL string) resources.TestResult {
@@ -128,7 +135,7 @@ func (s *Server) testRawURL(rawURL string) resources.TestResult {
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
-		return resources.TestResult{Allowed: false, Reason: "resource lookup failed"}
+		return resources.TestResult{Allowed: false, Reason: "resource lookup failed", InternalError: err}
 	}
 	return resources.TestURL(rawURL, items)
 }
@@ -144,6 +151,10 @@ func (s *Server) proxyTestFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target, result := s.proxyTestTarget(r.Context(), req.URL)
+	if result.InternalError != nil {
+		s.internalError(w, r, result.InternalError)
+		return
+	}
 	if !result.Allowed {
 		response := map[string]any{
 			"allowed": false,
@@ -159,16 +170,13 @@ func (s *Server) proxyTestFetch(w http.ResponseWriter, r *http.Request) {
 
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		httperror.Write(w, r, s.logger, http.StatusBadGateway, fmt.Errorf("create upstream request: %w", err))
 		return
 	}
 	client := noRedirectClient(s.httpClient)
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error":  "upstream fetch failed",
-			"reason": proxySafeFetchReason(err),
-		})
+		httperror.Write(w, r, s.logger, http.StatusBadGateway, fmt.Errorf("fetch upstream: %w", err))
 		return
 	}
 	defer resp.Body.Close()
@@ -176,10 +184,7 @@ func (s *Server) proxyTestFetch(w http.ResponseWriter, r *http.Request) {
 	const previewLimit = 16 * 1024
 	previewBytes, err := io.ReadAll(io.LimitReader(resp.Body, previewLimit+1))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error":  "upstream fetch failed",
-			"reason": "response read failed",
-		})
+		httperror.Write(w, r, s.logger, http.StatusBadGateway, fmt.Errorf("read upstream response: %w", err))
 		return
 	}
 	truncated := len(previewBytes) > previewLimit
@@ -206,7 +211,7 @@ func (s *Server) proxyTestTarget(ctx context.Context, rawURL string) (*url.URL, 
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
-		return nil, resources.TestResult{Allowed: false, Host: target.Hostname(), Reason: "resource lookup failed"}
+		return nil, resources.TestResult{Allowed: false, Host: target.Hostname(), Reason: "resource lookup failed", InternalError: err}
 	}
 	result := resources.TestURL(target.String(), items)
 	if result.Host == "" {
@@ -243,14 +248,4 @@ func safeHeaderSummary(headers http.Header) map[string]string {
 		}
 	}
 	return summary
-}
-
-func proxySafeFetchReason(err error) string {
-	if err == nil {
-		return ""
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
-		return "timeout"
-	}
-	return "request failed"
 }

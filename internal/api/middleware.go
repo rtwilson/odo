@@ -25,20 +25,21 @@ type AuthContext struct {
 	csrfToken       string
 }
 
-func (s *Server) optionalAPIAuthentication(r *http.Request) (AuthContext, bool) {
+func (s *Server) optionalAPIAuthentication(r *http.Request) (AuthContext, bool, error) {
 	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
-		auth, status, _ := s.authenticateBearerToken(token)
-		return auth, status == 0 && auth.IsAuthenticated
+		auth, status, _, err := s.authenticateBearerToken(token)
+		return auth, status == 0 && auth.IsAuthenticated, err
 	}
-	auth, ok := s.currentUserAuth(r)
-	return auth, ok && auth.IsAuthenticated
+	auth, ok, err := s.currentUserAuth(r)
+	return auth, ok && auth.IsAuthenticated, err
 }
 
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, metadata := accesslog.WithMetadata(r.Context())
-		metadata.RequestID = accesslog.RequestID(r)
 		r = r.WithContext(ctx)
+		metadata.RequestID = accesslog.RequestID(r)
+		w.Header().Set("X-Request-ID", metadata.RequestID)
 
 		start := time.Now()
 		recorder := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -64,12 +65,19 @@ func (s *Server) requireAPIAuthentication(next http.Handler) http.Handler {
 
 		var auth AuthContext
 		var status int
+		var err error
 		if token := bearerToken(r.Header.Get("Authorization")); token != "" {
-			auth, status, _ = s.authenticateBearerToken(token)
-		} else if sessionAuth, ok := s.currentUserAuth(r); ok {
-			auth = sessionAuth
+			auth, status, _, err = s.authenticateBearerToken(token)
 		} else {
-			status = http.StatusUnauthorized
+			var ok bool
+			auth, ok, err = s.currentUserAuth(r)
+			if !ok {
+				status = http.StatusUnauthorized
+			}
+		}
+		if err != nil {
+			s.internalError(w, r, err)
+			return
 		}
 		if status != 0 || !auth.IsAuthenticated {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication_required"})
@@ -100,7 +108,11 @@ func (s *Server) requireAdminAPIKey(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) requireScopes(next http.HandlerFunc, scopes ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth, status, message := s.authorizeRequest(r, scopes...)
+		auth, status, message, err := s.authorizeRequest(r, scopes...)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 		if status != 0 {
 			if status == http.StatusForbidden && auth.SubjectType == "user" && unsafeMethod(r.Method) && message == "csrf token is invalid or missing" {
 				_ = s.store.Audit("csrf_failure", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"path":%q}`, auth.SubjectID, r.URL.Path))
@@ -125,39 +137,43 @@ func (s *Server) requireScopes(next http.HandlerFunc, scopes ...string) http.Han
 	}
 }
 
-func (s *Server) authorizeRequest(r *http.Request, requiredScopes ...string) (AuthContext, int, string) {
+func (s *Server) authorizeRequest(r *http.Request, requiredScopes ...string) (AuthContext, int, string, error) {
 	if auth, ok := r.Context().Value(apiAuthContextKey{}).(AuthContext); ok && auth.IsAuthenticated {
 		if !hasRequiredScope(auth.Scopes, requiredScopes) {
-			return auth, http.StatusForbidden, "insufficient scope"
+			return auth, http.StatusForbidden, "insufficient scope", nil
 		}
 		if auth.SubjectType == "user" && unsafeMethod(r.Method) && r.Header.Get("X-Odo-CSRF") != auth.csrfToken {
-			return auth, http.StatusForbidden, "csrf token is invalid or missing"
+			return auth, http.StatusForbidden, "csrf token is invalid or missing", nil
 		}
-		return auth, 0, ""
+		return auth, 0, "", nil
 	}
 	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
 		return s.authenticateBearerToken(token, requiredScopes...)
 	}
-	if auth, ok := s.currentUserAuth(r); ok {
+	auth, ok, err := s.currentUserAuth(r)
+	if err != nil {
+		return anonymousAuthContext(), http.StatusInternalServerError, "", err
+	}
+	if ok {
 		if !hasRequiredScope(auth.Scopes, requiredScopes) {
-			return auth, http.StatusForbidden, "insufficient scope"
+			return auth, http.StatusForbidden, "insufficient scope", nil
 		}
 		if unsafeMethod(r.Method) && r.Header.Get("X-Odo-CSRF") != auth.csrfToken {
-			return auth, http.StatusForbidden, "csrf token is invalid or missing"
+			return auth, http.StatusForbidden, "csrf token is invalid or missing", nil
 		}
-		return auth, 0, ""
+		return auth, 0, "", nil
 	}
 	storedCount, err := s.store.CountAPIKeys()
 	if err != nil {
-		return anonymousAuthContext(), http.StatusInternalServerError, err.Error()
+		return anonymousAuthContext(), http.StatusInternalServerError, "", err
 	}
 	if storedCount == 0 && s.adminKey == "" {
-		return anonymousAuthContext(), 0, ""
+		return anonymousAuthContext(), 0, "", nil
 	}
-	return anonymousAuthContext(), http.StatusUnauthorized, "missing bearer token"
+	return anonymousAuthContext(), http.StatusUnauthorized, "missing bearer token", nil
 }
 
-func (s *Server) authenticateBearerToken(token string, requiredScopes ...string) (AuthContext, int, string) {
+func (s *Server) authenticateBearerToken(token string, requiredScopes ...string) (AuthContext, int, string, error) {
 	if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 		auth := AuthContext{
 			SubjectType:     "api_key",
@@ -167,22 +183,22 @@ func (s *Server) authenticateBearerToken(token string, requiredScopes ...string)
 			IsAuthenticated: true,
 			IsAdminLike:     true,
 		}
-		return auth, 0, ""
+		return auth, 0, "", nil
 	}
 	key, found, err := s.store.GetAPIKeyByHash(s.hashAPIToken(token))
 	if err != nil {
-		return anonymousAuthContext(), http.StatusInternalServerError, err.Error()
+		return anonymousAuthContext(), http.StatusInternalServerError, "", err
 	}
 	if !found {
-		return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token"
+		return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token", nil
 	}
 	if key.Status != "active" || key.RevokedAt != "" {
-		return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token"
+		return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token", nil
 	}
 	if key.ExpiresAt != "" {
 		expiresAt, err := time.Parse(time.RFC3339, key.ExpiresAt)
 		if err != nil || time.Now().UTC().After(expiresAt) {
-			return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token"
+			return anonymousAuthContext(), http.StatusForbidden, "invalid bearer token", nil
 		}
 	}
 	auth := AuthContext{
@@ -194,12 +210,12 @@ func (s *Server) authenticateBearerToken(token string, requiredScopes ...string)
 		IsAdminLike:     hasRequiredScope(key.Scopes, nil),
 	}
 	if !hasRequiredScope(auth.Scopes, requiredScopes) {
-		return auth, http.StatusForbidden, "insufficient scope"
+		return auth, http.StatusForbidden, "insufficient scope", nil
 	}
 	if err := s.store.MarkAPIKeyUsed(key.ID); err != nil {
-		return auth, http.StatusInternalServerError, err.Error()
+		return auth, http.StatusInternalServerError, "", err
 	}
-	return auth, 0, ""
+	return auth, 0, "", nil
 }
 
 func anonymousAuthContext() AuthContext {

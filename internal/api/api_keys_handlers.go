@@ -36,11 +36,11 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	key, token, err := s.newStoredAPIKey(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.validationError(w, r, err)
 		return
 	}
 	if err := s.store.CreateAPIKey(key); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, apiKeyResponse{APIKey: key, Token: token})
@@ -49,7 +49,7 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 	keys, err := s.store.ListAPIKeys()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"api_keys": keys})
@@ -58,7 +58,7 @@ func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getAPIKey(w http.ResponseWriter, r *http.Request) {
 	key, found, err := s.store.GetAPIKey(strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -71,12 +71,12 @@ func (s *Server) getAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rotateAPIKey(w http.ResponseWriter, r *http.Request) {
 	token, err := generateAPIToken("odo_live_")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "token generation failed")
+		s.internalError(w, r, fmt.Errorf("token generation failed: %w", err))
 		return
 	}
 	key, found, err := s.store.RotateAPIKey(strings.TrimSpace(r.PathValue("id")), s.hashAPIToken(token), keyPrefix(token))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -89,7 +89,7 @@ func (s *Server) rotateAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	key, found, err := s.store.RevokeAPIKey(strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -102,7 +102,7 @@ func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	key, found, err := s.store.DeleteAPIKey(strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -128,12 +128,12 @@ func (s *Server) newStoredAPIKey(req apiKeyCreateRequest) (db.APIKey, string, er
 	}
 	token, err := generateAPIToken("odo_live_")
 	if err != nil {
-		return db.APIKey{}, "", err
+		return db.APIKey{}, "", internalFailure{err}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	id, err := randomID("key_", 12)
 	if err != nil {
-		return db.APIKey{}, "", err
+		return db.APIKey{}, "", internalFailure{err}
 	}
 	return db.APIKey{
 		ID:        id,

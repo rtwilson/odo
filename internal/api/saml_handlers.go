@@ -15,7 +15,7 @@ import (
 func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 	providers, err := s.store.ListSAMLProviders()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
@@ -34,7 +34,7 @@ func (s *Server) upsertSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.UpsertSAMLProvider(provider); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, provider)
@@ -43,7 +43,7 @@ func (s *Server) upsertSAMLProvider(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	provider, found, err := s.store.GetSAMLProvider(strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -56,7 +56,7 @@ func (s *Server) getSAMLProvider(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	deleted, err := s.store.DeleteSAMLProvider(strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !deleted {
@@ -69,7 +69,7 @@ func (s *Server) deleteSAMLProvider(w http.ResponseWriter, r *http.Request) {
 func (s *Server) samlMetadata(w http.ResponseWriter, r *http.Request) {
 	provider, found, err := s.store.ActiveSAMLProvider()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -78,11 +78,11 @@ func (s *Server) samlMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, err = saml.Validate(provider, publicBaseURL(r))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if err := s.store.Audit("saml_metadata_served", fmt.Sprintf(`{"provider_id":%q}`, provider.ID)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/samlmetadata+xml; charset=utf-8")

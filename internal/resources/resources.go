@@ -73,6 +73,7 @@ type ContentRewriteRule struct {
 }
 
 type TestResult struct {
+	InternalError                error                `json:"-"`
 	Allowed                      bool                 `json:"allowed"`
 	Blocked                      bool                 `json:"blocked,omitempty"`
 	Host                         string               `json:"host,omitempty"`
@@ -104,7 +105,7 @@ type ValidationResult struct {
 func Decode(data []byte) (Resource, error) {
 	var resource Resource
 	if err := json.Unmarshal(data, &resource); err != nil {
-		return Resource{}, err
+		return Resource{}, errors.New("invalid resource JSON")
 	}
 	return Validate(resource)
 }
@@ -112,7 +113,7 @@ func Decode(data []byte) (Resource, error) {
 func DecodeAll(data []byte) (Resource, []string) {
 	var resource Resource
 	if err := json.Unmarshal(data, &resource); err != nil {
-		return Resource{}, []string{err.Error()}
+		return Resource{}, []string{"invalid resource JSON"}
 	}
 	return ValidateAll(resource)
 }

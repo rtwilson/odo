@@ -21,7 +21,6 @@ The container build file is now named `Dockerfile`; `Containerfile` references b
 ### Should fix before Internet-facing pilot
 
 - Configure reverse-proxy login rate limiting and operational alerting; local per-process throttling is implemented (ODO-2025-004).
-- Stop returning internal error text to clients; log it with a request ID (ODO-2025-006).
 - Add application-page security headers and document proxy-response header policy (ODO-2025-007).
 - Add dependency scanning, update automation, immutable container inputs, and release provenance (ODO-2025-008).
 - Complete security-event coverage without storing patron research trails (ODO-2025-009).
@@ -43,7 +42,7 @@ The container build file is now named `Dockerfile`; `Containerfile` references b
 | ODO-2025-003 | A02 | High | Fixed | Production security requirements warn but do not fail closed | `cmd/odo/main.go`, `cmd/odo/main_test.go` | Production startup validation implemented; retain regression coverage |
 | ODO-2025-004 | A07 | Medium | Fixed (local process) | Login has no brute-force throttling | `internal/api/auth_handlers.go`, `internal/api/login_throttle.go` | Retain regression tests; configure edge rate limiting and alerting |
 | ODO-2025-005 | A04, A07 | Medium | Fixed | Proxy and CSRF cookies are not consistently `Secure` | `internal/cookiepolicy/policy.go`, `internal/proxy/session.go`, `internal/api/server.go` | Retain production/development cookie-policy regression coverage |
-| ODO-2025-006 | A10 | Medium | Confirmed | Internal errors are returned verbatim | `internal/api/server.go` | Return stable public messages; log internal cause and request ID |
+| ODO-2025-006 | A10 | Medium | Fixed | Internal errors are returned verbatim | `internal/api`, `internal/httperror`, `internal/accesslog`, `internal/config`, `internal/proxy` | Retain safe-response and request-ID regression coverage |
 | ODO-2025-007 | A02, A05 | Medium | Confirmed | Application HTML lacks baseline security headers | `internal/api/server.go` | Add CSP, frame protection, nosniff, referrer and permissions policies |
 | ODO-2025-008 | A03 | Medium | Confirmed | Supply-chain controls and immutable build inputs are absent | `go.mod`, `go.sum`, `Containerfile`, repository CI | Add scanning/update CI, digest pinning, SBOM and signed provenance |
 | ODO-2025-009 | A09 | Medium | Confirmed | Security logging is incomplete and can retain identifiers | `internal/api/server.go`, `internal/accesslog/accesslog.go`, `internal/db/db.go` | Add safe auth/SSRF events, retention/redaction, and alert integration |
@@ -193,12 +192,14 @@ Tests to add: partial-import failure/rollback, duplicate and conflicting domain 
 #### ODO-2025-006 — Internal errors are returned verbatim
 
 - **Severity:** Medium
-- **Status:** Confirmed
-- **Evidence:** many 500 responses pass `err.Error()` directly to `writeError`, including login/session database failures and resource, config, user, key, and SAML operations (for example `internal/api/server.go:374-390,936-980,1212-1240,1515-1648`). Authorization can also propagate store errors (`internal/api/server.go:1903-1905,1925-1927,1952-1953`).
-- **Affected files:** `internal/api/server.go`.
-- **Risk:** database paths, constraint details, parser internals, and operational state can leak to authenticated or unauthenticated clients; response contracts vary with implementation errors.
-- **Recommended fix:** centralize error handling. Return stable messages/codes such as `internal_error` with the request ID, while logging the wrapped cause server-side. Preserve specific 4xx validation messages only after classifying them as safe. Avoid string matching database errors to choose status codes.
-- **Test to add:** inject store/resolver/parser failures and assert no path, SQL text, driver message, hostname-resolution detail, or secret is returned.
+- **Status:** Fixed for Odo-generated internal error responses.
+- **Evidence at review time:** handlers passed `err.Error()` to clients for database and other internal failures; authorization helpers could also expose store errors. Some config results embedded filesystem/database errors in HTTP 200 responses.
+- **Affected files:** `internal/api`, `internal/httperror`, `internal/accesslog`, `internal/config`, `internal/resources`, `internal/proxy`.
+- **Fix implemented:** shared error handling returns `internal_error`, a stable generic message, and `request_id` for JSON 500/502 responses. Odo browser pages receive generic HTML with the ID. Known-safe validation/credential errors remain useful; raw user-conflict SQL and config file/parser errors no longer reach clients. Auth/session-store errors propagate as internal failures rather than invalid credentials.
+- **Request IDs:** every routed response has `X-Request-ID`. A single inbound `X-Request-ID` or legacy `Request-ID` is reused only if it contains 1–64 ASCII letters, digits, underscores, or hyphens; otherwise Odo generates an ID. IDs are correlation labels, not trusted identities.
+- **Logging:** application error logs retain the internal cause, request ID, registered route/fixed fallback, method, and status. No request headers/bodies or raw request URLs are added. URL error wrappers omit target URLs, including query strings/userinfo, while preserving the cause. Access logs share the request ID.
+- **Tests added:** closed-database login/resource/API-key/user/config/SAML/auth/session failures; config read/import failures; generic browser pages; upstream failures; useful 400/409 responses; request-ID validation/reuse/generation; matching response/log IDs; and exclusion of request secrets/query strings from new error logs.
+- **Remaining limitations:** this does not sanitize vendor-origin proxy response bodies, replace responses after streaming starts, or add panic recovery. Config imports remain nontransactional. Internal causes are intentionally retained in restricted server logs; audit and optional access-log privacy/retention work remains under ODO-2025-009. See [error responses and request IDs](error-responses.md).
 
 #### ODO-2025-010 — HTTP server lacks explicit timeouts and graceful shutdown
 

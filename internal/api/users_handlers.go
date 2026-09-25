@@ -34,7 +34,7 @@ type userPasswordRequest struct {
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.store.ListUsers()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": users})
@@ -53,15 +53,15 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.newStoredUser(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.validationError(w, r, err)
 		return
 	}
 	if err := s.store.CreateUser(user); err != nil {
-		status := http.StatusInternalServerError
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			status = http.StatusConflict
+			writeError(w, http.StatusConflict, "user already exists")
+		} else {
+			s.internalError(w, r, err)
 		}
-		writeError(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, user)
@@ -70,7 +70,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 	user, found, err := s.store.GetUser(strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -85,7 +85,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	existing, found, err := s.store.GetUser(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -129,7 +129,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user, found, err := s.store.UpdateUser(existing)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -151,15 +151,19 @@ func (s *Server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
+	if len(req.Password) > 72 {
+		writeError(w, http.StatusBadRequest, "password must be at most 72 bytes")
+		return
+	}
 	hash, err := local.HashPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "password hashing failed")
+		s.internalError(w, r, fmt.Errorf("password hashing failed: %w", err))
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	updated, err := s.store.SetUserPassword(id, hash)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !updated {
@@ -190,14 +194,14 @@ func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if _, found, err := s.store.GetUser(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	} else if !found {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	if err := s.store.RevokeUserSessions(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	_ = s.store.Audit("user_sessions_revoked", fmt.Sprintf(`{"id":%q}`, id))
@@ -209,7 +213,7 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 	if status == "disabled" || status == "locked" {
 		existing, found, err := s.store.GetUser(id)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.internalError(w, r, err)
 			return
 		}
 		if !found {
@@ -223,7 +227,7 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 	}
 	user, found, err := s.store.SetUserStatus(id, status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {
@@ -235,7 +239,7 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 }
 
 func (s *Server) requestHasAdminScope(r *http.Request) bool {
-	auth, status, _ := s.authorizeRequest(r, "admin")
+	auth, status, _, _ := s.authorizeRequest(r, "admin")
 	return status == 0 && auth.IsAuthenticated
 }
 
@@ -274,6 +278,9 @@ func (s *Server) newStoredUser(req userCreateRequest) (db.User, error) {
 	if len(req.Password) < 8 {
 		return db.User{}, fmt.Errorf("password must be at least 8 characters")
 	}
+	if len(req.Password) > 72 {
+		return db.User{}, fmt.Errorf("password must be at most 72 bytes")
+	}
 	status, err := validateUserStatus(req.Status)
 	if err != nil {
 		return db.User{}, err
@@ -284,11 +291,11 @@ func (s *Server) newStoredUser(req userCreateRequest) (db.User, error) {
 	}
 	hash, err := local.HashPassword(req.Password)
 	if err != nil {
-		return db.User{}, err
+		return db.User{}, internalFailure{err}
 	}
 	id, err := randomID("user_", 12)
 	if err != nil {
-		return db.User{}, err
+		return db.User{}, internalFailure{err}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	return db.User{

@@ -51,6 +51,10 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 
 	if event.RequestKind == proxy.RequestKindDocument {
 		validatedTarget, result := s.proxyTarget(r.Context(), target.String())
+		if result.InternalError != nil {
+			s.internalError(w, r, result.InternalError)
+			return
+		}
 		if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
 			metadata.Route = "/odo-recovered"
 			metadata.Recovered = true
@@ -186,6 +190,10 @@ func (s *Server) requireProxySession(next http.Handler) http.HandlerFunc {
 }
 
 func (s *Server) requireProxySessionOrAnonymous(w http.ResponseWriter, r *http.Request, target *url.URL, result resources.TestResult) bool {
+	if result.InternalError != nil {
+		s.internalError(w, r, result.InternalError)
+		return false
+	}
 	if !s.proxyLoginRequired() {
 		return true
 	}
@@ -197,7 +205,12 @@ func (s *Server) requireProxySessionOrAnonymous(w http.ResponseWriter, r *http.R
 	if result.Allowed && result.AnonymousRuleMatched {
 		return true
 	}
-	if _, _, ok := s.currentUser(r); ok {
+	_, _, ok, err := s.currentUser(r)
+	if err != nil {
+		s.internalError(w, r, err)
+		return false
+	}
+	if ok {
 		return true
 	}
 	s.markProxyLoginRequired(r, target, result)
@@ -220,7 +233,7 @@ func (s *Server) explicitAnonymousProxyResult(r *http.Request, target *url.URL) 
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
-		return resources.TestResult{Allowed: false, Reason: "resource lookup failed"}
+		return resources.TestResult{Allowed: false, Reason: "resource lookup failed", InternalError: err}
 	}
 	return resources.AnonymousURLRuleResult(target.String(), r.Method, items)
 }
@@ -301,7 +314,7 @@ func (s *Server) proxyTarget(ctx context.Context, rawURL string) (*url.URL, reso
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
-		return nil, resources.TestResult{Allowed: false, Reason: "resource lookup failed"}
+		return nil, resources.TestResult{Allowed: false, Reason: "resource lookup failed", InternalError: err}
 	}
 	result := resources.TestURL(target.String(), items)
 	if !result.Allowed {

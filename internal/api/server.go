@@ -128,6 +128,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/users/{id}/unlock", s.requireScopes(s.unlockUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/revoke-sessions", s.requireScopes(s.revokeUserSessions, "users:write"))
 	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
+		Logger:       s.logger,
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
 		Sessions:     s.sessions,

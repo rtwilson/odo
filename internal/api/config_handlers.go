@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -10,7 +11,17 @@ import (
 func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 	results, err := config.ImportResources(s.store, s.configDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
+		return
+	}
+	var failures []error
+	for _, result := range results {
+		if result.InternalError != nil {
+			failures = append(failures, result.InternalError)
+		}
+	}
+	if len(failures) > 0 {
+		s.internalError(w, r, errors.Join(failures...))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
@@ -19,7 +30,17 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 	result, err := config.ValidateResources(s.configDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
+		return
+	}
+	var failures []error
+	for _, item := range result.Results {
+		if item.InternalError != nil {
+			failures = append(failures, item.InternalError)
+		}
+	}
+	if len(failures) > 0 {
+		s.internalError(w, r, errors.Join(failures...))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -28,7 +49,7 @@ func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listConfigRevisions(w http.ResponseWriter, r *http.Request) {
 	revisions, err := s.store.ListConfigRevisions(25)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revisions": revisions})
@@ -42,7 +63,7 @@ func (s *Server) getConfigRevision(w http.ResponseWriter, r *http.Request) {
 	}
 	revision, found, err := s.store.GetConfigRevision(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found {

@@ -20,7 +20,11 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
-	auth, status, message := s.authorizeRequest(r, "resources:read", "config:read", "diagnostics:read", "logs:read", "system:read", "api_keys:read", "api_keys:write", "users:read", "users:write", "auth:read", "auth:write")
+	auth, status, message, err := s.authorizeRequest(r, "resources:read", "config:read", "diagnostics:read", "logs:read", "system:read", "api_keys:read", "api_keys:write", "users:read", "users:write", "auth:read", "auth:write")
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	if status != 0 {
 		if status == http.StatusUnauthorized {
 			http.Redirect(w, r, "/login?next="+url.QueryEscape("/admin"), http.StatusFound)
@@ -51,14 +55,18 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
-	user, _, ok := s.currentUser(r)
+	user, _, ok, err := s.currentUser(r)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	if !ok {
 		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 		return
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -91,7 +99,11 @@ func (s *Server) apiIndex(w http.ResponseWriter, r *http.Request) {
 		"openapi":   "/openapi.yaml",
 		"resources": "/api/v1/resources",
 	}
-	auth, authenticated := s.optionalAPIAuthentication(r)
+	auth, authenticated, err := s.optionalAPIAuthentication(r)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	response := map[string]any{
 		"name":          "Odo API",
 		"version":       "v1",

@@ -11,10 +11,11 @@ import (
 )
 
 type ImportResult struct {
-	File       string `json:"file"`
-	ResourceID string `json:"resource_id,omitempty"`
-	Imported   bool   `json:"imported"`
-	Error      string `json:"error,omitempty"`
+	InternalError error  `json:"-"`
+	File          string `json:"file"`
+	ResourceID    string `json:"resource_id,omitempty"`
+	Imported      bool   `json:"imported"`
+	Error         string `json:"error,omitempty"`
 }
 
 type ValidationResponse struct {
@@ -24,10 +25,11 @@ type ValidationResponse struct {
 }
 
 type ValidationResult struct {
-	File       string   `json:"file"`
-	Valid      bool     `json:"valid"`
-	ResourceID string   `json:"resource_id"`
-	Errors     []string `json:"errors"`
+	InternalError error    `json:"-"`
+	File          string   `json:"file"`
+	Valid         bool     `json:"valid"`
+	ResourceID    string   `json:"resource_id"`
+	Errors        []string `json:"errors"`
 }
 
 func ImportResources(store *db.Store, configDir string) ([]ImportResult, error) {
@@ -46,7 +48,8 @@ func ImportResources(store *db.Store, configDir string) ([]ImportResult, error) 
 		result := ImportResult{File: file}
 		data, err := os.ReadFile(file)
 		if err != nil {
-			result.Error = err.Error()
+			result.Error = "resource config could not be read"
+			result.InternalError = fmt.Errorf("read resource config: %w", err)
 			errorCount++
 			results = append(results, result)
 			continue
@@ -59,7 +62,8 @@ func ImportResources(store *db.Store, configDir string) ([]ImportResult, error) 
 			continue
 		}
 		if err := store.UpsertResource(resource); err != nil {
-			result.Error = fmt.Sprintf("database import failed: %v", err)
+			result.Error = "resource import failed"
+			result.InternalError = fmt.Errorf("import resource config: %w", err)
 			errorCount++
 			results = append(results, result)
 			continue
@@ -98,7 +102,8 @@ func ValidateResources(configDir string) (ValidationResponse, error) {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			result.Valid = false
-			result.Errors = []string{err.Error()}
+			result.Errors = []string{"resource config could not be read"}
+			result.InternalError = fmt.Errorf("read resource config for validation: %w", err)
 		} else {
 			resource, errs := resources.DecodeAll(data)
 			result.ResourceID = resource.ID

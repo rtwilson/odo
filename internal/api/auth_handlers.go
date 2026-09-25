@@ -48,7 +48,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	}()
 	user, found, err := s.store.GetUserByUsername(strings.TrimSpace(r.Form.Get("username")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	if !found || user.Status != "active" || !local.CheckPassword(user.PasswordHash, r.Form.Get("password")) {
@@ -59,11 +59,11 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	token, session, err := s.newBrowserSession(user.ID, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "session creation failed")
+		s.internalError(w, r, fmt.Errorf("session creation failed: %w", err))
 		return
 	}
 	if err := s.store.CreateSession(session); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.internalError(w, r, err)
 		return
 	}
 	success = true
@@ -206,19 +206,22 @@ func sessionPersistOnRestart() bool {
 	return normalizedAppEnv() == "production"
 }
 
-func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
+func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error) {
 	cookie, err := r.Cookie(browserSessionCookieName)
 	if err != nil || cookie.Value == "" {
-		return db.User{}, db.Session{}, false
+		return db.User{}, db.Session{}, false, nil
 	}
 	sessionID := local.SessionIDFromToken(cookie.Value)
 	session, found, err := s.store.GetSession(sessionID)
-	if err != nil || !found {
-		return db.User{}, db.Session{}, false
+	if err != nil {
+		return db.User{}, db.Session{}, false, fmt.Errorf("load browser session: %w", err)
+	}
+	if !found {
+		return db.User{}, db.Session{}, false, nil
 	}
 	if session.RevokedAt != "" {
 		_ = s.store.Audit("session_rejected_revoked", fmt.Sprintf(`{"session_id":%q}`, session.ID))
-		return db.User{}, db.Session{}, false
+		return db.User{}, db.Session{}, false, nil
 	}
 	if session.SessionHash != s.browserSessionHash(cookie.Value) {
 		event := "session_rejected_restart_generation"
@@ -226,44 +229,52 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool) {
 			event = "session_rejected_hash_mismatch"
 		}
 		_ = s.store.Audit(event, fmt.Sprintf(`{"session_id":%q}`, session.ID))
-		return db.User{}, db.Session{}, false
+		return db.User{}, db.Session{}, false, nil
 	}
 	now := time.Now().UTC()
 	expiresAt, err := time.Parse(time.RFC3339, session.ExpiresAt)
 	if err != nil || now.After(expiresAt) {
 		_ = s.store.Audit("session_rejected_expired", fmt.Sprintf(`{"session_id":%q}`, session.ID))
-		return db.User{}, db.Session{}, false
+		return db.User{}, db.Session{}, false, nil
 	}
 	lastSeenAt, lastSeenErr := time.Parse(time.RFC3339, session.LastSeenAt)
 	if lastSeenErr == nil && now.Sub(lastSeenAt) > sessionIdleTimeout() {
 		_ = s.store.Audit("session_rejected_idle_timeout", fmt.Sprintf(`{"session_id":%q}`, session.ID))
-		return db.User{}, db.Session{}, false
+		return db.User{}, db.Session{}, false, nil
 	}
 	user, found, err := s.store.GetUser(session.UserID)
-	if err != nil || !found || user.Status != "active" {
+	if err != nil {
+		return db.User{}, db.Session{}, false, fmt.Errorf("load session user: %w", err)
+	}
+	if !found || user.Status != "active" {
 		_ = s.store.RevokeSession(session.ID)
-		return db.User{}, db.Session{}, false
+		return db.User{}, db.Session{}, false, nil
 	}
 	if lastSeenErr != nil || now.Sub(lastSeenAt) >= sessionTouchInterval() {
-		_ = s.store.TouchSession(session.ID)
+		if err := s.store.TouchSession(session.ID); err != nil {
+			return db.User{}, db.Session{}, false, fmt.Errorf("touch browser session: %w", err)
+		}
 	}
 	if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
 		metadata.UserID = user.ID
 		metadata.SessionID = session.ID
 	}
-	return user, session, true
+	return user, session, true, nil
 }
 
-func (s *Server) currentUserAuth(r *http.Request) (AuthContext, bool) {
+func (s *Server) currentUserAuth(r *http.Request) (AuthContext, bool, error) {
 	cookie, err := r.Cookie(browserSessionCookieName)
 	if err != nil || cookie.Value == "" {
-		return AuthContext{}, false
+		return AuthContext{}, false, nil
 	}
-	user, _, ok := s.currentUser(r)
+	user, _, ok, err := s.currentUser(r)
+	if err != nil {
+		return AuthContext{}, false, err
+	}
 	if !ok {
-		return AuthContext{}, false
+		return AuthContext{}, false, nil
 	}
-	return authContextForUser(user, csrfTokenForSessionToken(cookie.Value)), true
+	return authContextForUser(user, csrfTokenForSessionToken(cookie.Value)), true, nil
 }
 
 func safeNextPath(raw string) (string, bool) {
@@ -319,7 +330,11 @@ func remoteIPOnly(remoteAddr string) string {
 }
 
 func (s *Server) sessionMe(w http.ResponseWriter, r *http.Request) {
-	auth, status, message := s.authorizeRequest(r)
+	auth, status, message, err := s.authorizeRequest(r)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	if status != 0 && status != http.StatusUnauthorized {
 		writeError(w, status, message)
 		return

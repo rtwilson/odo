@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"example.org/odo/internal/httperror"
 )
 
 func writeAdminForbidden(w http.ResponseWriter, message string) {
@@ -26,4 +29,24 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error) {
+	httperror.Write(w, r, s.logger, http.StatusInternalServerError, err)
+}
+
+// internalFailure separates operational failures from safe validation errors
+// returned by helpers that can encounter either kind.
+type internalFailure struct{ err error }
+
+func (e internalFailure) Error() string { return e.err.Error() }
+func (e internalFailure) Unwrap() error { return e.err }
+
+func (s *Server) validationError(w http.ResponseWriter, r *http.Request, err error) {
+	var internal internalFailure
+	if errors.As(err, &internal) {
+		s.internalError(w, r, err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, err.Error())
 }

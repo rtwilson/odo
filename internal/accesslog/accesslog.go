@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -138,16 +139,43 @@ func MetadataFrom(ctx context.Context) *Metadata {
 }
 
 func RequestID(r *http.Request) string {
-	for _, name := range []string{"X-Request-ID", "X-Request-Id", "Request-ID"} {
-		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
-			return value
+	if metadata := MetadataFrom(r.Context()); metadata != nil && validRequestID(metadata.RequestID) {
+		return metadata.RequestID
+	}
+	id := ""
+	for _, name := range []string{"X-Request-ID", "Request-ID"} {
+		values := r.Header.Values(name)
+		if len(values) == 1 && validRequestID(values[0]) {
+			id = values[0]
+			break
 		}
 	}
-	buf := make([]byte, 6)
-	if _, err := rand.Read(buf); err != nil {
-		return "req_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if id == "" {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			id = "req_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" + strconv.FormatUint(requestIDSequence.Add(1), 36)
+		} else {
+			id = "req_" + hex.EncodeToString(buf)
+		}
 	}
-	return "req_" + hex.EncodeToString(buf)
+	if metadata := MetadataFrom(r.Context()); metadata != nil {
+		metadata.RequestID = id
+	}
+	return id
+}
+
+var requestIDSequence atomic.Uint64
+
+func validRequestID(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration) {

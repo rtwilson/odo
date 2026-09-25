@@ -31,7 +31,7 @@ Odo is not ready for production use. `APP_ENV=production` enables startup safegu
 
 - **Controlled demo:** Local or access-restricted evaluation using synthetic data and selected resource flows.
 - **Design-partner testing:** Limited, supervised testing with named partners, restricted access, and explicit checks of each resource and workflow. Compatibility and operational suitability remain to be validated.
-- **Internet-facing pilot:** Before exposure, configure edge login rate limiting and alerting; sanitize internal errors; and complete application security headers, supply-chain CI, security-event coverage, and HTTP server timeouts/graceful shutdown. TLS and startup checks alone are insufficient.
+- **Internet-facing pilot:** Before exposure, configure edge login rate limiting and alerting, and complete application security headers, supply-chain CI, security-event coverage, and HTTP server timeouts/graceful shutdown. TLS and startup checks alone are insufficient.
 - **Production use:** Not currently supported as a readiness claim; requires further security, operational, and compatibility validation beyond pilot hardening.
 
 The [OWASP review](docs/security/owasp-top10-2025-review.md) records no remaining original MVP implementation blockers. Formerly tracked databases contained synthetic/dev data only; no real-data credential rotation or history rewrite was required or performed. Remaining before-pilot work is still open.
@@ -157,6 +157,8 @@ Environment variables:
 - `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
 - `APP_PROXY_REFERER_RECOVERY`, default `true`; recovers missed local asset/script paths when a proxied Referer identifies the upstream host
 - `APP_TRUST_PROXY_HEADERS`, default `false`; set `true` only behind a trusted reverse proxy that controls `X-Forwarded-*` headers
+
+Internal failures return generic errors with an `X-Request-ID` for operator correlation. See [error responses and request IDs](docs/security/error-responses.md).
 
 ## API Examples
 

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,12 +16,14 @@ import (
 	"time"
 
 	"example.org/odo/internal/accesslog"
+	"example.org/odo/internal/httperror"
 	"example.org/odo/internal/resources"
 )
 
 type TargetCheck func(ctx context.Context, rawURL string) (*url.URL, resources.TestResult)
 
 type FetchOptions struct {
+	Logger       *slog.Logger
 	Client       *http.Client
 	Check        TargetCheck
 	Sessions     *SessionStore
@@ -115,6 +119,10 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			options.Diagnostics.Add(*diagnostics)
 		}()
 		setAccessLogMetadata(r, rawURL, result)
+		if result.InternalError != nil {
+			httperror.Write(w, r, options.Logger, http.StatusInternalServerError, result.InternalError)
+			return
+		}
 		if !result.Allowed {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -137,7 +145,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 		upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), body)
 		if err != nil {
-			writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "request creation failed")
+			httperror.Write(w, r, options.Logger, http.StatusBadGateway, fmt.Errorf("create upstream request: %w", err))
 			return
 		}
 		if contentLength >= 0 {
@@ -157,7 +165,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 				diagnostics.Type = "proxy_target_blocked"
 				diagnostics.Reason = reason
 			}
-			writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", safeFetchReason(err))
+			httperror.Write(w, r, options.Logger, http.StatusBadGateway, fmt.Errorf("fetch upstream: %w", err))
 			return
 		}
 		defer resp.Body.Close()
@@ -184,7 +192,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		diagnostics.UpstreamStatus = resp.StatusCode
 
 		if isRedirect(resp.StatusCode) {
-			handleRedirect(w, r, target, resp, check)
+			handleRedirect(w, r, target, resp, check, options.Logger)
 			return
 		}
 
@@ -193,7 +201,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		if r.Method != http.MethodHead && isTransformable(resp.Header.Get("Content-Type")) {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "response read failed")
+				httperror.Write(w, r, options.Logger, http.StatusBadGateway, fmt.Errorf("read upstream response: %w", err))
 				return
 			}
 			transformed := transformBody(r.Context(), string(body), resp.Header.Get("Content-Type"), target, check, result)
@@ -397,25 +405,29 @@ func isRedirect(status int) bool {
 		status == http.StatusPermanentRedirect
 }
 
-func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, resp *http.Response, check TargetCheck) {
+func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, resp *http.Response, check TargetCheck, logger *slog.Logger) {
 	location := strings.TrimSpace(resp.Header.Get("Location"))
 	if location == "" {
-		writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "redirect missing location")
+		httperror.Write(w, r, logger, http.StatusBadGateway, fmt.Errorf("upstream redirect missing location"))
 		return
 	}
 	parsed, err := url.Parse(location)
 	if err != nil {
-		writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "redirect location is invalid")
+		httperror.Write(w, r, logger, http.StatusBadGateway, fmt.Errorf("parse upstream redirect: %w", err))
 		return
 	}
 	resolved := target.ResolveReference(parsed)
 	nextTarget, result := check(r.Context(), resolved.String())
+	if result.InternalError != nil {
+		httperror.Write(w, r, logger, http.StatusInternalServerError, result.InternalError)
+		return
+	}
 	if !result.Allowed || nextTarget == nil {
 		if diagnostics := DiagnosticsFrom(r.Context()); diagnostics != nil {
 			diagnostics.Type = "proxy_target_blocked"
 			diagnostics.Reason = "redirect_to_blocked_target"
 		}
-		writeProxyError(w, http.StatusBadGateway, "upstream fetch failed", "redirect target is not allowed")
+		httperror.Write(w, r, logger, http.StatusBadGateway, fmt.Errorf("upstream redirect target is not allowed"))
 		return
 	}
 	if diagnostics := DiagnosticsFrom(r.Context()); diagnostics != nil {
@@ -426,16 +438,6 @@ func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, res
 	}
 	w.Header().Set("Location", BuildProxyURL(nextTarget))
 	w.WriteHeader(resp.StatusCode)
-}
-
-func safeFetchReason(err error) string {
-	if err == nil {
-		return ""
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
-		return "timeout"
-	}
-	return "request failed"
 }
 
 func setAccessLogMetadata(r *http.Request, rawURL string, result resources.TestResult) {
