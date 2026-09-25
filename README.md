@@ -124,7 +124,7 @@ When the admin UI uses a browser session for unsafe API calls, it sends `X-Odo-C
 
 ## Adding resources
 
-Use the admin Resource Config Builder for most additions. Start with a title, entry URL, and main domain, then generate and validate the JSON before saving. Use raw JSON for advanced cases such as header rules, anonymous URL rules, content rewrite rules, tags, or carefully reviewed compatibility settings. After saving, use the integrated Proxy Test in the Resources tab and Diagnostics to confirm the entry URL, search pages, detail pages, downloads, and any blocked or missed hosts. Use search, status/type/complexity filters, tags, and sorting to manage large collections and find complex resources.
+The Resources page defaults to Basic mode for browsing and JSON editing. Select Advanced to use the Resource Config Builder. Start with a title, entry URL, and main domain, then generate and validate the JSON before saving. Use raw JSON for advanced cases such as header rules, anonymous URL rules, content rewrite rules, tags, or carefully reviewed compatibility settings. After saving, use the integrated Proxy Test in the Resources tab and Diagnostics to confirm the entry URL, search pages, detail pages, downloads, and any blocked or missed hosts. Use search, status/type/complexity filters, tags, and sorting to manage large collections and find complex resources.
 
 See [Adding Resources in Odo](docs/resource-how-to.md) for a plain-language workflow and examples.
 

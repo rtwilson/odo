@@ -54,6 +54,8 @@ func AdminHTML() string {
     th, td { border-bottom: 1px solid #2b3138; padding: 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { color: #c5d0db; font-weight: 600; }
     .output-title { margin-top: 22px; }
+    .resource-mode-button[aria-pressed="false"] { background: #1d242a; border-color: #303943; }
+    #section-resources[data-resource-mode="basic"] .resource-advanced-only { display: none; }
     @media (max-width: 860px) { .layout, .workspace { grid-template-columns: 1fr; } nav { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   </style>
 </head>
@@ -99,8 +101,13 @@ func AdminHTML() string {
           </div>
         </section>
 
-        <section id="section-resources" class="section">
+        <section id="section-resources" class="section" data-resource-mode="basic">
           <h2>Resources</h2>
+          <div class="toolbar" role="group" aria-label="Resource editing mode">
+            <button id="resource-mode-basic" class="resource-mode-button" aria-pressed="true">Basic</button>
+            <button id="resource-mode-advanced" class="resource-mode-button" aria-pressed="false" aria-controls="resource-advanced">Advanced</button>
+          </div>
+          <p class="muted">Basic mode focuses on resource browsing and JSON editing. Choose Advanced to use the structured resource builder.</p>
           <div class="toolbar">
             <button id="load">Load Resources</button>
             <button id="new-resource">New Resource</button>
@@ -125,6 +132,7 @@ func AdminHTML() string {
               <div id="resource-detail" class="table-wrap">Select a resource to inspect domains, rules, compatibility, and actions.</div>
               <h3>Raw JSON Editor</h3>
               <textarea id="editor" spellcheck="false" aria-label="Resource JSON editor"></textarea>
+              <div class="toolbar"><button id="validate-resource-editor">Validate JSON</button></div>
             </div>
           </div>
           <h3>Proxy Test</h3>
@@ -137,7 +145,9 @@ func AdminHTML() string {
           </div>
           <p class="muted">Proxy Test shows matched resource ID, matched domain rule, behavior, role, allowed/denied decision, denial reason, proxy_url, and fetch status when available.</p>
           <div id="resource-test-output" class="table-wrap">Select a resource or enter a target URL to test proxy matching.</div>
+          <div id="resource-advanced" hidden>
           <h3>Resource Config Builder</h3>
+          <p class="muted">Advanced mode exposes the structured resource model directly. Use Basic mode for everyday JSON editing.</p>
           <p class="muted">Start with a title, entry URL, and main domain. Generate and validate JSON before saving. Add additional domains only when testing or diagnostics show they are needed. See docs/resource-how-to.md for the resource how-to guide.</p>
           <div class="toolbar">
             <label class="field">Resource ID<input id="builder-id" placeholder="jstor"></label>
@@ -178,6 +188,7 @@ func AdminHTML() string {
             <button id="save-builder-resource">Save as Resource</button>
             <button id="export-json">Export JSON</button>
             <button id="load-existing-builder">Load Existing Resource into Builder</button>
+          </div>
           </div>
         </section>
 
@@ -293,6 +304,17 @@ func AdminHTML() string {
     const builderHeaders = document.querySelector('#builder-headers');
     const builderAnonymousRules = document.querySelector('#builder-anonymous-rules');
     const builderRewriteRules = document.querySelector('#builder-rewrite-rules');
+    function setResourceMode(value, remember = true) {
+      const mode = value === 'advanced' ? 'advanced' : 'basic';
+      document.querySelector('#section-resources').dataset.resourceMode = mode;
+      document.querySelector('#resource-advanced').hidden = mode !== 'advanced';
+      document.querySelector('#resource-mode-basic').setAttribute('aria-pressed', String(mode === 'basic'));
+      document.querySelector('#resource-mode-advanced').setAttribute('aria-pressed', String(mode === 'advanced'));
+      if (remember) {
+        try { localStorage.setItem('odo.resources.mode', mode); } catch (_) { /* Browsing still works when storage is blocked. */ }
+      }
+    }
+
     let resources = [];
     let apiKeys = [];
     let users = [];
@@ -473,7 +495,7 @@ func AdminHTML() string {
         button.hidden = !hasAnyScope(button.dataset.scopes);
       }
       const canWriteResources = hasScope('resources:write');
-      for (const id of ['new-resource', 'save-resource', 'delete-resource', 'save-builder-resource']) {
+      for (const id of ['new-resource', 'save-resource', 'delete-resource', 'save-builder-resource', 'validate-resource-editor']) {
         const el = document.querySelector('#' + id);
         if (el) el.disabled = !canWriteResources;
       }
@@ -658,7 +680,7 @@ func AdminHTML() string {
       }
       const actions = document.createElement('div');
       actions.className = 'toolbar';
-      actions.innerHTML = '<button id="detail-open">Open first entry URL through proxy</button><button id="detail-test">Test first entry URL</button><button id="detail-validate">Validate resource</button><button id="detail-load-builder">Load into Builder</button><button id="detail-edit-json">Edit raw JSON</button><button id="detail-export">Export JSON</button>';
+      actions.innerHTML = '<button id="detail-open">Open first entry URL through proxy</button><button id="detail-test">Test first entry URL</button><button id="detail-validate">Validate resource</button><button id="detail-load-builder" class="resource-advanced-only">Load into Builder</button><button id="detail-edit-json">Edit raw JSON</button><button id="detail-export">Export JSON</button>';
       resourceDetail.textContent = '';
       resourceDetail.appendChild(table);
       resourceDetail.appendChild(actions);
@@ -724,6 +746,7 @@ func AdminHTML() string {
     }
 
     function loadBuilder(resource) {
+      setResourceMode('advanced');
       document.querySelector('#builder-id').value = resource.id || '';
       document.querySelector('#builder-title').value = resource.title || resource.name || '';
       document.querySelector('#builder-entry-url').value = (resource.entry_urls || resource.sample_urls || [''])[0] || '';
@@ -819,6 +842,7 @@ func AdminHTML() string {
         edit.addEventListener('click', () => setEditor(resource));
         const builder = document.createElement('button');
         builder.textContent = 'Load into Builder';
+        builder.className = 'resource-advanced-only';
         builder.addEventListener('click', () => { setEditor(resource); loadBuilder(resource); show('Resource loaded into builder.'); });
         const validate = document.createElement('button');
         validate.textContent = 'Validate';
@@ -1077,6 +1101,13 @@ func AdminHTML() string {
     document.querySelector('#dash-api-keys').addEventListener('click', async () => { switchSection('api-keys'); try { await loadAPIKeys(); } catch (err) { show(err); } });
     document.querySelector('#dash-users').addEventListener('click', async () => { switchSection('users'); try { await loadUsers(); } catch (err) { show(err); } });
 
+    document.querySelector('#resource-mode-basic').addEventListener('click', () => setResourceMode('basic'));
+    document.querySelector('#resource-mode-advanced').addEventListener('click', () => setResourceMode('advanced'));
+    document.querySelector('#validate-resource-editor').addEventListener('click', async () => {
+      const resource = parseJSONEditor(editor, 'resource');
+      if (resource) await validateResource(resource);
+    });
+
     document.querySelector('#load').addEventListener('click', async () => { try { await loadResources(); } catch (err) { show(err); } });
     document.querySelector('#new-resource').addEventListener('click', () => { setEditor(template); show('New resource template loaded.'); });
     document.querySelector('#save-resource').addEventListener('click', async () => {
@@ -1293,6 +1324,8 @@ func AdminHTML() string {
       try { show(await api('/api/v1/auth/saml/providers/' + encodeURIComponent(id), { method: 'DELETE' })); await loadSAMLProviders(false); } catch (err) { show(err); }
     });
     document.querySelector('#open-saml-metadata').addEventListener('click', () => window.open('/auth/saml/metadata', '_blank', 'noopener'));
+
+    try { setResourceMode(localStorage.getItem('odo.resources.mode'), false); } catch (_) { setResourceMode('basic', false); }
 
     addDomainRow();
     addHeaderRuleRow({ name: 'X-Requested-With', action: 'remove', phase: 'request' });

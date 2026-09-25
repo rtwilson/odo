@@ -27,12 +27,20 @@ Gather the basic information first:
 
 Use a test account or staff account when possible. Keep the first version small, then add domains only when testing shows Odo needs them.
 
-## Quick add: simple resource
+## Basic and Advanced modes
 
-For most resources, start in `/admin` on the Resources tab with the Resource Config Builder:
+The Resources page opens in **Basic** mode, with resource cards, details, the JSON editor, validation, export, and proxy testing. Paste a resource into the JSON editor and select **Validate JSON** to use the existing server-side validator.
+
+Choose **Advanced** to reveal the field-based Resource Config Builder. Switching modes preserves the current JSON draft and builder fields. Odo remembers only the selected mode in browser local storage; if storage is unavailable, each page load defaults to Basic.
+
+This first UI change separates the modes. File uploads, change previews, and a confirmation step before publishing are not implemented yet; saving currently uses the existing resource API directly, which validates the resource on save.
+
+## Quick add with the Advanced builder
+
+To create a resource using individual fields, open the Resource Config Builder:
 
 1. Open `/admin`.
-2. Go to **Resources**.
+2. Go to **Resources** and select **Advanced**.
 3. Enter a resource ID, title, and entry URL.
 4. Add the main domain from the entry URL.
 5. Leave the default methods and cookie policy enabled.

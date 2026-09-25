@@ -376,6 +376,19 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 			t.Fatalf("expected admin body to contain %q", want)
 		}
 	}
+	for _, want := range []string{
+		`data-resource-mode="basic"`,
+		`id="resource-mode-basic" class="resource-mode-button" aria-pressed="true"`,
+		`id="resource-mode-advanced"`,
+		`id="resource-advanced" hidden`,
+		`id="validate-resource-editor"`,
+		`Advanced mode exposes the structured resource model directly.`,
+		`localStorage.setItem('odo.resources.mode', mode)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected resource mode control %q", want)
+		}
+	}
 	if strings.Contains(body, `data-section="proxy"`) || strings.Contains(body, `id="section-proxy"`) {
 		t.Fatalf("standalone Proxy Test navigation/section should be folded into Resources")
 	}
