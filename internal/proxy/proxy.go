@@ -117,6 +117,14 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			diagnostics.Reason = result.SafetyReason
 		}
 		defer func() {
+			if diagnostics.RemovedCSPMetaCount > 0 {
+				options.Diagnostics.Add(Diagnostics{
+					Type: "response_meta_modified", Action: "removed_for_proxy_compatibility",
+					TS: diagnostics.TS, TargetHost: diagnostics.TargetHost, ResourceID: diagnostics.ResourceID,
+					ContentType: diagnostics.ContentType, RemovedCSPMetaCount: diagnostics.RemovedCSPMetaCount,
+					CSPRemoved: true,
+				})
+			}
 			options.Diagnostics.Add(*diagnostics)
 		}()
 		setAccessLogMetadata(r, rawURL, result)

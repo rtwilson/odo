@@ -9,6 +9,7 @@ import (
 )
 
 type Diagnostics struct {
+	RemovedCSPMetaCount          int    `json:"removed_csp_meta_count,omitempty"`
 	Header                       string `json:"header,omitempty"`
 	Action                       string `json:"action,omitempty"`
 	ContentType                  string `json:"content_type,omitempty"`

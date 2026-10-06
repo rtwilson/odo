@@ -106,3 +106,48 @@ func TestDiagnosticContentTypeDoesNotExposeArbitraryValues(t *testing.T) {
 		}
 	}
 }
+
+func TestMetaCSPPolicyForHTMLAndNonHTML(t *testing.T) {
+	const body = `<html><head><meta http-equiv="Content-Security-Policy" content="private-policy"><script>script.src = src;</script></head></html>`
+	for _, contentType := range []string{"text/html", "text/plain", "application/javascript", "application/json"} {
+		t.Run(contentType, func(t *testing.T) {
+			store := NewDiagnosticsStore(10)
+			client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			}).client()
+			handler := FetchHandlerWithOptions(FetchOptions{Client: client, Check: allowedHostTargetCheck, Diagnostics: store})
+			req := httptest.NewRequest("GET", "/odo?url="+url.QueryEscape("https://www.jstor.org/private-path?token=private-query"), nil)
+			req.Header.Set("Authorization", "Bearer private-auth")
+			req.Header.Set("Cookie", "private-cookie=value")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("status %d", rec.Code)
+			}
+			entries := store.Recent()
+			if contentType != "text/html" {
+				if rec.Body.String() != body || len(entries) != 1 || entries[0].CSPRemoved {
+					t.Fatalf("changed non-HTML: %s, %#v", rec.Body.String(), entries)
+				}
+				return
+			}
+			if strings.Contains(rec.Body.String(), "private-policy") || !strings.Contains(rec.Body.String(), "script.src = src;") {
+				t.Fatalf("incorrect HTML rewrite: %s", rec.Body.String())
+			}
+			if len(entries) != 2 || entries[0].RemovedCSPMetaCount != 1 || !entries[0].CSPRemoved || entries[0].UpstreamCSPPresent {
+				t.Fatalf("wrong policy summary: %#v", entries)
+			}
+			event := entries[1]
+			if event.Type != "response_meta_modified" || event.Action != "removed_for_proxy_compatibility" || event.TargetHost != "www.jstor.org" || event.RemovedCSPMetaCount != 1 {
+				t.Fatalf("wrong event: %#v", event)
+			}
+			payload, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(payload), "private-") || strings.Contains(string(payload), "https://") {
+				t.Fatalf("event leaked request or policy: %s", payload)
+			}
+		})
+	}
+}

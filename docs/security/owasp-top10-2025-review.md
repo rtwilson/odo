@@ -86,6 +86,11 @@ tests cover app routes and both explicit and recovered proxy responses. See
 challenge-path diagnostics are implemented. Browser and deployment verification
 remain pending; the original finding below records the review baseline.
 
+Vendor HTML CSP meta elements are now suppressed separately from HTTP headers,
+with privacy-safe removal counts/events. The tokenizer preserves inline script
+source during attribute rewriting. Neither vendor response transformation runs
+on Odo-owned pages, and these compatibility measures do not solve vendor challenges.
+
 - **Severity:** Medium
 - **Status:** Confirmed
 - **Evidence:** HTML handlers set only `Content-Type`; the outer middleware does not set CSP, `X-Content-Type-Options`, frame protection, `Referrer-Policy`, or `Permissions-Policy` (`internal/api/server.go:326-367,432-470,1769-1809`). The admin UI uses DOM `textContent`/input values for dynamic data, which reduces current XSS exposure, but it contains a large inline script that requires an intentional CSP design.

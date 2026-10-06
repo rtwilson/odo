@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	htmlstd "html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -651,7 +652,7 @@ func TestFetchHandlerRewritesInlineStyleURLs(t *testing.T) {
 	html := `<div style="background: url('/asset.png')"></div>`
 	body, _ := fetchBody(t, "text/html", html, allowedHostTargetCheck)
 
-	if !strings.Contains(body, `url('/odo/https/www.jstor.org/asset.png')`) {
+	if !strings.Contains(htmlstd.UnescapeString(body), `url('/odo/https/www.jstor.org/asset.png')`) {
 		t.Fatalf("expected inline style URL rewrite, got %s", body)
 	}
 }

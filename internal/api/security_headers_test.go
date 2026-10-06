@@ -62,7 +62,7 @@ func TestVendorResponsesDoNotReceiveAppSecurityHeaders(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
 		w.Header().Set("Content-Security-Policy-Report-Only", "script-src 'none'")
-		_, _ = w.Write([]byte("<!doctype html><html><body>vendor</body></html>"))
+		_, _ = w.Write([]byte(`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body>vendor</body></html>`))
 	}))
 	defer upstream.Close()
 	server := newProxyFetchTestServer(t, upstream.URL)
@@ -76,6 +76,9 @@ func TestVendorResponsesDoNotReceiveAppSecurityHeaders(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "vendor") {
 				t.Fatalf("vendor fetch failed: %d %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), `http-equiv="Content-Security-Policy"`) {
+				t.Fatal("vendor meta CSP was not removed")
 			}
 			for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy", "Permissions-Policy"} {
 				if got := rec.Header().Get(name); got != "" {

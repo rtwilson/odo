@@ -3,78 +3,98 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"strings"
 
 	"example.org/odo/internal/resources"
+	"golang.org/x/net/html"
 )
 
-var (
-	htmlURLAttrRE   = regexp.MustCompile(`(?i)\b(data-src|data-href|href|src|action|poster)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	htmlSrcsetRE    = regexp.MustCompile(`(?i)\bsrcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	htmlStyleAttrRE = regexp.MustCompile(`(?i)\bstyle\s*=\s*("[^"]*"|'[^']*')`)
-	htmlIntegrityRE = regexp.MustCompile(`(?i)\s+integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	htmlFormTagRE   = regexp.MustCompile(`(?i)<form\b[^>]*>`)
-	cssURLRE        = regexp.MustCompile(`(?i)url\(\s*("[^"]*"|'[^']*'|[^)]*)\s*\)`)
-)
+var cssURLRE = regexp.MustCompile(`(?i)url\(\s*("[^"]*"|'[^']*'|[^)]*)\s*\)`)
 
 func RewriteHTML(ctx context.Context, body string, base *url.URL, check TargetCheck) string {
-	original := body
-	body = rewriteMissingFormActions(ctx, body, base, check)
-
-	body = htmlURLAttrRE.ReplaceAllStringFunc(body, func(match string) string {
-		name, rawValue, ok := splitAttr(match)
-		if !ok {
-			return match
+	tokenizer := html.NewTokenizer(strings.NewReader(body))
+	var out strings.Builder
+	for {
+		kind := tokenizer.Next()
+		raw := string(tokenizer.Raw())
+		if kind == html.ErrorToken {
+			// Preserve any trailing incomplete markup returned with EOF.
+			out.WriteString(raw)
+			if tokenizer.Err() != io.EOF {
+				return body
+			}
+			return out.String()
 		}
-		rewritten := rewriteOneURL(ctx, unquoteAttr(rawValue), base, check, rewriteCategory(name))
-		return name + "=" + quoteLike(rawValue, rewritten)
-	})
-
-	body = htmlSrcsetRE.ReplaceAllStringFunc(body, func(match string) string {
-		name, rawValue, ok := splitAttr(match)
-		if !ok {
-			return match
+		if kind != html.StartTagToken && kind != html.SelfClosingTagToken {
+			out.WriteString(raw)
+			continue
 		}
-		rewritten := rewriteSrcset(ctx, unquoteAttr(rawValue), base, check)
-		return name + "=" + quoteLike(rawValue, rewritten)
-	})
-
-	body = htmlStyleAttrRE.ReplaceAllStringFunc(body, func(match string) string {
-		name, rawValue, ok := splitAttr(match)
-		if !ok {
-			return match
+		token := tokenizer.Token()
+		if isCSPMeta(token) {
+			if diagnostics := DiagnosticsFrom(ctx); diagnostics != nil {
+				diagnostics.RemovedCSPMetaCount++
+				diagnostics.CSPRemoved = true
+			}
+			continue
 		}
-		rewritten := RewriteCSS(ctx, unquoteAttr(rawValue), base, check)
-		return name + "=" + quoteLike(rawValue, rewritten)
-	})
-
-	if body != original {
-		removed := 0
-		body = htmlIntegrityRE.ReplaceAllStringFunc(body, func(match string) string {
-			removed++
-			return ""
-		})
-		if diagnostics := DiagnosticsFrom(ctx); diagnostics != nil {
-			diagnostics.RemovedIntegrityCount += removed
+		changed := false
+		hasAction := false
+		for i := range token.Attr {
+			attr := &token.Attr[i]
+			original := attr.Val
+			switch attr.Key {
+			case "action":
+				hasAction = true
+				attr.Val = rewriteOneURL(ctx, original, base, check, rewriteCategory(attr.Key))
+			case "data-src", "data-href", "href", "src", "poster":
+				attr.Val = rewriteOneURL(ctx, original, base, check, rewriteCategory(attr.Key))
+			case "srcset":
+				attr.Val = rewriteSrcset(ctx, original, base, check)
+			case "style":
+				attr.Val = RewriteCSS(ctx, original, base, check)
+			}
+			changed = changed || attr.Val != original
 		}
+		if token.Data == "form" && !hasAction {
+			action := rewriteOneURL(ctx, base.String(), base, check, "form")
+			if action != base.String() {
+				token.Attr = append(token.Attr, html.Attribute{Key: "action", Val: action})
+				changed = true
+			}
+		}
+		if !changed {
+			out.WriteString(raw)
+			continue
+		}
+		attrs := token.Attr[:0]
+		for _, attr := range token.Attr {
+			if attr.Key == "integrity" {
+				if diagnostics := DiagnosticsFrom(ctx); diagnostics != nil {
+					diagnostics.RemovedIntegrityCount++
+				}
+				continue
+			}
+			attrs = append(attrs, attr)
+		}
+		token.Attr = attrs
+		out.WriteString(token.String())
 	}
-
-	return body
 }
 
-func rewriteMissingFormActions(ctx context.Context, body string, base *url.URL, check TargetCheck) string {
-	return htmlFormTagRE.ReplaceAllStringFunc(body, func(tag string) string {
-		if strings.Contains(strings.ToLower(tag), " action=") {
-			return tag
+func isCSPMeta(token html.Token) bool {
+	if token.Data != "meta" {
+		return false
+	}
+	for _, attr := range token.Attr {
+		if attr.Key == "http-equiv" {
+			value := strings.TrimSpace(attr.Val)
+			return strings.EqualFold(value, "Content-Security-Policy") || strings.EqualFold(value, "Content-Security-Policy-Report-Only")
 		}
-		rewritten := rewriteOneURL(ctx, base.String(), base, check, "form")
-		if rewritten == base.String() {
-			return tag
-		}
-		return strings.TrimSuffix(tag, ">") + ` action="` + rewritten + `">`
-	})
+	}
+	return false
 }
 
 func RewriteCSS(ctx context.Context, body string, base *url.URL, check TargetCheck) string {

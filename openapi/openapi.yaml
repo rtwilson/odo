@@ -1644,7 +1644,7 @@ components:
             properties:
               type:
                 type: string
-                description: Header suppression events use response_header_modified.
+                description: CSP suppression uses response_header_modified for HTTP headers and response_meta_modified for HTML meta elements.
               header:
                 type: string
                 enum: [Content-Security-Policy, Content-Security-Policy-Report-Only]
@@ -1665,6 +1665,11 @@ components:
                 type: boolean
               csp_removed:
                 type: boolean
+                description: A CSP header or HTML CSP meta element was suppressed.
+              removed_csp_meta_count:
+                type: integer
+                minimum: 0
+                description: Number of CSP meta elements removed from proxied HTML; omitted when zero. Upstream CSP presence flags describe HTTP headers only.
               challenge_path_requested:
                 type: boolean
                 description: Known challenge-path prefix requested; does not establish challenge execution or failure.
