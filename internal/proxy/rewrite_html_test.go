@@ -5,7 +5,34 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"example.org/odo/internal/resources"
 )
+
+func TestResourceRewriteDoesNotChangeInjectedShim(t *testing.T) {
+	t.Setenv("APP_PROXY_INJECT_JS_SHIM", "true")
+	base, _ := url.Parse("https://www.economist.com/")
+	for _, mode := range []string{"path", "query"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("APP_PROXY_URL_MODE", mode)
+			ctx, diagnostic := WithDiagnostics(context.Background())
+			result := resources.TestResult{ContentRewriteRules: []resources.ContentRewriteRule{{
+				ContentTypes: []string{"text/html"}, Find: "https://www.economist.com/", Replace: "{proxy_url:https://www.economist.com/}",
+			}}}
+			input := `<html><head></head><body><script>const vendorURL = "https://www.economist.com/";</script></body></html>`
+			got := transformBody(ctx, input, "text/html", base, allowedHostTargetCheck, result)
+			if !strings.Contains(got, BuildJSShim("https://www.economist.com", base.String())) {
+				t.Fatalf("resource rule modified Odo shim: %s", got)
+			}
+			if !strings.Contains(got, `const vendorURL = "`+BuildProxyURL(base)+`";`) {
+				t.Fatalf("vendor rule stopped working: %s", got)
+			}
+			if diagnostic.ContentRewriteRulesApplied != 1 || !diagnostic.JSShimInjected {
+				t.Fatalf("unexpected diagnostics: %#v", diagnostic)
+			}
+		})
+	}
+}
 
 func TestRewriteHTMLPreservesInlineScriptSource(t *testing.T) {
 	base, _ := url.Parse("https://www.jstor.org/")

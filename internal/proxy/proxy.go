@@ -393,6 +393,8 @@ func transformBody(ctx context.Context, body, contentType string, base *url.URL,
 	}
 	if strings.Contains(contentType, "text/html") {
 		transformed := RewriteHTML(ctx, body, base, check)
+		// Resource rules apply to vendor content, never the injected Odo shim.
+		transformed = ApplyContentRewriteRules(ctx, transformed, contentType, base, result)
 		if InjectJSShimEnabled() {
 			targetOrigin := base.Scheme + "://" + base.Host
 			var injected bool
@@ -403,7 +405,7 @@ func transformBody(ctx context.Context, body, contentType string, base *url.URL,
 				diagnostics.JSXHRShimEnabled = injected
 			}
 		}
-		return ApplyContentRewriteRules(ctx, transformed, contentType, base, result)
+		return transformed
 	}
 	return ApplyContentRewriteRules(ctx, body, contentType, base, result)
 }

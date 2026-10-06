@@ -31,6 +31,8 @@ HTML attributes and are left untouched. Actual tag attributes still undergo URL
 rewriting; integrity attributes are removed only on tags that change. Explicit
 resource content-rewrite rules remain a separate pass and can still change
 script text, invalidating a vendor's script hash.
+Those rules run before Odo injects its compatibility shim, so vendor URL
+replacements cannot change the shim's origin or base URL.
 Suppressing CSP removes a vendor defense-in-depth control: only allowlisted, trusted
 resources should be configured, and vendor content should not be considered
 isolated from Odo merely because it has a separate header policy.
