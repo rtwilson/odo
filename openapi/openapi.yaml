@@ -792,7 +792,7 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Recent proxy diagnostics, currently empty in the MVP
+          description: Recent proxy diagnostics, including CSP header suppression and challenge-path signals.
           content:
             application/json:
               schema:
@@ -1641,6 +1641,33 @@ components:
           items:
             type: object
             additionalProperties: true
+            properties:
+              type:
+                type: string
+                description: Header suppression events use response_header_modified.
+              header:
+                type: string
+                enum: [Content-Security-Policy, Content-Security-Policy-Report-Only]
+              action:
+                type: string
+                enum: [removed_for_proxy_compatibility]
+              target_host:
+                type: string
+                description: Hostname only, without URL path or query.
+              resource_id:
+                type: string
+              content_type:
+                type: string
+                description: Known media type without parameters, or other/missing. Absent before an upstream response.
+              upstream_csp_present:
+                type: boolean
+              upstream_csp_report_only_present:
+                type: boolean
+              csp_removed:
+                type: boolean
+              challenge_path_requested:
+                type: boolean
+                description: Known challenge-path prefix requested; does not establish challenge execution or failure.
     RecentMissedRewriteEventsResponse:
       type: object
       required: [events]

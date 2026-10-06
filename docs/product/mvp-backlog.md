@@ -57,7 +57,7 @@ The original MVP security implementation blockers are fixed; this does not estab
 
 ## Before Internet-Facing Pilot
 
-- Configure edge login rate limiting and alerting, and add application security headers, supply-chain CI, complete security-event coverage, and HTTP server timeouts/graceful shutdown. See the [OWASP findings](../security/owasp-top10-2025-review.md#should-fix-before-internet-facing-pilot).
+- Configure edge login rate limiting and alerting, verify the implemented application security headers in browsers/deployment, and add supply-chain CI, complete security-event coverage, and HTTP server timeouts/graceful shutdown. See the [OWASP findings](../security/owasp-top10-2025-review.md#should-fix-before-internet-facing-pilot).
 
 ## P0 Follow-up Checks
 

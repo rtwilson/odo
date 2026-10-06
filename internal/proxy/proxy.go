@@ -97,6 +97,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		diagnostics.Method = r.Method
 		if target != nil {
 			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+			diagnostics.ChallengePathRequested = strings.HasPrefix(target.Path, "/_fs-ch-") || strings.HasPrefix(target.Path, "/cdn-cgi/challenge-platform/")
 		} else if parsedTarget != nil {
 			diagnostics.TargetHost = strings.ToLower(strings.TrimSuffix(parsedTarget.Hostname(), "."))
 		}
@@ -190,6 +191,7 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			metadata.UpstreamStatus = resp.StatusCode
 		}
 		diagnostics.UpstreamStatus = resp.StatusCode
+		recordResponsePolicy(options.Diagnostics, diagnostics, resp.Header)
 
 		if isRedirect(resp.StatusCode) {
 			handleRedirect(w, r, target, resp, check, options.Logger)
@@ -337,9 +339,10 @@ func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.UR
 }
 
 func copySafeResponseHeaders(dst, src http.Header) {
-	// MVP compatibility choice: transformed/proxied pages often fail if upstream
-	// CSP/SRI policies refer to the vendor origin. Do not forward CSP headers
-	// until Odo has fuller rewriting and policy handling.
+	// Explicit MVP policy: suppress both CSP headers for every vendor response
+	// type (including non-HTML and HEAD). recordResponsePolicy reports this
+	// allowlist decision without logging the header values. Odo app headers are
+	// handled separately by the API layer.
 	for _, name := range []string{"Content-Type", "Cache-Control", "Last-Modified", "ETag", "Expires"} {
 		if values := src.Values(name); len(values) > 0 {
 			for _, value := range values {

@@ -21,7 +21,7 @@ The container build file is now named `Dockerfile`; `Containerfile` references b
 ### Should fix before Internet-facing pilot
 
 - Configure reverse-proxy login rate limiting and operational alerting; local per-process throttling is implemented (ODO-2025-004).
-- Add application-page security headers and document proxy-response header policy (ODO-2025-007).
+- Verify application-page security headers in a browser and at the TLS terminator; app/proxy policy separation is implemented (ODO-2025-007).
 - Add dependency scanning, update automation, immutable container inputs, and release provenance (ODO-2025-008).
 - Complete security-event coverage without storing patron research trails (ODO-2025-009).
 - Add HTTP server read/write/idle timeouts and graceful shutdown (ODO-2025-010).
@@ -76,6 +76,15 @@ Tests to add: enumerate every registered `/api/v1` route as anonymous, viewer, e
 - **Remaining risk:** the container intentionally defaults to development and deployment still depends on operators selecting production; add a production container smoke test and reject additional organization-specific placeholder values as needed.
 
 #### ODO-2025-007 — Application HTML lacks baseline security headers
+
+Implementation update: Odo-owned responses now receive application security
+headers, including a hash-based admin script CSP. Direct and recovered vendor
+responses are excluded at the vendor handler boundary; their existing upstream
+header allowlist is a separate compatibility policy. Header-boundary regression
+tests cover app routes and both explicit and recovered proxy responses. See
+[response-header policy](response-headers.md). Privacy-safe CSP-removal and
+challenge-path diagnostics are implemented. Browser and deployment verification
+remain pending; the original finding below records the review baseline.
 
 - **Severity:** Medium
 - **Status:** Confirmed

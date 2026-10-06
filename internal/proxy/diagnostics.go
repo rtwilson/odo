@@ -2,11 +2,20 @@ package proxy
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
 type Diagnostics struct {
+	Header                       string `json:"header,omitempty"`
+	Action                       string `json:"action,omitempty"`
+	ContentType                  string `json:"content_type,omitempty"`
+	UpstreamCSPPresent           bool   `json:"upstream_csp_present"`
+	UpstreamCSPReportOnlyPresent bool   `json:"upstream_csp_report_only_present"`
+	CSPRemoved                   bool   `json:"csp_removed"`
+	ChallengePathRequested       bool   `json:"challenge_path_requested"`
 	Type                         string `json:"type,omitempty"`
 	Reason                       string `json:"reason,omitempty"`
 	TS                           string `json:"ts"`
@@ -37,6 +46,41 @@ type Diagnostics struct {
 	NonProxyableAllowedCount     int    `json:"non_proxyable_allowed_count"`
 	BlockedURLCount              int    `json:"blocked_url_count"`
 	RemovedIntegrityCount        int    `json:"removed_integrity_count"`
+}
+
+// Report categories, never arbitrary upstream MIME tokens or their parameters.
+func diagnosticContentType(value string) string {
+	mediaType, _, _ := strings.Cut(value, ";")
+	switch mediaType = strings.ToLower(strings.TrimSpace(mediaType)); mediaType {
+	case "text/html", "application/xhtml+xml", "text/css", "text/javascript", "application/javascript", "application/json", "text/plain", "application/octet-stream", "font/woff", "font/woff2", "image/png", "image/jpeg", "image/svg+xml":
+		return mediaType
+	case "":
+		return "missing"
+	default:
+		return "other"
+	}
+}
+
+// The proxy allowlist suppresses both CSP headers for all response types.
+// Construct fresh events so rewrite patterns and other request-derived fields
+// from the aggregate diagnostic cannot enter response-header events.
+func recordResponsePolicy(store *DiagnosticsStore, diagnostic *Diagnostics, headers http.Header) {
+	diagnostic.ContentType = diagnosticContentType(headers.Get("Content-Type"))
+	diagnostic.UpstreamCSPPresent = len(headers.Values("Content-Security-Policy")) > 0
+	diagnostic.UpstreamCSPReportOnlyPresent = len(headers.Values("Content-Security-Policy-Report-Only")) > 0
+	diagnostic.CSPRemoved = diagnostic.UpstreamCSPPresent || diagnostic.UpstreamCSPReportOnlyPresent
+	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+		if len(headers.Values(name)) == 0 {
+			continue
+		}
+		store.Add(Diagnostics{
+			Type: "response_header_modified", Header: name, Action: "removed_for_proxy_compatibility",
+			TS: diagnostic.TS, TargetHost: diagnostic.TargetHost, ResourceID: diagnostic.ResourceID,
+			ContentType: diagnostic.ContentType, UpstreamCSPPresent: diagnostic.UpstreamCSPPresent,
+			UpstreamCSPReportOnlyPresent: diagnostic.UpstreamCSPReportOnlyPresent,
+			CSPRemoved:                   true, ChallengePathRequested: diagnostic.ChallengePathRequested,
+		})
+	}
 }
 
 type DiagnosticsStore struct {

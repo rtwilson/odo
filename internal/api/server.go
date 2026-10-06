@@ -127,14 +127,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/users/{id}/lock", s.requireScopes(s.lockUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/unlock", s.requireScopes(s.unlockUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/revoke-sessions", s.requireScopes(s.revokeUserSessions, "users:write"))
-	proxyHandler := proxy.FetchHandlerWithOptions(proxy.FetchOptions{
+	proxyHandler := vendorResponsePolicy(proxy.FetchHandlerWithOptions(proxy.FetchOptions{
 		Logger:       s.logger,
 		Client:       s.httpClient,
 		Check:        s.proxyTarget,
 		Sessions:     s.sessions,
 		DebugHeaders: s.proxyDebug,
 		Diagnostics:  s.proxyDiag,
-	})
+	}))
 	s.proxyH = proxyHandler
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /odo", s.requireProxySession(proxyHandler))
@@ -142,5 +142,5 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
-	return s.logging(s.requireAPIAuthentication(mux))
+	return s.logging(appSecurityHeaders(s.requireAPIAuthentication(mux)))
 }
