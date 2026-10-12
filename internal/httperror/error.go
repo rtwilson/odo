@@ -27,7 +27,7 @@ func Write(w http.ResponseWriter, r *http.Request, logger *slog.Logger, status i
 	if r.URL.Path == "/login" || r.URL.Path == "/admin" || r.URL.Path == "/resources" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(status)
-		_, _ = fmt.Fprintf(w, "<!doctype html><html><body><h1>%s</h1><p>Request ID: %s</p></body></html>", message, html.EscapeString(id))
+		_, _ = fmt.Fprintf(w, "<!doctype html><html><head><meta charset=\"utf-8\"><title>Odo error</title><link rel=\"icon\" href=\"/favicon.ico\"></head><body><h1>%s</h1><p>Request ID: %s</p></body></html>", message, html.EscapeString(id))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

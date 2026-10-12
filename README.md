@@ -92,6 +92,8 @@ http://127.0.0.1:8080/openapi.yaml
 
 ## Admin UI
 
+Odo serves its own favicon at `/favicon.ico` for its login, admin, resources, and HTML error pages. Proxied vendor pages retain their own favicon links.
+
 Open `http://127.0.0.1:8080/admin`. The admin UI is organized into sections for Dashboard, Resources, Config, Diagnostics / Logs, API Keys, Users, Auth / SAML, and Settings / System.
 
 The built-in admin UI is intentionally minimal: plain, readable, and focused on common sysadmin and library-staff tasks. All key operations use the documented `/api/v1` JSON endpoints, so sites can build their own custom UI, scripts, or automation against the same API instead of customizing the bundled page.

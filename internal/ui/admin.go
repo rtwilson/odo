@@ -3,7 +3,7 @@ package ui
 func AdminHTML() string {
 	return `<!doctype html>
 <html lang="en">
-<head>
+<head><link rel="icon" href="/favicon.ico">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>odo admin</title>

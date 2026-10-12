@@ -71,7 +71,7 @@ func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><title>odo resources</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:920px;margin:0 auto;padding:28px}a{color:#8cc7ff}li{margin:12px 0}button{padding:8px 10px}</style></head><body><main>`)
+	b.WriteString(`<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo resources</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:920px;margin:0 auto;padding:28px}a{color:#8cc7ff}li{margin:12px 0}button{padding:8px 10px}</style></head><body><main>`)
 	b.WriteString("<h1>Resources</h1><p>Signed in as " + htmlEscape(displayUser(user)) + `</p><form method="post" action="/logout"><button>Logout</button></form><ul>`)
 	for _, resource := range items {
 		if resource.Status != "active" {
