@@ -43,10 +43,16 @@ func NewServerWithAccessLoggerAndResolver(store *db.Store, configDir, adminKey s
 	return NewServerWithAccessLoggerResolverAndHTTPClient(store, configDir, adminKey, logger, accessLogger, lookup, nil)
 }
 
+// NewServerWithAccessLoggerResolverAndHTTPClient accepts a custom client for
+// integration and testing. Production clients must preserve connection-time
+// IP validation, such as proxy.DefaultHTTPClientWithResolver provides. URL
+// validation alone cannot prevent DNS rebinding. A nil client uses the safe default.
 func NewServerWithAccessLoggerResolverAndHTTPClient(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client) *Server {
 	return NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminKey, logger, accessLogger, lookup, client, false)
 }
 
+// NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug has the same custom
+// client safety requirements as NewServerWithAccessLoggerResolverAndHTTPClient.
 func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, configDir, adminKey string, logger *slog.Logger, accessLogger *accesslog.Logger, lookup proxy.IPLookupFunc, client *http.Client, proxyDebug bool) *Server {
 	if lookup == nil {
 		lookup = net.DefaultResolver.LookupIPAddr
