@@ -25,7 +25,7 @@ Odo normally listens on `127.0.0.1:8080`. Public HTTPS should be handled by a re
 - A Linux server with systemd.
 - Root or sudo access.
 - A reverse proxy such as Apache/httpd, nginx, or Caddy for public HTTPS.
-- Go 1.23 or a downloaded Odo binary.
+- Go 1.25 or later, or a downloaded Odo binary.
 - SQLite data stored on persistent disk.
 - A public hostname if exposing Odo beyond localhost.
 

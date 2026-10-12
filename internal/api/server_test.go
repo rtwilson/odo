@@ -686,7 +686,7 @@ func TestDeploymentPackagingAndDocsExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Dockerfile: %v", err)
 	}
-	for _, want := range []string{"FROM golang:1.23-alpine AS build", "USER odo", "APP_DATA_DIR=/var/lib/odo", "APP_CONFIG_DIR=/etc/odo", "HEALTHCHECK", "EXPOSE 8080"} {
+	for _, want := range []string{"FROM golang:1.25-alpine AS build", "USER odo", "APP_DATA_DIR=/var/lib/odo", "APP_CONFIG_DIR=/etc/odo", "HEALTHCHECK", "EXPOSE 8080"} {
 		if !strings.Contains(string(dockerfile), want) {
 			t.Fatalf("expected Dockerfile to contain %q", want)
 		}
