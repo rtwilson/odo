@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,7 +23,7 @@ import (
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	next, _ := safeNextPath(r.URL.Query().Get("next"))
-	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}</style></head><body><main><h1>odo login</h1><p>Sign in to continue</p><form method="post" action="/login"><input type="hidden" name="next" value="%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form></main></body></html>`, htmlEscape(next))
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}</style></head><body><main><h1>odo login</h1><p>Sign in to continue</p><form method="post" action="/login"><input type="hidden" name="next" value="%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form></main></body></html>`, html.EscapeString(next))
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {

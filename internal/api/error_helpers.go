@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
-	"strings"
 
 	"example.org/odo/internal/httperror"
 )
@@ -13,12 +13,7 @@ import (
 func writeAdminForbidden(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
-	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo admin forbidden</title></head><body><main><h1>Admin access denied</h1><p>%s</p><p><a href="/resources">Go to resources</a></p></main></body></html>`, htmlEscape(message))
-}
-
-func htmlEscape(value string) string {
-	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;", "'", "&#39;")
-	return replacer.Replace(value)
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo admin forbidden</title></head><body><main><h1>Admin access denied</h1><p>%s</p><p><a href="/resources">Go to resources</a></p></main></body></html>`, html.EscapeString(message))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

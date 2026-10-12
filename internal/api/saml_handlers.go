@@ -108,7 +108,14 @@ func publicBaseURL(r *http.Request) string {
 	scheme := ""
 	host := r.Host
 	if trustProxyHeaders() {
-		scheme = firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+		// Use fixed scheme values; malformed forwarded values fall back to
+		// the actual connection scheme below.
+		switch strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))) {
+		case "http":
+			scheme = "http"
+		case "https":
+			scheme = "https"
+		}
 		if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
 			host = forwardedHost
 		}
