@@ -161,6 +161,8 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			upstreamReq.ContentLength = contentLength
 		}
 		copySafeRequestHeaders(upstreamReq, r, target, result.RequestHeaderRules)
+		// Keep the transport from implicitly decompressing binary responses.
+		upstreamReq.Header.Set("Accept-Encoding", "identity")
 		diagnostics.HeaderRulesApplied = len(resources.RequestHeaderRemovals(result.RequestHeaderRules))
 		if methodMayCarryBody(r.Method) {
 			diagnostics.ProxiedPostCount = 1
@@ -200,6 +202,10 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 		diagnostics.UpstreamStatus = resp.StatusCode
 		recordResponsePolicy(options.Diagnostics, diagnostics, resp.Header)
+		defer func() { recordFrameContent(options.Diagnostics, diagnostics, r, resp.Header, w.Header()) }()
+		if isJavaScriptContentType(resp.Header.Get("Content-Type")) || scriptPathKind(target.Path) != "other" || strings.EqualFold(r.Header.Get("Sec-Fetch-Dest"), "script") {
+			defer func() { recordScriptAsset(options.Diagnostics, diagnostics, target.Path, resp.Header, w.Header()) }()
+		}
 
 		if isRedirect(resp.StatusCode) {
 			handleRedirect(w, r, target, resp, check, options.Logger)
@@ -208,17 +214,31 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 
 		copySafeResponseHeaders(w.Header(), resp.Header)
 		applyContentTypeFallback(w.Header(), target)
-		if r.Method != http.MethodHead && isTransformable(resp.Header.Get("Content-Type")) {
+		if diagnosticContentType(w.Header().Get("Content-Type")) == "application/octet-stream" &&
+			scriptPathKind(target.Path) != "other" && result.JavaScriptTextRewriteEnabled {
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		}
+		contentType := w.Header().Get("Content-Type")
+		if r.Method != http.MethodHead && resp.StatusCode != http.StatusPartialContent &&
+			resp.Header.Get("Content-Encoding") == "" && isTransformable(contentType) {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				httperror.Write(w, r, options.Logger, http.StatusBadGateway, fmt.Errorf("read upstream response: %w", err))
 				return
 			}
-			transformed := transformBody(r.Context(), string(body), resp.Header.Get("Content-Type"), target, check, result)
-			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+			transformed := transformBody(r.Context(), string(body), contentType, target, check, result)
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.WriteString(w, transformed)
 			return
+		}
+		// These describe the original bytes and are safe only on the streaming path.
+		for _, name := range []string{"Content-Length", "Content-Encoding", "Accept-Ranges", "Content-Range"} {
+			for _, value := range resp.Header.Values(name) {
+				w.Header().Add(name, value)
+			}
+		}
+		if diagnosticContentType(w.Header().Get("Content-Type")) == "application/pdf" || strings.HasSuffix(strings.ToLower(target.Path), ".pdf") {
+			recordPDFResponse(options.Diagnostics, diagnostics, r, resp.Header, w.Header())
 		}
 		w.WriteHeader(resp.StatusCode)
 		if r.Method != http.MethodHead {
@@ -325,7 +345,7 @@ func prepareUpstreamBody(w http.ResponseWriter, r *http.Request, maxBodyBytes in
 }
 
 func copySafeRequestHeaders(dst *http.Request, src *http.Request, target *url.URL, rules []resources.RequestHeaderRule) {
-	for _, name := range []string{"Accept", "Accept-Language", "User-Agent"} {
+	for _, name := range []string{"Accept", "Accept-Language", "User-Agent", "Range", "If-Range"} {
 		if values := src.Header.Values(name); len(values) > 0 {
 			for _, value := range values {
 				dst.Header.Add(name, value)
@@ -351,7 +371,7 @@ func copySafeResponseHeaders(dst, src http.Header) {
 	// type (including non-HTML and HEAD). recordResponsePolicy reports this
 	// allowlist decision without logging the header values. Odo app headers are
 	// handled separately by the API layer.
-	for _, name := range []string{"Content-Type", "Cache-Control", "Last-Modified", "ETag", "Expires"} {
+	for _, name := range []string{"Content-Type", "Content-Disposition", "Cache-Control", "Last-Modified", "ETag", "Expires"} {
 		if values := src.Values(name); len(values) > 0 {
 			for _, value := range values {
 				dst.Add(name, value)
@@ -366,6 +386,8 @@ func applyContentTypeFallback(headers http.Header, target *url.URL) {
 	}
 	path := strings.ToLower(target.EscapedPath())
 	switch {
+	case strings.HasSuffix(path, ".pdf"):
+		headers.Set("Content-Type", "application/pdf")
 	case strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs"):
 		headers.Set("Content-Type", "application/javascript; charset=utf-8")
 	case strings.HasSuffix(path, ".json") || strings.Contains(path, "/manifest"):
@@ -376,11 +398,18 @@ func applyContentTypeFallback(headers http.Header, target *url.URL) {
 }
 
 func isTransformable(contentType string) bool {
-	contentType = strings.ToLower(contentType)
-	for _, allowed := range []string{"text/html", "text/css", "application/javascript", "text/javascript", "application/json", "application/xml", "text/xml"} {
-		if strings.Contains(contentType, allowed) {
-			return true
-		}
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "text/html", "text/css", "application/javascript", "text/javascript", "application/x-javascript", "application/json", "application/xml", "text/xml":
+		return true
+	}
+	return false
+}
+
+func isJavaScriptContentType(contentType string) bool {
+	switch diagnosticContentType(contentType) {
+	case "application/javascript", "text/javascript", "application/x-javascript":
+		return true
 	}
 	return false
 }
@@ -439,6 +468,19 @@ func handleRedirect(w http.ResponseWriter, r *http.Request, target *url.URL, res
 		if diagnostics := DiagnosticsFrom(r.Context()); diagnostics != nil {
 			diagnostics.Type = "proxy_target_blocked"
 			diagnostics.Reason = "redirect_to_blocked_target"
+			diagnostics.RedirectTargetHost = strings.ToLower(strings.TrimSuffix(resolved.Hostname(), "."))
+			// Never copy a rule's arbitrary reason or the signed redirect URL.
+			diagnostics.RedirectBlockReason = "target_not_allowed"
+			switch {
+			case result.SafetyReason != "":
+				diagnostics.RedirectBlockReason = "target_safety_check_failed"
+			case result.Blocked || result.Action == "block":
+				diagnostics.RedirectBlockReason = "explicitly_blocked"
+			case result.Reason == "not_proxyable":
+				diagnostics.RedirectBlockReason = "not_proxyable"
+			case result.Reason == "no active resource domain rule matched":
+				diagnostics.RedirectBlockReason = "no_matching_domain_rule"
+			}
 		}
 		httperror.Write(w, r, logger, http.StatusBadGateway, fmt.Errorf("upstream redirect target is not allowed"))
 		return

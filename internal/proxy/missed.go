@@ -12,6 +12,7 @@ import (
 
 const (
 	RequestKindDocument = "document"
+	RequestKindFrame    = "frame"
 	RequestKindAsset    = "asset"
 	RequestKindAPI      = "api"
 	RequestKindAppData  = "app_data"
@@ -121,6 +122,9 @@ func MissedRewriteRequestKind(r *http.Request) string {
 	if r == nil || r.URL == nil {
 		return RequestKindUnknown
 	}
+	if FrameDestination(r) != "" {
+		return RequestKindFrame
+	}
 	if IsDocumentNavigation(r) {
 		return RequestKindDocument
 	}
@@ -137,6 +141,18 @@ func MissedRewriteRequestKind(r *http.Request) string {
 		return RequestKindAPI
 	}
 	return RequestKindUnknown
+}
+
+// Browser hints identify embedded requests, but never authorize proxy access.
+func FrameDestination(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	switch destination := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest"))); destination {
+	case "iframe", "frame", "object", "embed":
+		return destination
+	}
+	return ""
 }
 
 func IsDocumentNavigation(r *http.Request) bool {

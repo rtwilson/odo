@@ -454,3 +454,39 @@ func TestTestURLDeniesInactiveHTTPAndUnknownHosts(t *testing.T) {
 		t.Fatalf("expected inactive resource to be denied: %#v", result)
 	}
 }
+
+func TestJSTORPreviewBucketIsExactAndRequiresLogin(t *testing.T) {
+	data, err := os.ReadFile("../../config/resources/jstor.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := Decode(data)
+	if err != nil {
+		t.Fatalf("JSTOR profile must validate: %v", err)
+	}
+	for _, tc := range []struct {
+		host    string
+		allowed bool
+	}{
+		{"sequoia-cedar.s3.amazonaws.com", true},
+		{"other-bucket.s3.amazonaws.com", false},
+		{"nested.sequoia-cedar.s3.amazonaws.com", false},
+		{"sequoia-cedar.s3.amazonaws.com.example.org", false},
+		{"s3.amazonaws.com", false},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			target := "https://" + tc.host + "/example.pdf"
+			result := TestURL(target, []Resource{resource})
+			if result.Allowed != tc.allowed {
+				t.Fatalf("allowed = %t, want %t", result.Allowed, tc.allowed)
+			}
+			if tc.allowed && (result.Action != "proxy" || result.RuleMatch != "exact" || result.ResourceID != "jstor") {
+				t.Fatalf("unexpected bucket match: %#v", result)
+			}
+			anonymous := AnonymousURLRuleResult(target, "GET", []Resource{resource})
+			if anonymous.Allowed {
+				t.Fatal("preview bucket must not bypass login")
+			}
+		})
+	}
+}

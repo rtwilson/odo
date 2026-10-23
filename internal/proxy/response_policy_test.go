@@ -61,6 +61,14 @@ func TestResponsePolicyDiagnostics(t *testing.T) {
 				}
 			}
 			entries := store.Recent()
+			// Asset events are verified separately; this test covers policy events.
+			policyEntries := entries[:0]
+			for _, entry := range entries {
+				if entry.Type != "proxy_script_asset" {
+					policyEntries = append(policyEntries, entry)
+				}
+			}
+			entries = policyEntries
 			wantEvents := 0
 			if tc.csp {
 				wantEvents++
@@ -126,7 +134,11 @@ func TestMetaCSPPolicyForHTMLAndNonHTML(t *testing.T) {
 			}
 			entries := store.Recent()
 			if contentType != "text/html" {
-				if rec.Body.String() != body || len(entries) != 1 || entries[0].CSPRemoved {
+				wantEvents := 1
+				if isJavaScriptContentType(contentType) {
+					wantEvents++
+				}
+				if rec.Body.String() != body || len(entries) != wantEvents || entries[0].CSPRemoved {
 					t.Fatalf("changed non-HTML: %s, %#v", rec.Body.String(), entries)
 				}
 				return

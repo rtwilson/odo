@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -2325,12 +2326,20 @@ func TestRecoveredAccessLogUsesSafeMetadata(t *testing.T) {
 	}
 }
 
-func TestRecoveredResponseDoesNotCopyUnsafeEncodingHeadersAndDefaultsJSType(t *testing.T) {
+func TestRecoveredResponsePreservesEncodedBytesAndDefaultsJSType(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte("console.log('ok');")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header()["Content-Type"] = []string{""}
-		w.Header().Set("Content-Encoding", "br")
-		w.Header().Set("Content-Length", "9999")
-		_, _ = w.Write([]byte("console.log('ok');"))
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", strconv.Itoa(compressed.Len()))
+		_, _ = w.Write(compressed.Bytes())
 	}))
 	defer upstream.Close()
 	server := newProxyFetchTestServer(t, upstream.URL)
@@ -2340,8 +2349,11 @@ func TestRecoveredResponseDoesNotCopyUnsafeEncodingHeadersAndDefaultsJSType(t *t
 	rec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, req)
 
-	if rec.Header().Get("Content-Encoding") != "" || rec.Header().Get("Content-Length") != "" {
-		t.Fatalf("unsafe encoding headers copied: %#v", rec.Header())
+	if rec.Header().Get("Content-Encoding") != "gzip" || rec.Header().Get("Content-Length") != strconv.Itoa(compressed.Len()) {
+		t.Fatalf("encoded response headers changed: %#v", rec.Header())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), compressed.Bytes()) {
+		t.Fatal("encoded response bytes changed")
 	}
 	if rec.Header().Get("Content-Type") != "application/javascript; charset=utf-8" {
 		t.Fatalf("expected JS content type fallback, got %q", rec.Header().Get("Content-Type"))
@@ -3508,6 +3520,8 @@ func rewriteTransport(t *testing.T, upstreamURL string) http.RoundTripper {
 		t.Fatalf("parse upstream url: %v", err)
 	}
 	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		// Preserve the vendor URL used by http.Client's cookie jar.
+		req = req.Clone(req.Context())
 		req.URL.Scheme = upstream.Scheme
 		req.URL.Host = upstream.Host
 		req.Host = upstream.Host

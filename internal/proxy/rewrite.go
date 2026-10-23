@@ -46,6 +46,10 @@ func RewriteHTML(ctx context.Context, body string, base *url.URL, check TargetCh
 			attr := &token.Attr[i]
 			original := attr.Val
 			switch attr.Key {
+			case "data":
+				if token.Data == "object" {
+					attr.Val = rewriteOneURL(ctx, original, base, check, "asset")
+				}
 			case "action":
 				hasAction = true
 				attr.Val = rewriteOneURL(ctx, original, base, check, rewriteCategory(attr.Key))
@@ -144,7 +148,7 @@ func ApplyContentRewriteRules(ctx context.Context, body, contentType string, bas
 
 func contentRewriteAllowed(contentType string, result resources.TestResult) bool {
 	contentType = strings.ToLower(contentType)
-	if strings.Contains(contentType, "application/javascript") || strings.Contains(contentType, "text/javascript") {
+	if isJavaScriptContentType(contentType) {
 		return result.JavaScriptTextRewriteEnabled
 	}
 	return textLikeContentType(contentType)

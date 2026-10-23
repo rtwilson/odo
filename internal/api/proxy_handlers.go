@@ -25,6 +25,15 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 		SecFetchDest:        strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")),
 		SecFetchMode:        strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")),
 	}
+	framed := proxy.FrameDestination(r) != ""
+	if framed {
+		// Embedded article and PDF paths can contain titles or identifiers.
+		event.Path = "[frame]"
+		event.LocalPath = ""
+		event.AcceptHeaderSummary = ""
+		event.SecFetchDest = proxy.FrameDestination(r)
+		event.SecFetchMode = ""
+	}
 	if proxy.ProtectedAppPath(r.URL.Path) {
 		event.Reason = "protected app path"
 		s.missedDiag.Add(event)
@@ -46,8 +55,10 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event.RecoveredTargetHost = strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
-	event.RecoveredPathPrefix = proxy.SafePathPrefix(target.EscapedPath())
-	event.CanonicalProxyPath = proxy.CanonicalProxyPathWithoutQuery(target)
+	if !framed {
+		event.RecoveredPathPrefix = proxy.SafePathPrefix(target.EscapedPath())
+		event.CanonicalProxyPath = proxy.CanonicalProxyPathWithoutQuery(target)
+	}
 
 	if event.RequestKind == proxy.RequestKindDocument {
 		validatedTarget, result := s.proxyTarget(r.Context(), target.String())
@@ -138,7 +149,9 @@ func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
 	recorder := &recoveryRecorder{ResponseWriter: w}
 	s.proxyH.ServeHTTP(recorder, recoveredReq)
 	event.UpstreamStatus = recorder.status
-	event.ContentType = recorder.Header().Get("Content-Type")
+	if !framed {
+		event.ContentType = recorder.Header().Get("Content-Type")
+	}
 	if recorder.status >= http.StatusOK && recorder.status < http.StatusBadRequest {
 		event.Recovered = true
 		event.Type = proxy.MissedRewriteRecoveredEventType
