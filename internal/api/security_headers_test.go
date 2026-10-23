@@ -14,7 +14,7 @@ func TestOwnedResponsesHaveSecurityHeaders(t *testing.T) {
 	createLocalTestUserWithRoles(t, server, "admin", "correct horse battery", []string{"super_admin"})
 	cookie := loginTestUser(t, server, "admin", "correct horse battery", "/admin")
 	handler := server.Routes()
-	for _, path := range []string{"/", "/login", "/admin", "/resources", "/api/v1", "/api/v1/health", "/openapi.yaml", "/missing", "/logout"} {
+	for _, path := range []string{"/", "/about", "/login", "/admin", "/resources", "/api/v1", "/api/v1/health", "/openapi.yaml", "/missing", "/logout"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			if path != "/login" {
@@ -58,6 +58,7 @@ func TestOwnedResponsesHaveSecurityHeaders(t *testing.T) {
 }
 
 func TestVendorResponsesDoNotReceiveAppSecurityHeaders(t *testing.T) {
+	t.Setenv("APP_LICENSE_NOTICE", "DEPLOYMENT_LEGAL_SENTINEL")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
@@ -67,7 +68,7 @@ func TestVendorResponsesDoNotReceiveAppSecurityHeaders(t *testing.T) {
 	defer upstream.Close()
 	server := newProxyFetchTestServer(t, upstream.URL)
 	handler := server.Routes()
-	for _, path := range []string{"/odo/https/www.jstor.org/", "/odo?url=https://www.jstor.org/", "/mfe-header/remoteEntry.js"} {
+	for _, path := range []string{"/odo/https/www.jstor.org/", "/odo/https/www.jstor.org/about", "/odo?url=https://www.jstor.org/", "/mfe-header/remoteEntry.js"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set("Referer", "http://127.0.0.1:8080/odo/https/www.jstor.org/")
@@ -79,6 +80,9 @@ func TestVendorResponsesDoNotReceiveAppSecurityHeaders(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), `http-equiv="Content-Security-Policy"`) {
 				t.Fatal("vendor meta CSP was not removed")
+			}
+			if strings.Contains(rec.Body.String(), "DEPLOYMENT_LEGAL_SENTINEL") || strings.Contains(rec.Body.String(), "Get the source code for this deployment") || strings.Contains(rec.Body.String(), "Source &amp; license") || strings.Contains(rec.Body.String(), `href="/about"`) {
+				t.Fatal("deployment legal notice leaked into proxied vendor content")
 			}
 			for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy", "Permissions-Policy"} {
 				if got := rec.Header().Get(name); got != "" {

@@ -14,6 +14,12 @@ podman build -t odo:dev .
 
 The image listens on port 8080, runs as a non-root user, stores data under `/var/lib/odo`, and reads config from `/etc/odo`.
 
+Production also requires a source offer matching the deployed build. Set
+`APP_SOURCE_URL` and `APP_BUILD_REVISION`, or embed the source URL and clean
+revision using `ODO_SOURCE_URL` and `ODO_COMMIT` build arguments. See
+[source code and legal notices](source-and-license.md), especially for modified
+working trees. A generic upstream branch is not a substitute for deployed source.
+
 ## Run locally with Podman
 
 ```sh

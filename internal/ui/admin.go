@@ -54,6 +54,7 @@ func AdminHTML() string {
     th, td { border-bottom: 1px solid #2b3138; padding: 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { color: #c5d0db; font-weight: 600; }
     .output-title { margin-top: 22px; }
+    footer { margin-top: 2rem; }
     #section-resources .workspace { grid-template-columns: minmax(0, 1fr); }
     #resource-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
     #section-resources .field { min-width: 0; max-width: 100%; flex: 1 1 200px; }
@@ -297,6 +298,7 @@ func AdminHTML() string {
         <pre id="output">Ready.</pre>
       </div>
     </div>
+    <footer><small><a href="/about">Source &amp; license</a></small></footer>
   </main>
 
   <script>

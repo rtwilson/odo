@@ -139,6 +139,10 @@ Environment variables:
 - `APP_DB_PATH`, default `$APP_DATA_DIR/odo.db`; production preference is `/var/lib/odo/odo.db`
 - `APP_CONFIG_DIR`, default `./config` in development and `/etc/odo` in production
 - `APP_PUBLIC_URL`, public base URL used for SAML SP metadata defaults and cookie security; an absolute HTTPS URL is required in production mode
+- `APP_SOURCE_URL`, public HTTPS URL for the corresponding source of this deployment, including local modifications; required in production unless embedded at build time
+- `APP_BUILD_REVISION`, deployed source snapshot identifier; overrides the embedded commit/VCS revision and is required for known dirty builds in production
+- `APP_LICENSE_NOTICE`, optional plain-text deployment legal notice on the public `/about` page; defaults to an AGPLv3 and no-warranty notice
+
 - `APP_ADMIN_API_KEY`, optional bootstrap/dev fallback for creating and managing stored API keys
 - `APP_BOOTSTRAP_ADMIN_USERNAME`, optional username used to create the first local admin user when no users exist
 - `APP_BOOTSTRAP_ADMIN_PASSWORD`, optional password used to create the first local admin user when no users exist
@@ -159,6 +163,9 @@ Environment variables:
 - `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
 - `APP_PROXY_REFERER_RECOVERY`, default `true`; recovers missed local asset/script paths when a proxied Referer identifies the upstream host
 - `APP_TRUST_PROXY_HEADERS`, default `false`; set `true` only behind a trusted reverse proxy that controls `X-Forwarded-*` headers
+
+See [source code and legal notices](docs/source-and-license.md) for version-matched
+source offers, modified deployments, and the additional production startup checks.
 
 Internal failures return generic errors with an `X-Request-ID` for operator correlation. See [error responses and request IDs](docs/security/error-responses.md).
 

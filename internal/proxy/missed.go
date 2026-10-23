@@ -104,7 +104,9 @@ func (s *MissedRewriteStore) Recent() []MissedRewriteEvent {
 }
 
 func ProtectedAppPath(path string) bool {
-	return path == "/admin" ||
+	return path == "/about" ||
+		strings.HasPrefix(path, "/about/") ||
+		path == "/admin" ||
 		strings.HasPrefix(path, "/admin/") ||
 		path == "/login" ||
 		strings.HasPrefix(path, "/login/") ||

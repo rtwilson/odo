@@ -6,7 +6,8 @@ RUN go mod download
 COPY . .
 ARG ODO_VERSION=dev
 ARG ODO_COMMIT=unknown
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X example.org/odo/internal/api.Version=${ODO_VERSION} -X example.org/odo/internal/api.Commit=${ODO_COMMIT}" -o /out/odo ./cmd/odo
+ARG ODO_SOURCE_URL=
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X example.org/odo/internal/api.Version=${ODO_VERSION} -X example.org/odo/internal/api.Commit=${ODO_COMMIT} -X example.org/odo/internal/api.SourceURL=${ODO_SOURCE_URL}" -o /out/odo ./cmd/odo
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates && addgroup -S odo && adduser -S -G odo odo

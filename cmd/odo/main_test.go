@@ -70,6 +70,8 @@ func TestProductionWarningsFlagMissingCriticalSettings(t *testing.T) {
 func TestProductionConfigurationFailsClosed(t *testing.T) {
 	validEnv := func(t *testing.T) {
 		t.Helper()
+		t.Setenv("APP_SOURCE_URL", "https://code.example.edu/odo/archive/test-revision.tar.gz")
+		t.Setenv("APP_BUILD_REVISION", "test-revision")
 		t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 		t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
 		t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
@@ -82,6 +84,8 @@ func TestProductionConfigurationFailsClosed(t *testing.T) {
 		storedAdmin bool
 		want        string
 	}{
+		{name: "missing source URL", mutate: func(t *testing.T) { t.Setenv("APP_SOURCE_URL", "") }, adminKey: "real-admin-key", want: "APP_SOURCE_URL"},
+		{name: "unknown build revision", mutate: func(t *testing.T) { t.Setenv("APP_BUILD_REVISION", "unknown") }, adminKey: "real-admin-key", want: "APP_BUILD_REVISION"},
 		{name: "missing public URL", mutate: func(t *testing.T) { t.Setenv("APP_PUBLIC_URL", "") }, adminKey: "real-admin-key", want: "APP_PUBLIC_URL"},
 		{name: "HTTP public URL", mutate: func(t *testing.T) { t.Setenv("APP_PUBLIC_URL", "http://access.example.edu") }, adminKey: "real-admin-key", want: "APP_PUBLIC_URL"},
 		{name: "missing hash secret", mutate: func(t *testing.T) { t.Setenv("APP_KEY_HASH_SECRET", "") }, adminKey: "real-admin-key", want: "APP_KEY_HASH_SECRET"},
@@ -109,6 +113,8 @@ func TestProductionConfigurationFailsClosed(t *testing.T) {
 }
 
 func TestProductionConfigurationAcceptsStoredAdminKey(t *testing.T) {
+	t.Setenv("APP_SOURCE_URL", "https://code.example.edu/odo/archive/test-revision.tar.gz")
+	t.Setenv("APP_BUILD_REVISION", "test-revision")
 	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 	t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
@@ -119,6 +125,8 @@ func TestProductionConfigurationAcceptsStoredAdminKey(t *testing.T) {
 }
 
 func TestProductionConfigurationAcceptsExplicitLocalAdminBootstrap(t *testing.T) {
+	t.Setenv("APP_SOURCE_URL", "https://code.example.edu/odo/archive/test-revision.tar.gz")
+	t.Setenv("APP_BUILD_REVISION", "test-revision")
 	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 	t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")

@@ -84,6 +84,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /", s.root)
 	mux.HandleFunc("POST /", s.root)
 	mux.HandleFunc("GET /favicon.ico", s.favicon)
+	mux.HandleFunc("GET /about", s.about)
 	mux.HandleFunc("GET /admin", s.admin)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPost)
