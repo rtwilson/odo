@@ -33,6 +33,29 @@ resource content-rewrite rules remain a separate pass and can still change
 script text, invalidating a vendor's script hash.
 Those rules run before Odo injects its compatibility shim, so vendor URL
 replacements cannot change the shim's origin or base URL.
+URL generation collapses repeated `/odo/https/<same-host>/` prefixes when
+vendor code combines its HTTPS origin with an already-proxied path. Queries
+and escaped path data are preserved; prefixes naming another host are left
+unchanged. The JavaScript request shim applies the same normalization.
+Incoming repeated same-host paths are normalized before target validation;
+GET and HEAD requests redirect to the canonical proxy URL after validation.
+The shim also rewrites vendor-origin navigation links created after HTML
+delivery, including links inside open and closed shadow roots. It observes
+link insertion and href changes, checks links synchronously on clicks, and
+wraps `history.pushState` and `history.replaceState`. Relative navigation uses
+the current vendor route, so a component's `/` link returns to the proxied
+vendor homepage. Fragment links, external origins, and native history origin
+restrictions are preserved. This runs only in proxied vendor HTML.
+
+The browser regression fixture can be run with an installed Chromium executable:
+
+```sh
+ODO_TEST_BROWSER=chromium-browser go test ./internal/proxy -run TestBrowserNavigation -v
+```
+
+It checks dynamic and shadow-root links, history state, relative navigation,
+and repeated-prefix requests in path and query mode using mocked fetch calls.
+The normal Go suite skips this browser check unless the variable is set.
 Suppressing CSP removes a vendor defense-in-depth control: only allowlisted, trusted
 resources should be configured, and vendor content should not be considered
 isolated from Odo merely because it has a separate header policy.
@@ -107,6 +130,18 @@ corrected only when the resource enables `compatibility.javascript_text_rewritin
 Explicit binary MIME types are not overridden. Encoded and partial streams
 remain unchanged; unencoded text can use the resource's content rewrite rules.
 Rules must list the applicable JavaScript MIME type in `content_types`.
+
+The bundled JSTOR profile enables JavaScript text rewriting for a targeted
+search-results route predicate observed on 2026-10-23:
+`window.location.pathname.startsWith(e.path)`. Its replacement derives the
+vendor pathname from either proxy URL mode before matching the route. This
+allows the results component to mount while leaving other pathname reads and
+the browser location unchanged. The profile must be merged into existing
+resource configuration; browsers may need a hard refresh of cached scripts.
+The rule matches a literal vendor expression, so a future bundle change may
+require a profile update. `content_rewrite_rules_applied` reports matches.
+Browser regression coverage is available with
+`ODO_TEST_BROWSER=chromium-browser go test ./internal/proxy -run TestBrowserJSTORSearchRoute -v`.
 
 `proxy_script_asset` events identify JavaScript by MIME, `.js`/`.mjs` extension,
 or a browser `Sec-Fetch-Dest: script` hint. Events contain target host, status,

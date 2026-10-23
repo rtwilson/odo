@@ -60,12 +60,35 @@ func BuildProxyURLWithMode(target *url.URL, mode string) string {
 	if target == nil {
 		return PublicProxyPath
 	}
+	target = normalizeProxyTarget(target)
 	switch NormalizeProxyURLMode(mode) {
 	case ProxyURLModeQuery:
 		return PublicProxyPath + "?url=" + url.QueryEscape(target.String())
 	default:
 		return buildPathProxyURL(target)
 	}
+}
+
+// Vendor code can combine its origin with an already-proxied path. Both
+// incoming requests and generated links need the same vendor target.
+func normalizeProxyTarget(target *url.URL) *url.URL {
+	if target.Scheme != "https" {
+		return target
+	}
+	clean := *target
+	prefix := PublicProxyPath + "/https/" + target.Host
+	for clean.Path == prefix || strings.HasPrefix(clean.Path, prefix+"/") {
+		clean.Path = strings.TrimPrefix(clean.Path, prefix)
+		if clean.Path == "" {
+			clean.Path = "/"
+		}
+		if strings.HasPrefix(clean.RawPath, prefix+"/") {
+			clean.RawPath = strings.TrimPrefix(clean.RawPath, prefix)
+		} else {
+			clean.RawPath = ""
+		}
+	}
+	return &clean
 }
 
 // BuildProxyURLPrefix returns the path prefix that precedes a target host in a
@@ -108,7 +131,7 @@ func (envURLStrategy) ParseProxyRequest(r *http.Request) (*url.URL, string, bool
 		if err != nil {
 			return nil, ProxyURLModeQuery, true, errors.New("target URL is invalid")
 		}
-		return target, ProxyURLModeQuery, true, nil
+		return normalizeProxyTarget(target), ProxyURLModeQuery, true, nil
 	}
 
 	rest := strings.TrimPrefix(r.URL.Path, PublicProxyPath)
@@ -137,7 +160,11 @@ func (envURLStrategy) ParseProxyRequest(r *http.Request) (*url.URL, string, bool
 		Path:     targetPath,
 		RawQuery: r.URL.RawQuery,
 	}
-	return target, ProxyURLModePath, true, nil
+	// Preserve escaped slashes and other path data when canonicalizing a link.
+	if escaped := r.URL.EscapedPath(); strings.HasPrefix(escaped, PublicProxyPath+"/https/"+host) {
+		target.RawPath = strings.TrimPrefix(escaped, PublicProxyPath+"/https/"+host)
+	}
+	return normalizeProxyTarget(target), ProxyURLModePath, true, nil
 }
 
 func buildPathProxyURL(target *url.URL) string {

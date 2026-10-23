@@ -30,6 +30,44 @@ func TestBuildProxyURLUsesQueryMode(t *testing.T) {
 	}
 }
 
+func TestBuildProxyURLDoesNotRepeatSameHostPrefix(t *testing.T) {
+	for _, mode := range []string{ProxyURLModePath, ProxyURLModeQuery} {
+		for _, path := range []string{
+			"/odo/https/www.jstor.org/stable/3041316",
+			"/odo/https/www.jstor.org/odo/https/www.jstor.org/stable/3041316",
+		} {
+			t.Run(mode+path, func(t *testing.T) {
+				target, _ := url.Parse("https://www.jstor.org" + path + "?seq=1")
+				original := target.String()
+				clean, _ := url.Parse("https://www.jstor.org/stable/3041316?seq=1")
+				if got, want := BuildProxyURLWithMode(target, mode), BuildProxyURLWithMode(clean, mode); got != want {
+					t.Fatalf("got %q, want %q", got, want)
+				}
+				if target.String() != original {
+					t.Fatal("URL builder changed the caller's target")
+				}
+			})
+		}
+	}
+}
+
+func TestBuildProxyURLPrefixBoundariesAndEscaping(t *testing.T) {
+	for _, tc := range []struct{ target, clean string }{
+		{"https://www.jstor.org/odo/https/www.jstor.org", "https://www.jstor.org/"},
+		{"https://www.jstor.org/odo/https/www.jstor.org/a%2Fb?q=a%2Bb", "https://www.jstor.org/a%2Fb?q=a%2Bb"},
+		{"https://www.jstor.org/odo/https/other.example/article", "https://www.jstor.org/odo/https/other.example/article"},
+		{"https://www.jstor.org/odo/https/www.jstor.org.example/article", "https://www.jstor.org/odo/https/www.jstor.org.example/article"},
+	} {
+		for _, mode := range []string{ProxyURLModePath, ProxyURLModeQuery} {
+			target, _ := url.Parse(tc.target)
+			clean, _ := url.Parse(tc.clean)
+			if got, want := BuildProxyURLWithMode(target, mode), BuildProxyURLWithMode(clean, mode); got != want {
+				t.Errorf("%s %s: got %q, want %q", mode, tc.target, got, want)
+			}
+		}
+	}
+}
+
 func TestBuildProxyURLDualModeBuildsPathMode(t *testing.T) {
 	t.Setenv("APP_PROXY_URL_MODE", "dual")
 	target, _ := url.Parse("https://example.com/path?q=science")
@@ -120,5 +158,34 @@ func TestObviousHelpersDoNotHardcodePathProxyURLConstruction(t *testing.T) {
 				t.Fatalf("%s should not hand-build path proxy URLs with %q", path, forbidden)
 			}
 		}
+	}
+}
+
+func TestParseProxyRequestCollapsesRepeatedPrefix(t *testing.T) {
+	for _, raw := range []string{
+		"/odo/https/www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1",
+		"/odo/https/www.jstor.org/odo/https/www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1",
+		"/odo?url=https%3A%2F%2Fwww.jstor.org%2Fodo%2Fhttps%2Fwww.jstor.org%2Fstable%2F3041316%3Fseq%3D1",
+	} {
+		target, _, ok, err := ParseProxyRequest(httptest.NewRequest("GET", raw, nil))
+		if err != nil || !ok {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if target.String() != "https://www.jstor.org/stable/3041316?seq=1" {
+			t.Fatalf("nested vendor target: %s", target)
+		}
+	}
+	for _, raw := range []string{
+		"/odo/https/www.jstor.org/a%2Fb?q=a%2Bb",
+		"/odo/https/www.jstor.org/odo/https/www.jstor.org/a%2Fb?q=a%2Bb",
+	} {
+		target, _, _, err := ParseProxyRequest(httptest.NewRequest("GET", raw, nil))
+		if err != nil || target.String() != "https://www.jstor.org/a%2Fb?q=a%2Bb" {
+			t.Fatalf("escaped target changed: %v %v", target, err)
+		}
+	}
+	target, _, _, err := ParseProxyRequest(httptest.NewRequest("GET", "/odo/https/www.jstor.org/odo/https/other.example/file", nil))
+	if err != nil || target.Host != "www.jstor.org" || target.Path != "/odo/https/other.example/file" {
+		t.Fatalf("another host's prefix was unwrapped: %v %v", target, err)
 	}
 }
