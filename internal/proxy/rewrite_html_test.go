@@ -88,6 +88,20 @@ func TestRewriteHTMLHandlesAttributesAndEntities(t *testing.T) {
 	}
 }
 
+func TestRewriteHTMLDoesNotNestAbsoluteVendorProxyLinks(t *testing.T) {
+	t.Setenv("APP_PROXY_URL_MODE", ProxyURLModePath)
+	base, _ := url.Parse("https://www.jstor.org/stable/3041316")
+	input := `<a href="https://www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1">Next</a>`
+	want := `<a href="/odo/https/www.jstor.org/stable/3041316?seq=1">Next</a>`
+	got := RewriteHTML(context.Background(), input, base, allowedHostTargetCheck)
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	if twice := RewriteHTML(context.Background(), got, base, allowedHostTargetCheck); twice != want {
+		t.Fatalf("rewriting a second time changed the link: %s", twice)
+	}
+}
+
 func TestRewriteHTMLRemovesOnlyCSPMetaTags(t *testing.T) {
 	base, _ := url.Parse("https://www.jstor.org/")
 	for _, meta := range []string{

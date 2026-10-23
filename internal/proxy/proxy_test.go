@@ -942,3 +942,39 @@ func (f roundTripFunc) client() *http.Client {
 		},
 	}
 }
+
+func TestRepeatedProxyPrefixRedirectsBeforeUpstreamFetch(t *testing.T) {
+	for _, method := range []string{"GET", "HEAD"} {
+		t.Run(method, func(t *testing.T) {
+			t.Setenv("APP_PROXY_URL_MODE", ProxyURLModePath)
+			handler := FetchHandler(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatal("nested link must redirect before upstream fetch")
+				return nil, nil
+			}).client(), func(ctx context.Context, raw string) (*url.URL, resources.TestResult) {
+				if raw != "https://www.jstor.org/stable/3041316?seq=1" {
+					t.Fatalf("wrong validated target: %s", raw)
+				}
+				return allowedTargetCheck(ctx, raw)
+			})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(method, "/odo/https/www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1", nil))
+			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/odo/https/www.jstor.org/stable/3041316?seq=1" {
+				t.Fatalf("canonical redirect failed: %d %s", rec.Code, rec.Header().Get("Location"))
+			}
+		})
+	}
+}
+
+func TestRepeatedProxyPrefixStillValidatesTarget(t *testing.T) {
+	handler := FetchHandler(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("blocked nested link must not reach upstream")
+		return nil, nil
+	}).client(), func(ctx context.Context, raw string) (*url.URL, resources.TestResult) {
+		return nil, resources.TestResult{Allowed: false}
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/odo/https/bad.example/odo/https/bad.example/file", nil))
+	if rec.Code != http.StatusForbidden || rec.Header().Get("Location") != "" {
+		t.Fatalf("blocked nested target redirected: %d", rec.Code)
+	}
+}

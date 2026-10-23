@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<pre id="results">PENDING</pre>
+<script>
+window.requests = [];
+window.fetch = function(input) { requests.push(String(input)); return Promise.resolve({}); };
+</script>
+<!-- ODO_SHIM -->
+<script>
+(async function() {
+  var mode = "TEST_MODE";
+  var prefix = "/odo/https/www.jstor.org";
+  function expected(path) {
+    return mode === "query" ? "/odo?url=" + encodeURIComponent("https://www.jstor.org" + path) : prefix + path;
+  }
+  var checks = 0;
+  function equal(actual, wanted, name) {
+    if (actual !== wanted) throw new Error(name + ": " + actual + " != " + wanted);
+    checks++;
+  }
+  function current() { return location.pathname + location.search + location.hash; }
+  function link(root, href) {
+    var a = document.createElement("a");
+    a.setAttribute("href", href);
+    a.textContent = "Navigation";
+    root.appendChild(a);
+    return a;
+  }
+  // A logo created during hydration must point to the vendor root, even for
+  // context-menu/new-tab navigation which has no ordinary click event.
+  var logo = link(document.body, "/");
+  await Promise.resolve();
+  equal(logo.getAttribute("href"), expected("/"), "dynamic logo");
+  for (var shadowMode of ["open", "closed"]) {
+    var host = document.createElement("div");
+    document.body.appendChild(host);
+    var root = host.attachShadow({mode: shadowMode});
+    var a = link(root, "/");
+    await Promise.resolve();
+    equal(a.getAttribute("href"), expected("/"), shadowMode + " shadow logo");
+    // Exercise synchronous clicks before the mutation observer has run.
+    a.setAttribute("href", "/browse");
+    a.addEventListener("click", function(e) { e.preventDefault(); });
+    a.dispatchEvent(new MouseEvent("click", {bubbles: true, composed: true, cancelable: true}));
+    equal(a.getAttribute("href"), expected("/browse"), shadowMode + " synchronous click");
+  }
+  var fragment = link(document.body, "#references");
+  var external = link(document.body, "https://outside.example/resource");
+  var existing = link(document.body, expected("/stable/3041316?seq=1"));
+  await Promise.resolve();
+  equal(fragment.getAttribute("href"), "#references", "fragment link");
+  equal(external.getAttribute("href"), "https://outside.example/resource", "external link");
+  equal(existing.getAttribute("href"), expected("/stable/3041316?seq=1"), "existing proxy link");
+  for (var input of [
+    "https://www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1",
+    location.origin + "/odo/https/www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1"
+  ]) {
+    history.replaceState({page: 1}, "", input);
+    equal(current(), expected("/stable/3041316?seq=1"), "replaceState avoids nesting");
+    equal(history.state.page, 1, "history state retained");
+  }
+  history.pushState({page: 2}, "", "/collection/first");
+  equal(current(), expected("/collection/first"), "pushState root-relative");
+  history.replaceState(null, "", "next?seq=2");
+  equal(current(), expected("/collection/next?seq=2"), "history relative to current vendor route");
+  var relative = link(document.body, "details");
+  await Promise.resolve();
+  equal(relative.getAttribute("href"), expected("/collection/details"), "link follows current vendor route");
+  history.replaceState(null, "", "/");
+  equal(current(), expected("/"), "history vendor root");
+  var before = current();
+  history.replaceState({omitted: true}, "");
+  equal(current(), before, "omitted history URL");
+  var rejected = false;
+  try { history.pushState(null, "", "https://outside.example/other"); }
+  catch (error) { rejected = error.name === "SecurityError"; }
+  equal(rejected, true, "native history origin restriction");
+  for (var input of [
+    "/odo/https/www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1",
+    "https://www.jstor.org/odo/https/www.jstor.org/stable/3041316?seq=1"
+  ]) {
+    await fetch(input);
+    equal(requests.pop(), expected("/stable/3041316?seq=1"), "fetch avoids nesting");
+  }
+  document.getElementById("results").textContent = "PASS " + checks;
+})().catch(function(error) {
+  document.getElementById("results").textContent = "FAIL " + error.message;
+});
+</script>

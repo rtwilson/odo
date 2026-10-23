@@ -147,6 +147,13 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 			writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "")
 			return
 		}
+		if parsedMode == ProxyURLModePath && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			prefix := PublicProxyPath + "/https/" + parsedTarget.Host
+			if r.URL.Path == prefix+prefix || strings.HasPrefix(r.URL.Path, prefix+prefix+"/") {
+				http.Redirect(w, r, BuildProxyURL(parsedTarget), http.StatusFound)
+				return
+			}
+		}
 
 		body, contentLength, ok := prepareUpstreamBody(w, r, maxBodyBytes, diagnostics)
 		if !ok {

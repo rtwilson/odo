@@ -109,8 +109,20 @@
   "compatibility": {
     "referer_recovery": true,
     "js_shim": true,
-    "app_data_recovery": true
+    "app_data_recovery": true,
+    "javascript_text_rewriting": true
   },
+  "content_rewrite_rules": [
+    {
+      "content_types": [
+        "application/javascript",
+        "text/javascript",
+        "application/x-javascript"
+      ],
+      "find": "window.location.pathname.startsWith(e.path)",
+      "replace": "new URL(window.location.pathname === \"/odo\" ? new URLSearchParams(window.location.search).get(\"url\") : window.location.href).pathname.replace(/^\\/odo\\/https\\/www\\.jstor\\.org(?=\\/|$)/, \"\").startsWith(e.path)"
+    }
+  ],
   "sample_urls": [
     "https://www.jstor.org/stable/example"
   ]
