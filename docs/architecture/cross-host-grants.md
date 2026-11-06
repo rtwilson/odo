@@ -16,9 +16,10 @@ Current vendor jars in `internal/proxy/session.go` use `odo_proxy_sid` and have
 no parent browser-session revocation link. Resource CookiePolicy settings are
 not enforced by this jar implementation. They cannot serve as host grants.
 
-Revocation also needs hardening before grants can be enabled:
+Logout now validates token ownership without session-touch writes and reports
+lookup/revocation failures; see [logout behavior and audit policy](../security/logout.md).
+Other revocation paths still need hardening before grants can be enabled:
 
-- `auth_handlers.go:logout` ignores `RevokeSession` failure.
 - `db.go:SetUserStatus` updates status and ignores `RevokeUserSessions` failure.
 - `users_handlers.go:setUserPassword` ignores session-revocation failure.
 - Explicit `users_handlers.go:revokeUserSessions` already reports revocation
@@ -26,9 +27,9 @@ Revocation also needs hardening before grants can be enabled:
 
 A successful disable/lock or password reset must commit the intended session
 revocation atomically with its account change. Otherwise re-enabling an account
-could revive an old session after an unnoticed revocation failure. Logout must
-not report success when revocation fails. These are proposed prerequisite fixes,
-not changes made by this document.
+could revive an old session after an unnoticed revocation failure. These
+account-change transactions remain proposed prerequisite fixes, not changes
+made by this document.
 
 ## Proposed first deployment boundary
 
@@ -187,7 +188,7 @@ collisions, cold assets/frames and legacy-origin migration tests before rollout.
 Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
-separation. Next implementation batches should be revocation error handling,
-then account-change/revocation transactions, then bounded handoff state with
+separation. Next implementation batches should be account-change/revocation
+transactions, then bounded handoff state with
 runtime vendor dispatch still disabled. This document does not approve enabling
 virtual-host traffic.

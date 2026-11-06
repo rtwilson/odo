@@ -313,6 +313,11 @@ go run ./cmd/odo
 
 Open `http://127.0.0.1:8080/login` to sign in; `/logout` revokes the session and clears session/CSRF cookies. Signed-in users can open `http://127.0.0.1:8080/resources` for a simple patron resource portal. Browser sessions use an HttpOnly `odo_session` cookie and proxy browsing also keeps upstream/vendor cookies in a separate server-side jar.
 
+Logout verifies the session token before revocation. Database lookup/revocation
+failures return a generic 500 without clearing cookies or claiming success;
+missing or inactive sessions remain safe to log out again. See [logout behavior
+and audit policy](docs/security/logout.md).
+
 With `APP_HOST_GUARD=true`, central authentication instead uses `__Host-odo_session`
 and `__Host-odo_csrf`; legacy cookie names are ignored. Sign out before changing
 guard mode and sign in again afterward. See [central cookie boundaries](docs/architecture/virtual-host-routing.md).

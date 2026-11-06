@@ -2,9 +2,11 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"html"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -101,12 +103,73 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(centralCookieName(browserSessionCookieName)); err == nil {
-		_ = s.store.RevokeSession(local.SessionIDFromToken(cookie.Value))
+	w.Header().Set("Cache-Control", "no-store")
+	session, active, err := s.sessionForLogout(r)
+	if err != nil {
+		s.auditLogout(r, "logout_failed", "lookup_failed")
+		s.internalError(w, r, err)
+		return
 	}
+	outcome := "no_active_session"
+	if active {
+		if err := s.store.RevokeSession(session.ID); err != nil {
+			s.auditLogout(r, "logout_failed", "revocation_failed")
+			s.internalError(w, r, fmt.Errorf("revoke logout session: %w", err))
+			return
+		}
+		outcome = "revoked"
+	}
+	s.auditLogout(r, "logout_success", outcome)
 	http.SetCookie(w, clearSessionCookie(r, browserSessionCookieName, true))
 	http.SetCookie(w, clearSessionCookie(r, csrfCookieName, false))
 	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+// Logout needs proof that the caller owns the session, not a new authorization
+// decision. Keep validation read-only: currentUser also touches sessions and can
+// revoke them during user-status checks. A matching token may revoke its own
+// session even if the account has since become inactive.
+func (s *Server) sessionForLogout(r *http.Request) (db.Session, bool, error) {
+	cookie, err := r.Cookie(centralCookieName(browserSessionCookieName))
+	if err != nil || cookie.Value == "" {
+		return db.Session{}, false, nil
+	}
+	id := local.SessionIDFromToken(cookie.Value)
+	if id == "" {
+		return db.Session{}, false, nil
+	}
+	session, found, err := s.store.GetSession(id)
+	if err != nil {
+		return db.Session{}, false, fmt.Errorf("load logout session: %w", err)
+	}
+	if !found || session.RevokedAt != "" ||
+		subtle.ConstantTimeCompare([]byte(session.SessionHash), []byte(s.browserSessionHash(cookie.Value))) != 1 {
+		return db.Session{}, false, nil
+	}
+	now := time.Now().UTC()
+	expires, err := time.Parse(time.RFC3339, session.ExpiresAt)
+	if err != nil || !now.Before(expires) {
+		return db.Session{}, false, nil
+	}
+	lastSeen, err := time.Parse(time.RFC3339, session.LastSeenAt)
+	if err == nil && now.Sub(lastSeen) > sessionIdleTimeout() {
+		return db.Session{}, false, nil
+	}
+	return session, true, nil
+}
+
+func (s *Server) auditLogout(r *http.Request, event, outcome string) {
+	id := accesslog.RequestID(r)
+	detail := fmt.Sprintf(`{"path":"/logout","request_id":%q,"outcome":%q}`, id, outcome)
+	if err := s.store.Audit(event, detail); err != nil {
+		// Auth audit persistence is best-effort. Never undo a confirmed
+		// revocation or claim the audit row was persisted when this write fails.
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.WarnContext(r.Context(), "logout audit write failed", "request_id", id, "event", event, "error", err)
+	}
 }
 
 func clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
