@@ -378,6 +378,11 @@ func TestAdminContainsResourceEditorControls(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		`User view`,
+		`Deleted users`,
+		`Delete User`,
+		`Restore User`,
+		`Select a user to manage the account.`,
 		`data-resource-mode="basic"`,
 		`id="resource-mode-basic" class="resource-mode-button" aria-pressed="true"`,
 		`id="resource-mode-advanced"`,

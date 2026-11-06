@@ -2,8 +2,8 @@
 
 ## Database foundation
 
-The database and documented management APIs support transactional soft deletion
-and restoration. Admin UI controls are a subsequent implementation batch.
+The database, documented management APIs, and Users section of the admin UI
+support transactional soft deletion and restoration.
 
 Deletion uses the existing persistent `status` column with value `deleted`.
 No schema migration or rewrite of existing accounts is needed. `disabled_at`
@@ -74,6 +74,27 @@ be enabled, unlocked, or assigned a password through ordinary endpoints (those
 operations return `404` for an unavailable account). A metadata/status PATCH of
 a deleted account returns `409`; use restore instead. Restore does not accept a
 new username, role list, account status, or actor ID.
+
+## Admin UI
+
+In **Users**, load the user list and select an account. **Delete User** asks for
+explicit confirmation showing the selected username and explains that the account
+will be disabled, its password removed, and its sessions revoked. The action uses
+the loaded account identity, not editable values from the JSON editor. Deleting
+your own browser account is disabled in the UI and rejected by the API.
+
+Choose **Deleted users** from **User view** to list deleted accounts. Select an
+account, enter a new password in the password field, and choose **Restore User**.
+The confirmation explains that the account remains disabled. Switch back to
+**Non-deleted users**, load/select the restored account, then choose **Enable**
+when access should resume. Old sessions remain revoked throughout.
+
+User mutation controls are hidden without `users:write` or `admin`. Restore is
+disabled for non-default roles unless the caller has `admin`. The API remains the
+authorization boundary and also rejects deleting the last active administrator.
+The optional API-key override refreshes the displayed permissions when changed.
+Switching account/view clears the password field. Successful deletion/restoration
+clears the selection; failures leave the account available for review and retry.
 
 ## Disable, delete, restore, and future purge
 

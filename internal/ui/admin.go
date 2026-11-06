@@ -250,21 +250,29 @@ func AdminHTML() string {
           <h2>Users</h2>
           <div class="toolbar">
             <button id="load-users">Load Users</button>
-            <button id="new-user">New User</button>
-            <button id="create-user">Create User</button>
-            <button id="update-user">Update User</button>
-            <button id="set-user-password">Set Password</button>
-            <button id="disable-user" class="danger">Disable</button>
-            <button id="enable-user">Enable</button>
-            <button id="lock-user" class="danger">Lock</button>
-            <button id="unlock-user">Unlock</button>
-            <button id="revoke-user-sessions" class="danger">Revoke Sessions</button>
+            <label for="user-status-filter">User view</label>
+            <select id="user-status-filter">
+              <option value="current">Non-deleted users</option>
+              <option value="deleted">Deleted users</option>
+            </select>
+            <button id="new-user" data-user-write hidden disabled>New User</button>
+            <button id="create-user" data-user-write hidden disabled>Create User</button>
+            <button id="update-user" data-user-write hidden disabled>Update User</button>
+            <button id="set-user-password" data-user-write hidden disabled>Set Password</button>
+            <button id="disable-user" class="danger" data-user-write hidden disabled>Disable</button>
+            <button id="enable-user" data-user-write hidden disabled>Enable</button>
+            <button id="lock-user" class="danger" data-user-write hidden disabled>Lock</button>
+            <button id="unlock-user" data-user-write hidden disabled>Unlock</button>
+            <button id="revoke-user-sessions" class="danger" data-user-write hidden disabled>Revoke Sessions</button>
           </div>
           <div class="workspace">
             <aside><div id="user-list" class="list">No users loaded.</div></aside>
             <div>
               <textarea id="user-editor" spellcheck="false" aria-label="User JSON editor"></textarea>
               <input id="user-password" type="password" placeholder="New user password" aria-label="New user password">
+              <p id="user-lifecycle-summary" class="muted" aria-live="polite">Select a user to manage the account.</p>
+              <button id="delete-user" class="danger" data-user-write hidden disabled>Delete User</button>
+              <button id="restore-user" data-user-write hidden disabled>Restore User</button>
             </div>
           </div>
         </section>
@@ -567,6 +575,9 @@ func AdminHTML() string {
     let selectedResourceId = '';
     let selectedAPIKeyId = '';
     let selectedUserId = '';
+    let userLifecycleBusy = false;
+    let userListVersion = 0;
+    let sessionLoadVersion = 0;
     let selectedSAMLProviderId = '';
     let currentSession = { authenticated: false, scopes: [] };
 
@@ -746,17 +757,21 @@ func AdminHTML() string {
         if (el) el.disabled = !canWriteResources;
       }
       updateResourcePublishControls();
+      updateUserControls();
       document.querySelector('#session-summary').textContent = currentSession.authenticated
         ? ((currentSession.display_name || currentSession.username || currentSession.name || currentSession.subject_type) + ' | roles: ' + (currentSession.roles || []).join(', ') + ' | scopes: ' + (currentSession.scopes || []).join(', '))
         : 'Not signed in';
     }
 
     async function loadSession() {
+      const version = ++sessionLoadVersion;
       try {
-        const result = await api('/api/v1/session/me', { auth: false });
+        const result = await api('/api/v1/session/me');
+        if (version !== sessionLoadVersion) return;
         currentSession = unwrap(result) || { authenticated: false, scopes: [] };
         applyPermissions();
       } catch (err) {
+        if (version !== sessionLoadVersion) return;
         currentSession = { authenticated: false, scopes: [] };
         applyPermissions();
       }
@@ -1172,6 +1187,7 @@ func AdminHTML() string {
     }
 
     function selectUser(user) {
+      document.querySelector('#user-password').value = '';
       selectedUserId = user.id || '';
       userEditor.value = JSON.stringify({
         id: user.id,
@@ -1190,6 +1206,7 @@ func AdminHTML() string {
     }
 
     function renderUsers() {
+      updateUserControls();
       if (!users.length) {
         userList.textContent = 'No users loaded.';
         return;
@@ -1201,6 +1218,75 @@ func AdminHTML() string {
         button.textContent = user.username + ' - ' + user.status + ' - ' + (user.roles || []).join(', ');
         button.addEventListener('click', () => selectUser(user));
         userList.appendChild(button);
+      }
+    }
+
+    function updateUserControls() {
+      const user = users.find(user => user.id === selectedUserId);
+      const deleted = user && user.status === 'deleted';
+      const canWrite = hasScope('users:write');
+      for (const button of document.querySelectorAll('[data-user-write]')) {
+        button.hidden = !canWrite;
+        button.disabled = !canWrite || userLifecycleBusy;
+      }
+      for (const id of ['update-user', 'set-user-password', 'disable-user', 'enable-user', 'lock-user', 'unlock-user', 'revoke-user-sessions']) {
+        document.querySelector('#' + id).disabled = !canWrite || !user || deleted || userLifecycleBusy;
+      }
+      const deleteButton = document.querySelector('#delete-user');
+      deleteButton.hidden = !canWrite || !user || deleted;
+      deleteButton.disabled = !canWrite || !user || userLifecycleBusy || (currentSession.subject_type === 'user' && currentSession.id === selectedUserId);
+      const restoreButton = document.querySelector('#restore-user');
+      const needsAdmin = user && (user.roles || []).some(role => role !== 'user');
+      restoreButton.hidden = !canWrite || !deleted;
+      restoreButton.disabled = !canWrite || !deleted || userLifecycleBusy || (needsAdmin && !hasScope('admin'));
+      document.querySelector('#user-lifecycle-summary').textContent = !user
+        ? 'Select a user to manage the account.'
+        : deleted
+          ? 'Deleted account: ' + user.username + '. Enter a new password to restore it. It will remain disabled until explicitly enabled; old sessions stay revoked.' + (needsAdmin && !hasScope('admin') ? ' Admin permission is required to restore this account’s roles.' : '')
+          : 'Selected account: ' + user.username + '. Deletion disables the account, removes its password, and revokes all sessions. The username remains reserved; this is not personal-data erasure.';
+    }
+
+    function clearUserSelection() {
+      selectedUserId = '';
+      userEditor.value = '';
+      document.querySelector('#user-password').value = '';
+      renderUsers();
+    }
+
+    async function userLifecycleAction(action) {
+      const user = users.find(user => user.id === selectedUserId);
+      if (!user || !hasScope('users:write') || userLifecycleBusy) return;
+      const restoring = action === 'restore';
+      if (restoring !== (user.status === 'deleted')) return;
+      if (!restoring && currentSession.subject_type === 'user' && currentSession.id === user.id) return;
+      if (restoring && (user.roles || []).some(role => role !== 'user') && !hasScope('admin')) return;
+      const password = document.querySelector('#user-password').value;
+      if (restoring && (new TextEncoder().encode(password).length < 8 || new TextEncoder().encode(password).length > 72)) {
+        show({ error: 'Enter a new password between 8 and 72 bytes before restoring.' });
+        return;
+      }
+      const message = restoring
+        ? 'Restore user "' + user.username + '" with the new password? The account will remain disabled until explicitly enabled. Old sessions stay revoked.'
+        : 'Delete user "' + user.username + '"? The account will be disabled, its password removed, and all sessions revoked. Its username stays reserved. This is not personal-data erasure.';
+      if (!confirm(message)) return;
+      userLifecycleBusy = true;
+      updateUserControls();
+      let completed = false;
+      try {
+        const result = await api('/api/v1/users/' + encodeURIComponent(user.id) + (restoring ? '/restore' : ''), {
+          method: restoring ? 'POST' : 'DELETE',
+          ...(restoring ? { body: JSON.stringify({ password }) } : {})
+        });
+        completed = true;
+        clearUserSelection();
+        show(result);
+        await loadUsers(false);
+      } catch (err) {
+        if (completed) show({ error: 'The account was ' + (restoring ? 'restored and remains disabled' : 'deleted') + ', but the user list could not be refreshed. Load Users to refresh it.' });
+        else show(err);
+      } finally {
+        userLifecycleBusy = false;
+        updateUserControls();
       }
     }
 
@@ -1328,10 +1414,15 @@ func AdminHTML() string {
     }
 
     async function loadUsers(showResult = true) {
-      const result = await api('/api/v1/users');
+      const version = ++userListVersion;
+      const deleted = document.querySelector('#user-status-filter').value === 'deleted';
+      const result = await api('/api/v1/users' + (deleted ? '?deleted=true' : ''));
+      if (version !== userListVersion) return;
       const data = unwrap(result);
       users = data.users || [];
-      renderUsers();
+      const selected = users.find(user => user.id === selectedUserId);
+      if (selected) selectUser(selected);
+      else clearUserSelection();
       if (showResult) show(result);
     }
 
@@ -1467,6 +1558,22 @@ func AdminHTML() string {
     });
 
     document.querySelector('#load-users').addEventListener('click', async () => { try { await loadUsers(); } catch (err) { show(err); } });
+    document.querySelector('#user-status-filter').addEventListener('change', async () => {
+      users = [];
+      clearUserSelection();
+      try { await loadUsers(); } catch (err) { show(err); }
+    });
+    document.querySelector('#delete-user').addEventListener('click', () => userLifecycleAction('delete'));
+    document.querySelector('#restore-user').addEventListener('click', () => userLifecycleAction('restore'));
+    document.querySelector('#api-key').addEventListener('input', () => {
+      sessionLoadVersion++;
+      userListVersion++;
+      currentSession = { authenticated: false, scopes: [] };
+      users = [];
+      clearUserSelection();
+      applyPermissions();
+    });
+    document.querySelector('#api-key').addEventListener('change', () => loadSession());
     document.querySelector('#new-user').addEventListener('click', () => {
       selectedUserId = '';
       userEditor.value = JSON.stringify(userTemplate, null, 2);
