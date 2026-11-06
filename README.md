@@ -157,6 +157,7 @@ Environment variables:
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
 - `APP_PROXY_URL_MODE`, default `path`; use `query` for `/odo?url=...` compatibility links or `dual` to build path links while accepting both path and query forms
 - `virtual_host` remains unsupported: production startup rejects it; development warns and falls back to path mode. Registry and launch support do not enable virtual-host routing or credential isolation.
+- `APP_HOST_GUARD`, default `false`; opt-in central-host-only admission using `APP_PUBLIC_URL` and `APP_PROXY_BASE_DOMAIN`. See [host routing](docs/architecture/virtual-host-routing.md) before enabling; health checks must use the central Host.
 - `APP_PROXY_ALLOW_LOCAL_HTTP`, default `false`; development-only loopback HTTP allowance for `loadtest/` fake vendor runs, never for production
 - `APP_VIRTUAL_HOST_BASE_DOMAIN`, reserved for future virtual-host proxy mode and not active yet
 - `APP_VIRTUAL_HOST_ENCODING`, reserved for future virtual-host proxy mode and not active yet

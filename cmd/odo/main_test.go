@@ -166,3 +166,18 @@ func TestRuntimeDefaultsPreferProductionPathsInProduction(t *testing.T) {
 		t.Fatalf("expected development data dir ./data, got %q", got)
 	}
 }
+
+func TestStartupRejectsInvalidHostGuardInAllEnvironments(t *testing.T) {
+	for _, environment := range []string{"development", "production"} {
+		for _, flag := range []string{"true", "typo"} {
+			t.Run(environment+flag, func(t *testing.T) {
+				t.Setenv("APP_HOST_GUARD", flag)
+				t.Setenv("APP_PUBLIC_URL", "")
+				t.Setenv("APP_PROXY_BASE_DOMAIN", "")
+				if err := validateProductionConfig(environment, "/var/lib/odo/odo.db", "secret", true); err == nil {
+					t.Fatal("startup accepted invalid host guard configuration")
+				}
+			})
+		}
+	}
+}

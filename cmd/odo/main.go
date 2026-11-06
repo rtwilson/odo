@@ -118,6 +118,9 @@ func hasStoredAdminAPIKey(store *db.Store) (bool, error) {
 }
 
 func validateProductionConfig(appEnv, dbPath, adminAPIKey string, storedAdminKey bool) error {
+	if err := api.ValidateHostGuardConfig(); err != nil {
+		return err
+	}
 	if err := api.ValidateAboutConfig(appEnv); err != nil {
 		return err
 	}
