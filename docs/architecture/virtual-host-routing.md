@@ -161,7 +161,9 @@ checks. Unknown, inactive, or rejected hosts must fail without credential
 processing, target fetches, or registry enrollment. A vendor's own `/about`,
 `/login`, or `/api` path belongs to its vendor origin, not Odo's central mux.
 
-Central credential isolation, same-site request protections, cross-host grant
-handoff and revocation, and path-mode origin separation remain release gates.
-The current local login continuation is not a cross-host grant. Host dispatch,
-DNS/TLS deployment guidance, and vendor compatibility validation remain pending.
+The opt-in central host, cookie, and Origin boundaries are implemented.
+Cross-host grant handoff/revocation and path-mode origin separation remain
+release gates. See the proposed [cross-host grant protocol](cross-host-grants.md)
+for the next review checkpoint and prerequisite revocation fixes. The current
+local login continuation is not a cross-host grant. Vendor dispatch, DNS/TLS
+deployment guidance, and vendor compatibility validation remain pending.
