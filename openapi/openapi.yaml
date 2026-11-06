@@ -8,6 +8,36 @@ servers:
   - url: http://127.0.0.1:8080
 security: []
 paths:
+  /launch:
+    get:
+      summary: Validate a launch target and redirect through the existing proxy
+      description: Accepts one encoded HTTPS url value, or the documented raw HTTPS prefix compatibility form. RawQuery is limited to 16 KiB. Applies DNS safety, resource domain policy, GET permission, and proxy browser-session or anonymous-access checks without fetching upstream content. Management bearer tokens do not grant patron access. Login-required callers currently receive 401; automatic login continuation is pending. Responses are no-store and no-referrer. Subsequent proxy traffic rechecks policy and uses validated-IP dialing.
+      operationId: launchProxyTarget
+      security: []
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: Entire absolute HTTPS target, encoded once. See docs/architecture/launch-url-compatibility.md for raw-prefix compatibility and byte-preservation rules.
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to the existing path/query proxy strategy; no vendor content fetched.
+          headers:
+            Location:
+              schema:
+                type: string
+        "400":
+          description: Invalid launch query or target syntax.
+        "401":
+          description: Browser login required. JSON contains error login_required and login_url /login; no target continuation is issued yet.
+        "403":
+          description: Target safety, resource policy, or GET permission denied.
+        "405":
+          description: Only GET is supported.
+        "500":
+          $ref: "#/components/responses/Error"
   /api/v1:
     get:
       summary: API v1 index

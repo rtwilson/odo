@@ -1,8 +1,8 @@
 # Launch URL parsing contract
 
-`proxy.ParseLaunchQuery` and the URL-strategy prerequisites below are implemented.
-There is no `/launch` handler or login continuation yet. Existing `/login`
-behavior is unchanged, and virtual-host routing remains disabled.
+`GET /launch` and `proxy.ParseLaunchQuery` are implemented. Login continuation
+is pending. Existing `/login` behavior is unchanged, and virtual-host routing
+remains disabled.
 
 The existing path/query URL strategy now preserves vendor query parameters named
 `url`: only `/odo`, `/odo/`, and legacy `/p` treat that parameter as the proxy
@@ -67,7 +67,31 @@ and non-default ports. HTTPS is required even when development local HTTP is
 enabled. All parse failures return a generic error without target data.
 
 Parsing performs no DNS lookup or HTTP fetch. A successful parse is not an
-authorization grant or an SSRF safety decision: the future launch handler must
-apply DNS safety and current resource policy, method and session checks. Any
-later upstream fetch must retain validated-IP dialing. Login continuation,
-destination revalidation, privacy-safe logging, and the HTTP endpoint are pending.
+authorization grant or an SSRF safety decision.
+
+## Launch endpoint
+
+`GET /launch` applies existing DNS safety and resource-policy checks, including
+the target's GET permission. It requires the same browser session as proxy
+traffic unless proxy login is disabled or an explicit anonymous exception
+applies. Bearer management keys do not substitute for a patron browser session.
+The default login requirement continues to depend on whether users exist.
+
+On success it returns 302 to the URL produced by the existing URL strategy:
+path output by default and in dual mode, query output when configured. No
+upstream HTTP request occurs. Launch creates no vendor session cookie, cookie
+jar, or registry mapping. The subsequent proxy request independently rechecks
+policy and retains validated-IP dialing.
+
+Responses have `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+Odo's privacy access log records the local route without target path or query
+data. Reverse-proxy logs must also omit launch queries. `/launch` and its
+subpaths are reserved against vendor Referer recovery.
+
+Malformed envelopes return 400. Unsafe or disallowed targets return a generic
+403 without resource details. A missing login returns 401 JSON with
+`{"error":"login_required","login_url":"/login"}`. This is deliberately an
+intermediate workflow: sign in and reopen the launch URL. Automatic return to a
+pending destination requires the separate bounded server-side continuation;
+the target is never put in a login return URL by this handler. Operational
+failures return the standard generic 500 response. Only GET is supported.

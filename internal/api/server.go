@@ -91,6 +91,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /logout", s.logout)
 	mux.HandleFunc("POST /logout", s.logoutPost)
 	mux.HandleFunc("GET /resources", s.userResources)
+	mux.HandleFunc("GET /launch", s.launch)
+	mux.HandleFunc("POST /launch", s.launch)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /auth/saml/metadata", s.samlMetadata)
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
