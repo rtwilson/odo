@@ -127,6 +127,45 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/proxy-hostnames/{label}:
+    get:
+      summary: Inspect a registered proxy hostname and current resource associations
+      description: Requires resources:read. Looks up an exact registered label without enrolling hosts or contacting DNS/upstream servers. Resource IDs reflect current domain policy, including disablement, deletion, and block precedence. They are inspection metadata, not a request authorization decision; methods, anonymous URL exceptions, sessions, and DNS safety require separate checks. Retained identities with no current associations return an empty array. Current deployment settings are not required to inspect stored identities.
+      operationId: getProxyHostname
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Stored identity and current domain-policy resource IDs; response is no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hostname, label, resource_ids]
+                properties:
+                  hostname:
+                    type: string
+                  label:
+                    type: string
+                  resource_ids:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          description: Label is not registered.
+        "500":
+          $ref: "#/components/responses/Error"
   /api/v1/proxy-hostnames/reconcile:
     post:
       summary: Explicitly reconcile canonical proxy hostname identities

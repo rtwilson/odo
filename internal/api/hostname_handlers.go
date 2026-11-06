@@ -14,6 +14,33 @@ import (
 	"example.org/odo/internal/proxy"
 )
 
+func (s *Server) getProxyHostname(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	label := r.PathValue("label")
+	record, found, err := s.store.LookupProxyHostname(label)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "proxy hostname not found")
+		return
+	}
+	ids, err := s.store.ProxyHostnameResourceIDs(label)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"hostname":     record.Hostname,
+		"label":        record.Label,
+		"resource_ids": ids,
+	})
+}
+
 func (s *Server) reconcileProxyHostnames(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// Registry metadata must never be derived from Host or forwarded headers.

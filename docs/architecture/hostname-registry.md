@@ -79,7 +79,27 @@ failure or identity conflict returns 500 with the batch rolled back. Reconciliat
 performs no DNS lookup or HTTP fetch. Existing authentication audit events record
 the API operation, not the submitted body.
 
-Aliases, registry listing/inspection APIs, and routing integration are pending.
+## Protected identity inspection API
+
+`GET /api/v1/proxy-hostnames/{label}` requires `resources:read`. It accepts API-key
+or browser-session authentication; this read-only operation needs no CSRF header.
+An unknown label returns 404 only after authentication and permission checks.
+The operation never enrolls a host or performs DNS/HTTP requests. It works without
+current deployment settings, so retained identities remain inspectable.
+
+A successful response is `Cache-Control: no-store` and has this shape:
+
+```json
+{"hostname":"cdn.vendor.example","label":"h-<base32-digest>","resource_ids":["vendor"]}
+```
+
+`resource_ids` contains current domain-policy associations in resource-ID order.
+It becomes an empty array when policy blocks the host or no active resources
+remain associated. The stored identity still returns 200. These associations
+are inspection metadata, not permission to route requests. There is no `allowed`
+or production-readiness claim in this response.
+
+Aliases, registry listing, and routing integration are pending.
 SQLite contention may return an error;
 there is no retry policy in this foundation. Before a future rollback, stop Odo
 and back up the database. The previous binary ignores the additional table;

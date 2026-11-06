@@ -107,6 +107,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireScopes(s.putResource, "resources:write"))
 	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireScopes(s.deleteResource, "resources:write"))
 	mux.HandleFunc("POST /api/v1/proxy-hostnames/reconcile", s.requireScopes(s.reconcileProxyHostnames, "resources:write"))
+	mux.HandleFunc("GET /api/v1/proxy-hostnames/{label}", s.requireScopes(s.getProxyHostname, "resources:read"))
 	mux.HandleFunc("POST /api/v1/config/validate", s.requireScopes(s.validateConfig, "config:write"))
 	mux.HandleFunc("POST /api/v1/config/import", s.requireScopes(s.importConfig, "config:write"))
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireScopes(s.listConfigRevisions, "config:read"))
