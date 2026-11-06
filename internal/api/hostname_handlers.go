@@ -6,9 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 
 	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
@@ -44,22 +42,8 @@ func (s *Server) getProxyHostname(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reconcileProxyHostnames(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// Registry metadata must never be derived from Host or forwarded headers.
-	public, err := url.Parse(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")))
-	base := strings.TrimSpace(os.Getenv("APP_PROXY_BASE_DOMAIN"))
-	if err != nil || public.Scheme != "https" || public.Host == "" || public.User != nil ||
-		(public.Path != "" && public.Path != "/") || public.RawQuery != "" || public.Fragment != "" {
-		writeError(w, http.StatusServiceUnavailable, "hostname registry deployment settings are missing or invalid")
-		return
-	}
-	central, err := proxy.NormalizeRegistryHostname(public.Host)
+	routing, err := proxy.NewHostRoutingConfig(os.Getenv("APP_PUBLIC_URL"), os.Getenv("APP_PROXY_BASE_DOMAIN"))
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "hostname registry deployment settings are missing or invalid")
-		return
-	}
-	// Validate the base and the length of a generated proxy FQDN, even when
-	// the resource list is empty. The configured central host may be within it.
-	base, err = proxy.NormalizeRegistryHostname(base)
-	if err != nil || len(base)+55 > 253 {
 		writeError(w, http.StatusServiceUnavailable, "hostname registry deployment settings are missing or invalid")
 		return
 	}
@@ -88,7 +72,7 @@ func (s *Server) reconcileProxyHostnames(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid hostname reconciliation body")
 		return
 	}
-	records, err := s.store.ReconcileProxyHostnames(central, base, req.ApprovedHosts)
+	records, err := s.store.ReconcileProxyHostnames(routing.CentralHostname(), routing.ProxyBaseDomain(), req.ApprovedHosts)
 	if errors.Is(err, db.ErrInvalidHostnameReconciliation) {
 		writeError(w, http.StatusBadRequest, "hostname reconciliation rejected by hostname or resource policy")
 		return

@@ -57,6 +57,9 @@ the proxy DNS suffix before using this API. These settings identify trusted
 deployment names for registry validation only; they do not enable virtual-host
 routing. Missing or invalid settings return 503. Host and forwarded headers
 never supply these names. No deployment configuration is changed by the API.
+The central origin must have no credentials, query, or fragment, and no path
+except an optional literal `/`; even empty `?`/`#` suffixes are rejected.
+See [host validation](virtual-host-routing.md) for the shared configuration rules.
 
 The request body is a JSON object, at most 64 KiB, with an optional
 `approved_hosts` array of up to 100 hostnames. Unknown fields, trailing JSON,
