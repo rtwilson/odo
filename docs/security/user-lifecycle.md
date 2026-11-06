@@ -22,8 +22,14 @@ successful no-op without a second deletion audit event.
 
 Self-deletion is rejected when the authenticated actor ID matches the target.
 Deletion of the last active account with `admin` or `super_admin` role is rejected.
-The transaction acquires SQLite's writer lock before checking administrator
-state, serializing concurrent deletions. Database failures fail closed. Existing
+Deletion, status changes, and role/metadata updates acquire SQLite's writer lock
+before reading current account state or counting administrators. They check the
+last-active-administrator invariant inside the same transaction as the mutation.
+Concurrent deletion, disablement, locking, and demotion therefore cannot each
+remove a different administrator based on an outdated count. Database errors
+while determining the count return generic `500` responses, rather than being
+treated as a count of zero. Last-admin deletion retains `409`; role/status changes
+retain `400`. Existing
 login and session authentication already require `status == active`.
 
 Ordinary update, password-setting, and enable/disable/lock methods cannot modify
@@ -140,5 +146,8 @@ disable/lock endpoints (`400`). Scope and browser CSRF checks remain required.
 The existing post-commit `user_status_set` and `user_updated` audit events remain
 best-effort; success does not guarantee audit persistence.
 
-Concurrent account changes and login racing with revocation still need a separate
-review. These changes do not add cross-host grants or virtual-host delivery.
+Last-admin removal is protected across concurrent account mutations. Stale PATCH
+edits that overwrite another administrator's changes, and login racing with
+revocation, still need separate fixes. Production lock contention fails closed
+through the existing generic server-error path; this change adds no retry policy.
+These changes do not add cross-host grants or virtual-host delivery.

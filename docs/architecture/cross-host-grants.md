@@ -23,7 +23,9 @@ Account-change revocation now has these foundations:
 - `db.go:SetUserStatus` commits disable/lock and session revocation together.
   `UpdateUser` does the same for disabled/locked status PATCH, including rollback
   of accompanying metadata/role edits. PATCH also enforces last-admin status
-  protection. Concurrent account changes still require a separate review.
+  protection. Deletion, role changes, and status changes enforce the last-admin
+  invariant under SQLite's writer lock, using current database state. Stale PATCH
+  overwrites and login racing with revocation remain separate work.
 - Password resets now commit the new hash and session revocation together in
   `db.go:SetUserPassword`; revocation failure rolls back the password change and
   produces a generic API error. The post-commit password audit remains best-effort.
@@ -193,6 +195,6 @@ Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
 separation. Next implementation batches should review account/login concurrency,
-then add bounded handoff state with
+including stale PATCH overwrites and login/revocation races, then add bounded handoff state with
 runtime vendor dispatch still disabled. This document does not approve enabling
 virtual-host traffic.

@@ -13,7 +13,7 @@ var (
 	ErrUserDeleted       = errors.New("user is deleted")
 	ErrUserNotDeleted    = errors.New("user is not deleted")
 	ErrDeleteSelf        = errors.New("cannot delete own account")
-	ErrLastAdministrator = errors.New("cannot delete the last active administrator")
+	ErrLastAdministrator = errors.New("cannot remove the last active administrator")
 )
 
 // DeleteUser reserves the username and removes login credentials. The account,
@@ -49,14 +49,8 @@ func (s *Store) DeleteUser(id, actorID string) (bool, error) {
 	if err := json.Unmarshal([]byte(rolesJSON), &roles); err != nil {
 		return false, err
 	}
-	if status == "active" && administratorRoles(roles) {
-		count, err := activeAdministrators(tx)
-		if err != nil {
-			return false, err
-		}
-		if count <= 1 {
-			return false, ErrLastAdministrator
-		}
+	if err := protectLastAdministrator(tx, User{Status: status, Roles: roles}, "deleted", roles); err != nil {
+		return false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := tx.Exec(`UPDATE users SET status = 'deleted', password_hash = '', disabled_at = ?, updated_at = ? WHERE id = ?`, now, now, id); err != nil {
@@ -136,6 +130,30 @@ func administratorRoles(roles []string) bool {
 		}
 	}
 	return false
+}
+
+// userForUpdate acquires SQLite's writer lock before reading account state.
+// Every account mutation that can remove an administrator holds this lock until
+// commit, so its admin count cannot race with deletion, disablement or demotion.
+func userForUpdate(tx *sql.Tx, id string) (User, bool, error) {
+	if _, err := tx.Exec(`UPDATE users SET id = id WHERE id = ?`, id); err != nil {
+		return User{}, false, err
+	}
+	return scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id))
+}
+
+func protectLastAdministrator(tx *sql.Tx, current User, status string, roles []string) error {
+	if current.Status != "active" || !administratorRoles(current.Roles) || (status == "active" && administratorRoles(roles)) {
+		return nil
+	}
+	count, err := activeAdministrators(tx)
+	if err != nil {
+		return err
+	}
+	if count <= 1 {
+		return ErrLastAdministrator
+	}
+	return nil
 }
 
 func activeAdministrators(tx *sql.Tx) (int, error) {

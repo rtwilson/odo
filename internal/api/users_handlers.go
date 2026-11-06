@@ -105,7 +105,6 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req userPatchRequest
-	wasActiveAdmin := existing.Status == "active" && hasSuperAdminRole(existing.Roles)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -126,10 +125,6 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if hasSuperAdminRole(existing.Roles) && !hasSuperAdminRole(roles) && s.activeSuperAdminCount() <= 1 {
-			writeError(w, http.StatusBadRequest, "cannot remove the last admin account")
-			return
-		}
 		existing.Roles = roles
 	}
 	if strings.TrimSpace(req.Status) != "" {
@@ -138,13 +133,13 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if wasActiveAdmin && status != "active" && s.activeSuperAdminCount() <= 1 {
-			writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
-			return
-		}
 		existing.Status = status
 	}
 	user, found, err := s.store.UpdateUser(existing)
+	if errors.Is(err, db.ErrLastAdministrator) {
+		writeError(w, http.StatusBadRequest, "cannot remove or deactivate the last admin account")
+		return
+	}
 	if errors.Is(err, db.ErrUserDeleted) {
 		writeError(w, http.StatusConflict, "restore the deleted account before updating it")
 		return
@@ -230,22 +225,11 @@ func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status string) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if status == "disabled" || status == "locked" {
-		existing, found, err := s.store.GetUser(id)
-		if err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		if !found {
-			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		if hasSuperAdminRole(existing.Roles) && s.activeSuperAdminCount() <= 1 {
-			writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
-			return
-		}
-	}
 	user, found, err := s.store.SetUserStatus(id, status)
+	if errors.Is(err, db.ErrLastAdministrator) {
+		writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -261,30 +245,6 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 func (s *Server) requestHasAdminScope(r *http.Request) bool {
 	auth, status, _, _ := s.authorizeRequest(r, "admin")
 	return status == 0 && auth.IsAuthenticated
-}
-
-func (s *Server) activeSuperAdminCount() int {
-	users, err := s.store.ListUsers()
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, user := range users {
-		if user.Status == "active" && hasSuperAdminRole(user.Roles) {
-			count++
-		}
-	}
-	return count
-}
-
-func hasSuperAdminRole(roles []string) bool {
-	for _, role := range roles {
-		switch strings.ToLower(strings.TrimSpace(role)) {
-		case "admin", "super_admin":
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) newStoredUser(req userCreateRequest) (db.User, error) {

@@ -665,7 +665,12 @@ func (s *Store) GetUserByUsername(username string) (User, bool, error) {
 }
 
 func (s *Store) UpdateUser(user User) (User, bool, error) {
-	existing, found, err := s.GetUser(user.ID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback()
+	existing, found, err := userForUpdate(tx, user.ID)
 	if err != nil || !found {
 		return User{}, found, err
 	}
@@ -680,6 +685,9 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 	}
 	if len(user.Roles) == 0 {
 		user.Roles = existing.Roles
+	}
+	if err := protectLastAdministrator(tx, existing, user.Status, user.Roles); err != nil {
+		return User{}, false, err
 	}
 	roles, err := json.Marshal(user.Roles)
 	if err != nil {
@@ -696,11 +704,6 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 			lockedAt = now
 		}
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return User{}, false, err
-	}
-	defer tx.Rollback()
 	result, err := tx.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`,
 		user.Email, user.DisplayName, user.Status, string(roles), disabledAt, lockedAt, now, user.ID)
 	if err != nil {
@@ -759,6 +762,16 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 		return User{}, false, err
 	}
 	defer tx.Rollback()
+	existing, found, err := userForUpdate(tx, id)
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if existing.Status == "deleted" {
+		return User{}, false, nil
+	}
+	if err := protectLastAdministrator(tx, existing, status, existing.Roles); err != nil {
+		return User{}, false, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	disabledAt, lockedAt := "", ""
 	if status == "disabled" {

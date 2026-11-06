@@ -692,7 +692,7 @@ paths:
     patch:
       summary: Update local user metadata, roles, or status
       operationId: patchUser
-      description: Disabled or locked status is committed atomically with session revocation and accompanying metadata/role updates. Database failure rolls back the transaction. Active-account metadata changes do not revoke sessions. The last active administrator cannot be disabled or locked (400). Audit remains best-effort after commit.
+      description: Disabled or locked status is committed atomically with session revocation and accompanying metadata/role updates. Database failure rolls back the transaction. Active-account metadata changes do not revoke sessions. The last active administrator cannot be demoted, disabled, or locked (400); the check uses current state under SQLite's writer lock. Count failures return a generic 500. Audit remains best-effort after commit.
       security:
         - bearerAuth: []
       parameters:
