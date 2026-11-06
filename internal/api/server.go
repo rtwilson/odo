@@ -137,6 +137,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/users", s.requireScopes(s.createUser, "users:write"))
 	mux.HandleFunc("GET /api/v1/users/{id}", s.requireScopes(s.getUser, "users:read", "users:write"))
 	mux.HandleFunc("PATCH /api/v1/users/{id}", s.requireScopes(s.patchUser, "users:write"))
+	mux.HandleFunc("DELETE /api/v1/users/{id}", s.requireScopes(s.deleteUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/restore", s.requireScopes(s.restoreUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/set-password", s.requireScopes(s.setUserPassword, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/disable", s.requireScopes(s.disableUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/enable", s.requireScopes(s.enableUser, "users:write"))

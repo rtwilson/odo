@@ -590,9 +590,17 @@ paths:
   /api/v1/users:
     get:
       summary: List local users
+      description: Requires users:read, users:write, or admin. Deleted accounts are excluded unless deleted=true, which selects only deleted accounts.
       operationId: listUsers
       security:
         - bearerAuth: []
+      parameters:
+        - name: deleted
+          in: query
+          description: Select only deleted accounts instead of non-deleted accounts.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: User list without password hashes
@@ -600,6 +608,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserListResponse"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
         "403":
@@ -631,6 +641,38 @@ paths:
         "409":
           $ref: "#/components/responses/Error"
   /api/v1/users/{id}:
+    delete:
+      summary: Soft-delete a local user and revoke sessions
+      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Self-deletion is forbidden; deleting the last active administrator is a conflict. Account deletion, session revocation and the audit record commit atomically. Repeated deletion succeeds without a second lifecycle audit event. Username remains reserved; this is not personal-data erasure.
+      operationId: deleteUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Account deleted, or already deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted:
+                    type: boolean
+                    const: true
+                  id:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
     get:
       summary: Get local user
       operationId: getUser
@@ -667,7 +709,62 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+        "409":
+          $ref: "#/components/responses/Error"
         "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/users/{id}/restore:
+    post:
+      summary: Restore a deleted local user with a new password
+      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Accounts retaining any role other than user require admin. Accepts only password; rejects unknown fields. Restoration is transactional with session revocation and audit insertion. Retains username and roles, leaves the account disabled, and never revives old sessions. Explicit enable is required before login. Restoring a non-deleted account is a conflict.
+      operationId: restoreUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  format: password
+                  writeOnly: true
+                  description: New password, between 8 and 72 UTF-8 bytes. Request body is limited to 4096 bytes.
+                  maxLength: 72
+      responses:
+        "200":
+          description: Restored account, still disabled pending explicit enablement
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [restored, id, status]
+                properties:
+                  restored:
+                    type: boolean
+                    const: true
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    const: disabled
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
           $ref: "#/components/responses/Error"
   /api/v1/users/{id}/set-password:
     post:
@@ -1632,7 +1729,7 @@ components:
           type: string
         status:
           type: string
-          enum: [active, disabled, locked]
+          enum: [active, disabled, locked, deleted]
         roles:
           type: array
           items:

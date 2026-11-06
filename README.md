@@ -104,6 +104,8 @@ API key management is available in the API Keys section. Newly created or rotate
 
 User management is available in the Users section. Admins can create local users, update roles/status, set passwords, lock/disable users, and revoke sessions through the same `/api/v1/users` endpoints used by scripts. Password hashes are never displayed.
 
+The APIs also support [soft deletion and restoration](docs/security/user-lifecycle.md): `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/restore` with a new password, and `GET /api/v1/users?deleted=true`. Deletion atomically revokes sessions and reserves the username. Restored accounts remain disabled until explicitly enabled; old sessions stay revoked. Admin UI controls for these operations are pending.
+
 The Resources section includes search, sort, filters, readable resource list rows, resource details, raw JSON editing, the Resource Config Builder, export controls, and integrated Proxy Test controls. It can generate JSON, validate it through `/api/v1/resources/validate`, save it through the normal resource API, export a `resource-<id>.json` file, or export the currently filtered resources as JSON.
 
 ## Admin access

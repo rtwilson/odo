@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,7 +33,18 @@ type userPasswordRequest struct {
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := s.store.ListUsers()
+	deleted := r.URL.Query().Get("deleted")
+	if deleted != "" && deleted != "true" && deleted != "false" {
+		writeError(w, http.StatusBadRequest, "deleted must be true or false")
+		return
+	}
+	var users []db.User
+	var err error
+	if deleted == "true" {
+		users, err = s.store.ListDeletedUsers()
+	} else {
+		users, err = s.store.ListUsers()
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -128,6 +140,10 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		existing.Status = status
 	}
 	user, found, err := s.store.UpdateUser(existing)
+	if errors.Is(err, db.ErrUserDeleted) {
+		writeError(w, http.StatusConflict, "restore the deleted account before updating it")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return

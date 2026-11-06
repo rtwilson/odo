@@ -2,9 +2,8 @@
 
 ## Database foundation
 
-The database supports transactional soft deletion and restoration. API routes
-and admin UI controls are a subsequent implementation batch; these operations
-are not yet exposed over HTTP.
+The database and documented management APIs support transactional soft deletion
+and restoration. Admin UI controls are a subsequent implementation batch.
 
 Deletion uses the existing persistent `status` column with value `deleted`.
 No schema migration or rewrite of existing accounts is needed. `disabled_at`
@@ -34,10 +33,47 @@ that appeared while deleted. An administrator must explicitly enable it before
 login. Restoration never clears a session's revocation timestamp. Repeated
 restoration of an account that is not deleted is a conflict.
 
-The caller must enforce administrative permissions and browser CSRF checks;
-database methods are not an authorization boundary. The forthcoming API must
-derive the actor ID from authentication, never from a request body. Restoring
-privileged roles must require the corresponding administrative authority.
+Database methods are not an authorization boundary. The management APIs enforce
+administrative permissions and the existing browser-session CSRF checks. They
+derive the actor ID from authentication, never from a request body.
+
+## Management APIs
+
+All endpoints require authentication. Listing and reading users requires
+`users:read`, `users:write`, or `admin`; deletion and restoration require
+`users:write` or `admin`. Restoring an account with any retained role other than
+`user` additionally requires `admin`, consistent with the existing restriction
+on assigning roles. Browser-session mutations require `X-Odo-CSRF`; authenticated
+bearer-key requests follow the existing CSRF exemption. Host guard and Origin
+policies remain in effect.
+
+| Operation | Request | Success |
+| --- | --- | --- |
+| List non-deleted users (including disabled/locked) | `GET /api/v1/users` | `200`, existing users envelope |
+| List only deleted users | `GET /api/v1/users?deleted=true` | `200`, existing users envelope |
+| Read an account, including deleted | `GET /api/v1/users/{id}` | `200`, account metadata without password hash |
+| Soft-delete | `DELETE /api/v1/users/{id}` | `200`, `{"deleted":true,"id":"..."}` |
+| Restore with a new password | `POST /api/v1/users/{id}/restore` with `{"password":"new password"}` | `200`, `{"restored":true,"id":"...","status":"disabled"}` |
+| Enable after restoration | `POST /api/v1/users/{id}/enable` | Existing `200` account response |
+
+Restore accepts only the password field, between 8 and 72 UTF-8 bytes. Its JSON
+body is limited to 4096 bytes and must contain exactly one JSON value. Password
+hashes are generated server-side and never returned. The `deleted` query parameter
+accepts `true` or `false`; absent, empty, or `false` selects non-deleted users.
+
+Deletion/restoration return `401` without valid authentication, `403` for
+insufficient scope or invalid browser CSRF, and `404` for an unknown user.
+Self-deletion returns `403`. Last-administrator deletion and restoration of a
+non-deleted account return `409`. Invalid restore input or a malformed deleted
+filter returns `400`. Database failures return a generic `500`, with the internal
+cause logged under the existing request ID; neither operation reports success
+when its transaction fails.
+
+Repeating deletion returns the same successful response. Deleted accounts cannot
+be enabled, unlocked, or assigned a password through ordinary endpoints (those
+operations return `404` for an unavailable account). A metadata/status PATCH of
+a deleted account returns `409`; use restore instead. Restore does not accept a
+new username, role list, account status, or actor ID.
 
 ## Disable, delete, restore, and future purge
 
