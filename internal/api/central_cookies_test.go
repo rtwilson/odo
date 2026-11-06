@@ -27,6 +27,7 @@ func TestCentralCookieNamespacesAndLogout(t *testing.T) {
 			req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 			req.Host = "odo.example"
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Origin", "https://odo.example")
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != 302 {
@@ -72,6 +73,7 @@ func TestCentralCookieNamespacesAndLogout(t *testing.T) {
 				write.Host = "odo.example"
 				write.AddCookie(session)
 				write.Header.Set("X-Odo-CSRF", header)
+				write.Header.Set("Origin", "https://odo.example")
 				result := httptest.NewRecorder()
 				handler.ServeHTTP(result, write)
 				want := 403
@@ -83,9 +85,29 @@ func TestCentralCookieNamespacesAndLogout(t *testing.T) {
 				}
 			}
 			logout := httptest.NewRequest("POST", "/logout", nil)
+			if tc.prefix != "" {
+				for _, auth := range []struct {
+					bearer string
+					want   int
+				}{{"", 403}, {"invalid", 401}, {"secret", 200}} {
+					write := httptest.NewRequest("POST", "/api/v1/resources", strings.NewReader(`{"id":"origin-check","name":"Origin check","domains":[{"host":"vendor.example"}]}`))
+					write.Host = "odo.example"
+					write.AddCookie(session)
+					write.Header.Set("X-Odo-CSRF", csrf.Value)
+					if auth.bearer != "" {
+						write.Header.Set("Authorization", "Bearer "+auth.bearer)
+					}
+					result := httptest.NewRecorder()
+					handler.ServeHTTP(result, write)
+					if result.Code != auth.want {
+						t.Fatalf("bearer %q without Origin: got %d want %d", auth.bearer, result.Code, auth.want)
+					}
+				}
+			}
 			logout.Host = "odo.example"
 			logout.AddCookie(session)
 			logout.Header.Set("X-Odo-CSRF", csrf.Value)
+			logout.Header.Set("Origin", "https://odo.example")
 			result := httptest.NewRecorder()
 			handler.ServeHTTP(result, logout)
 			for _, name := range []string{session.Name, csrf.Name} {

@@ -109,9 +109,42 @@ sessions again if their cookies remain in the browser.
 
 These prefixes prevent sibling hosts from setting central cookies through a
 parent Domain attribute in conforming browsers. They do not isolate vendor
-scripts served on the same central origin through path mode. Exact Origin
-checks and cross-host grants/revocation remain pending, and SameSite alone
-does not provide the required sibling-origin CSRF boundary.
+scripts served on the same central origin through path mode. The Origin checks
+below address sibling origins; cross-host grants/revocation remain pending.
+
+## Guarded central Origin checks
+
+With the host guard enabled, unsafe requests (POST, PUT, PATCH, DELETE) to
+`/login`, `/logout`, `/api/v1`, and `/api/v1/...` must carry exactly one Origin
+header matching the configured central HTTPS origin. Comparison uses the same
+normalized hostname and default-443 authority rules as host admission. Origin
+must contain only scheme and authority: paths (even `/`), credentials, queries,
+fragments, `null`, duplicate values, and sibling/vendor origins are rejected.
+Referer and Sec-Fetch-Site do not substitute for a missing Origin.
+
+Host admission runs first, then Origin checking, then authentication and normal
+application processing. Origin failures return generic 403 with no-store, no
+cookies, and no database access. Rejected requests use the fixed access-log
+route `origin_rejected`; Origin header values are not logged. Existing management
+session CSRF-token checks remain required after Origin acceptance. Login and
+logout now require the central Origin too; they do not gain management-API
+bearer exemptions.
+
+Bearer management clients may omit Origin on API requests. If they supply an
+Origin, it must pass the same check. Authentication still validates the key,
+and an invalid key never falls back to cookie authentication. Browser sessions
+cannot use this exemption without supplying a separately valid management key.
+
+Guarded `GET /logout` and `HEAD /logout` return 405 with `Allow: POST` without
+revoking sessions or clearing cookies. Built-in logout forms already use POST.
+Command-line login/logout callers must supply the central Origin explicitly.
+Other safe requests and vendor POST workflows under `/odo` are unchanged. The
+guard-disabled legacy behavior is unchanged. No cross-origin CORS allowance is
+introduced. SAML handlers remain unimplemented and are not enabled by this work.
+
+These checks do not protect central credentials from vendor code served through
+central-origin path mode. Production virtual-host migration still requires
+separating those origins before vendor-host routing is enabled.
 
 ## Required request boundary before enabling traffic
 

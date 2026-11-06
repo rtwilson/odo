@@ -316,6 +316,10 @@ Open `http://127.0.0.1:8080/login` to sign in; `/logout` revokes the session and
 With `APP_HOST_GUARD=true`, central authentication instead uses `__Host-odo_session`
 and `__Host-odo_csrf`; legacy cookie names are ignored. Sign out before changing
 guard mode and sign in again afterward. See [central cookie boundaries](docs/architecture/virtual-host-routing.md).
+Guarded login/logout POSTs and unsafe session-authenticated management requests
+require the configured central HTTPS Origin. Existing management CSRF checks
+still apply. Use POST for guarded logout; GET/HEAD return 405. Bearer API clients
+can omit Origin, but a supplied Origin must match the central origin.
 
 In production, browser sessions can persist across Odo restarts because session rows live in SQLite until they expire or are revoked. In development, `APP_SESSION_PERSIST_ON_RESTART` defaults to `false`, so an existing browser cookie is rejected after a restart without deleting the session row. Set `APP_SESSION_PERSIST_ON_RESTART=true` when you want restart-persistent sessions during local testing. Use `APP_SESSION_TTL_MINUTES` and `APP_SESSION_IDLE_TIMEOUT_MINUTES` to control absolute and idle session limits. `last_seen_at` updates are throttled so normal browsing does not write the session row on every proxied asset request.
 

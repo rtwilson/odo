@@ -3,7 +3,7 @@ info:
   title: odo API
   version: 0.1.0
   summary: API-first library access middleware/proxy MVP
-  description: Management and configuration for odo happen through documented JSON APIs. Protected APIs accept either Authorization Bearer API keys or authenticated browser sessions with derived scopes. Unsafe session-authenticated requests require X-Odo-CSRF.
+  description: Management and configuration for odo happen through documented JSON APIs. Protected APIs accept either Authorization Bearer API keys or authenticated browser sessions with derived scopes. Unsafe session-authenticated requests require X-Odo-CSRF. With APP_HOST_GUARD enabled, unsafe API requests also require exactly one matching central HTTPS Origin; bearer API clients may omit Origin, but a supplied Origin must match. Guarded login and POST logout require that Origin too; guarded GET/HEAD logout return 405.
 servers:
   - url: http://127.0.0.1:8080
 security: []
