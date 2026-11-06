@@ -22,7 +22,18 @@ type URLStrategy interface {
 	ParseProxyRequest(r *http.Request) (*url.URL, string, bool, error)
 }
 
-type envURLStrategy struct{}
+// URLRoutingContext selects proxy URL output independently of process settings.
+// Parsing still accepts both path and query URLs for compatibility. This context
+// does not authorize targets or enable virtual-host routing.
+type URLRoutingContext struct {
+	Mode string
+}
+
+var _ URLStrategy = URLRoutingContext{}
+
+func routingContextFromEnv() URLRoutingContext {
+	return URLRoutingContext{Mode: ProxyURLMode()}
+}
 
 func ProxyURLMode() string {
 	return NormalizeProxyURLMode(os.Getenv("APP_PROXY_URL_MODE"))
@@ -53,15 +64,19 @@ func ProxyURLModeWarning(mode string) string {
 }
 
 func BuildProxyURL(target *url.URL) string {
-	return envURLStrategy{}.BuildProxyURL(target)
+	return routingContextFromEnv().BuildProxyURL(target)
 }
 
 func BuildProxyURLWithMode(target *url.URL, mode string) string {
+	return (URLRoutingContext{Mode: mode}).BuildProxyURL(target)
+}
+
+func (routing URLRoutingContext) BuildProxyURL(target *url.URL) string {
 	if target == nil {
 		return PublicProxyPath
 	}
 	target = normalizeProxyTarget(target)
-	switch NormalizeProxyURLMode(mode) {
+	switch NormalizeProxyURLMode(routing.Mode) {
 	case ProxyURLModeQuery:
 		return PublicProxyPath + "?url=" + url.QueryEscape(target.String())
 	default:
@@ -114,15 +129,11 @@ func BuildProxyURLPrefix(scheme, mode string) (string, error) {
 	return prefix, nil
 }
 
-func (envURLStrategy) BuildProxyURL(target *url.URL) string {
-	return BuildProxyURLWithMode(target, ProxyURLMode())
-}
-
 func ParseProxyRequest(r *http.Request) (*url.URL, string, bool, error) {
-	return envURLStrategy{}.ParseProxyRequest(r)
+	return routingContextFromEnv().ParseProxyRequest(r)
 }
 
-func (envURLStrategy) ParseProxyRequest(r *http.Request) (*url.URL, string, bool, error) {
+func (URLRoutingContext) ParseProxyRequest(r *http.Request) (*url.URL, string, bool, error) {
 	if r == nil || r.URL == nil {
 		return nil, "", false, errors.New("proxy request is invalid")
 	}

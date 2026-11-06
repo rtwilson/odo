@@ -19,6 +19,41 @@ func TestBuildProxyURLDefaultsToPathMode(t *testing.T) {
 	}
 }
 
+func TestURLRoutingContextIsIndependentOfEnvironment(t *testing.T) {
+	target, err := url.Parse("https://example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := *target
+	for _, tc := range []struct {
+		mode string
+		want string
+	}{
+		{"", "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+		{ProxyURLModePath, "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+		{ProxyURLModeDual, "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+		{ProxyURLModeQuery, "/odo?url=" + url.QueryEscape(target.String())},
+		{ProxyURLModeVirtualHost, "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			routing := URLRoutingContext{Mode: tc.mode}
+			for _, envMode := range []string{ProxyURLModePath, ProxyURLModeQuery} {
+				t.Setenv("APP_PROXY_URL_MODE", envMode)
+				if got := routing.BuildProxyURL(target); got != tc.want {
+					t.Fatalf("environment %q: got %q, want %q", envMode, got, tc.want)
+				}
+				parsed, _, ok, err := routing.ParseProxyRequest(httptest.NewRequest("GET", tc.want, nil))
+				if err != nil || !ok || parsed.String() != target.String() {
+					t.Fatalf("round trip changed target: %v, ok=%v, err=%v", parsed, ok, err)
+				}
+			}
+			if *target != original {
+				t.Fatal("URL builder changed the caller's target")
+			}
+		})
+	}
+}
+
 func TestBuildProxyURLUsesQueryMode(t *testing.T) {
 	t.Setenv("APP_PROXY_URL_MODE", "query")
 	target, _ := url.Parse("https://example.com/path")
