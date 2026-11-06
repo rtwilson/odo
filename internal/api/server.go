@@ -27,7 +27,8 @@ type Server struct {
 	startedAt  time.Time
 	bootSecret string
 
-	loginThrottle *loginThrottle
+	loginThrottle       *loginThrottle
+	launchContinuations *launchContinuations
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -75,7 +76,8 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		startedAt:  time.Now().UTC(),
 		bootSecret: randomBootSecret(),
 
-		loginThrottle: newLoginThrottle(),
+		loginThrottle:       newLoginThrottle(),
+		launchContinuations: newLaunchContinuations(),
 	}
 }
 
@@ -93,6 +95,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /resources", s.userResources)
 	mux.HandleFunc("GET /launch", s.launch)
 	mux.HandleFunc("POST /launch", s.launch)
+	mux.HandleFunc("GET /launch/continue", s.continueLaunch)
+	mux.HandleFunc("POST /launch/continue", s.continueLaunch)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /auth/saml/metadata", s.samlMetadata)
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)

@@ -125,6 +125,9 @@ func TestLaunchRejectsUnsafeOrUnauthorizedTargets(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(tc.method, tc.path, nil)
+			if tc.name == "login required" {
+				req.Header.Set("Accept", "application/json")
+			}
 			// A management key must not replace a patron session.
 			req.Header.Set("Authorization", "Bearer secret")
 			server.Routes().ServeHTTP(rec, req)

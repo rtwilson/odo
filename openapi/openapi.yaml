@@ -11,7 +11,7 @@ paths:
   /launch:
     get:
       summary: Validate a launch target and redirect through the existing proxy
-      description: Accepts one encoded HTTPS url value, or the documented raw HTTPS prefix compatibility form. RawQuery is limited to 16 KiB. Applies DNS safety, resource domain policy, GET permission, and proxy browser-session or anonymous-access checks without fetching upstream content. Management bearer tokens do not grant patron access. Login-required callers currently receive 401; automatic login continuation is pending. Responses are no-store and no-referrer. Subsequent proxy traffic rechecks policy and uses validated-IP dialing.
+      description: Accepts one encoded HTTPS url value, or the documented raw HTTPS prefix compatibility form. RawQuery is limited to 16 KiB. Applies DNS safety, resource domain policy, GET permission, and proxy browser-session or anonymous-access checks without fetching upstream content. Management bearer tokens do not grant patron access. Unsigned document navigation redirects through login using a bounded browser-bound opaque continuation; non-document callers receive 401. Responses are no-store and no-referrer. Subsequent proxy traffic rechecks policy and uses validated-IP dialing.
       operationId: launchProxyTarget
       security: []
       parameters:
@@ -23,7 +23,7 @@ paths:
             type: string
       responses:
         "302":
-          description: Redirect to the existing path/query proxy strategy; no vendor content fetched.
+          description: Redirect to the existing path/query proxy strategy, or to login with an opaque local continuation; no vendor content fetched.
           headers:
             Location:
               schema:
@@ -31,9 +31,39 @@ paths:
         "400":
           description: Invalid launch query or target syntax.
         "401":
-          description: Browser login required. JSON contains error login_required and login_url /login; no target continuation is issued yet.
+          description: Browser login required for a non-document request. JSON contains error login_required and login_url /login.
         "403":
           description: Target safety, resource policy, or GET permission denied.
+        "405":
+          description: Only GET is supported.
+        "500":
+          $ref: "#/components/responses/Error"
+        "503":
+          description: Pending launch capacity is full; reopen the launch URL later.
+  /launch/continue:
+    get:
+      summary: Consume a browser-bound launch continuation after login
+      description: Requires a current browser session and the matching host-only nonce cookie. Tokens are single-use, expire after five minutes, and live in bounded process memory. Rechecks DNS safety, resource policy, GET permission and proxy access before redirecting. No vendor HTTP fetch occurs. Responses are no-store/no-referrer. This is a local path/query workflow, not a virtual-host grant.
+      operationId: continueLaunch
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+      responses:
+        "302":
+          description: Redirect through the existing proxy strategy.
+        "401":
+          description: Browser login required; continuation is not consumed.
+        "403":
+          description: Destination no longer permitted; continuation has been consumed.
+        "404":
+          description: Missing, malformed, expired, replayed, or browser-mismatched continuation.
         "405":
           description: Only GET is supported.
         "500":

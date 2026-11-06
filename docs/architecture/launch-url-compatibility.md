@@ -1,8 +1,7 @@
 # Launch URL parsing contract
 
-`GET /launch` and `proxy.ParseLaunchQuery` are implemented. Login continuation
-is pending. Existing `/login` behavior is unchanged, and virtual-host routing
-remains disabled.
+`GET /launch`, `proxy.ParseLaunchQuery`, and a browser-bound local login
+continuation are implemented. Virtual-host routing remains disabled.
 
 The existing path/query URL strategy now preserves vendor query parameters named
 `url`: only `/odo`, `/odo/`, and legacy `/p` treat that parameter as the proxy
@@ -89,9 +88,46 @@ data. Reverse-proxy logs must also omit launch queries. `/launch` and its
 subpaths are reserved against vendor Referer recovery.
 
 Malformed envelopes return 400. Unsafe or disallowed targets return a generic
-403 without resource details. A missing login returns 401 JSON with
-`{"error":"login_required","login_url":"/login"}`. This is deliberately an
-intermediate workflow: sign in and reopen the launch URL. Automatic return to a
-pending destination requires the separate bounded server-side continuation;
-the target is never put in a login return URL by this handler. Operational
-failures return the standard generic 500 response. Only GET is supported.
+403 without resource details. For browser document navigation, a missing login
+starts the continuation below. Non-document requests (for example, requests
+accepting JSON) still return 401 JSON with
+`{"error":"login_required","login_url":"/login"}` without allocating state.
+Operational failures return the standard generic 500 response. Only GET is
+supported.
+
+## Browser login continuation
+
+After target validation, an unsigned browser receives a 302 to
+`/login?next=<encoded-local-continuation>`. The local return path is
+`/launch/continue?token=<opaque-random-token>`; it contains no vendor URL.
+`safeNextPath` accepts only this exact endpoint and a canonical 32-byte random
+token, not arbitrary `/launch` destinations or external URLs. The existing login
+flow returns to that local path after authentication. SAML login remains
+unimplemented; this does not add SAML or cross-host authentication.
+
+The destination lives in a mutex-protected in-memory store with a five-minute
+logical lifetime and a global maximum of 256 pending launches. New entries
+sweep expired records; an expired redemption also removes its record. Idle
+expired records may remain in bounded process memory until the next operation.
+Nothing is stored in SQLite. Restarting Odo discards pending launches, and
+multiple instances do not share them. A full store returns 503 instead of
+evicting an unexpired launch. Reopen the original launch URL to start again.
+
+Each continuation is bound to a random browser nonce cookie: host-only,
+HttpOnly, Path=/, SameSite=Lax, and Secure when required by existing cookie
+policy. HTTPS uses `__Host-odo_launch_nonce`; local HTTP development uses
+`odo_launch_nonce`. Reusing the nonce permits multiple pending tabs. Tokens and
+nonces are stored only as hashes alongside the pending destination.
+
+`GET /launch/continue` requires a current browser session and the matching nonce
+before atomically consuming the token. Missing, expired, replayed, malformed,
+or browser-mismatched continuations fail with generic 404; an unsigned browser
+with a well-formed token and nonce receives 401 without consuming it. After
+consumption, DNS safety, resource policy, GET permission and proxy access are
+checked again. A new denial consumes the continuation and returns 403. No
+vendor HTTP request is made. Responses are no-store/no-referrer; tokens and
+targets must also be scrubbed from reverse-proxy logs. Only GET is supported.
+
+This continuation supports the existing path/query deployment. It is not a
+virtual-host grant or handoff ticket. Host admission, central-origin isolation,
+cross-host tickets, and grant revocation remain separate release gates.
