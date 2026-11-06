@@ -692,6 +692,7 @@ paths:
     patch:
       summary: Update local user metadata, roles, or status
       operationId: patchUser
+      description: Disabled or locked status is committed atomically with session revocation and accompanying metadata/role updates. Database failure rolls back the transaction. Active-account metadata changes do not revoke sessions. The last active administrator cannot be disabled or locked (400). Audit remains best-effort after commit.
       security:
         - bearerAuth: []
       parameters:
@@ -792,6 +793,7 @@ paths:
     post:
       summary: Disable a local user and revoke sessions
       operationId: disableUser
+      description: Commits account disablement and session revocation atomically. Database failure rolls back both; later enablement never restores revoked sessions. Post-commit audit remains best-effort.
       security:
         - bearerAuth: []
       parameters:
@@ -822,6 +824,7 @@ paths:
     post:
       summary: Lock a local user and revoke sessions
       operationId: lockUser
+      description: Commits account locking and session revocation atomically. Database failure rolls back both; later unlocking never restores revoked sessions. Post-commit audit remains best-effort.
       security:
         - bearerAuth: []
       parameters:

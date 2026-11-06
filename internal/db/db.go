@@ -686,8 +686,23 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 		return User{}, false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := s.db.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`,
-		user.Email, user.DisplayName, user.Status, string(roles), now, user.ID)
+	disabledAt, lockedAt := existing.DisabledAt, existing.LockedAt
+	if user.Status != existing.Status {
+		disabledAt, lockedAt = "", ""
+		if user.Status == "disabled" {
+			disabledAt = now
+		}
+		if user.Status == "locked" {
+			lockedAt = now
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`,
+		user.Email, user.DisplayName, user.Status, string(roles), disabledAt, lockedAt, now, user.ID)
 	if err != nil {
 		return User{}, false, err
 	}
@@ -697,7 +712,19 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 		}
 		return User{}, true, ErrUserDeleted
 	}
-	return s.GetUser(user.ID)
+	if user.Status == "disabled" || user.Status == "locked" {
+		if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, user.ID); err != nil {
+			return User{}, false, err
+		}
+	}
+	updated, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, user.ID))
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, false, err
+	}
+	return updated, true, nil
 }
 
 // SetUserPassword commits the new password and session revocation together.
@@ -727,6 +754,11 @@ func (s *Store) SetUserPassword(id, hash string) (bool, error) {
 }
 
 func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339)
 	disabledAt, lockedAt := "", ""
 	if status == "disabled" {
@@ -735,7 +767,7 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if status == "locked" {
 		lockedAt = now
 	}
-	result, err := s.db.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`, status, disabledAt, lockedAt, now, id)
+	result, err := tx.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`, status, disabledAt, lockedAt, now, id)
 	if err != nil {
 		return User{}, false, err
 	}
@@ -744,9 +776,18 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 		return User{}, false, err
 	}
 	if status == "disabled" || status == "locked" {
-		_ = s.RevokeUserSessions(id)
+		if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+			return User{}, false, err
+		}
 	}
-	return s.GetUser(id)
+	user, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id))
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, false, err
+	}
+	return user, true, nil
 }
 
 func (s *Store) MarkUserLogin(id string) error {

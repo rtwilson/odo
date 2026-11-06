@@ -125,6 +125,20 @@ The existing `user_password_set` audit event is attempted after commit and remai
 best-effort. A successful response confirms the password change and revocation,
 not audit durability. An audit failure does not undo a committed password reset.
 
-The disable/lock flows, including status PATCH, still need their separate
-atomic-session-revocation work. No cross-host grants or virtual-host delivery are
-implemented by these account-management changes.
+Disable and lock operations also commit their status change and revocation of
+every unrevoked session together. This includes `PATCH /api/v1/users/{id}` with
+`status: disabled` or `status: locked`; any accompanying metadata/role changes
+roll back if revocation fails. Status changes update the corresponding
+`disabled_at`/`locked_at` timestamp; metadata-only updates preserve these timestamps.
+Re-enabling or unlocking does not clear session revocations, so fresh login is
+required. Metadata-only PATCH of an active account does not revoke sessions.
+
+Status-write or revocation failure returns a generic `500` and leaves account and
+session state unchanged. Unknown/deleted accounts retain their existing handling.
+PATCH now applies the same last-active-administrator status protection as the
+disable/lock endpoints (`400`). Scope and browser CSRF checks remain required.
+The existing post-commit `user_status_set` and `user_updated` audit events remain
+best-effort; success does not guarantee audit persistence.
+
+Concurrent account changes and login racing with revocation still need a separate
+review. These changes do not add cross-host grants or virtual-host delivery.

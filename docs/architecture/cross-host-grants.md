@@ -18,19 +18,22 @@ not enforced by this jar implementation. They cannot serve as host grants.
 
 Logout now validates token ownership without session-touch writes and reports
 lookup/revocation failures; see [logout behavior and audit policy](../security/logout.md).
-Other revocation paths still need hardening before grants can be enabled:
+Account-change revocation now has these foundations:
 
-- `db.go:SetUserStatus` updates status and ignores `RevokeUserSessions` failure.
+- `db.go:SetUserStatus` commits disable/lock and session revocation together.
+  `UpdateUser` does the same for disabled/locked status PATCH, including rollback
+  of accompanying metadata/role edits. PATCH also enforces last-admin status
+  protection. Concurrent account changes still require a separate review.
 - Password resets now commit the new hash and session revocation together in
   `db.go:SetUserPassword`; revocation failure rolls back the password change and
   produces a generic API error. The post-commit password audit remains best-effort.
 - Explicit `users_handlers.go:revokeUserSessions` already reports revocation
   errors; retain that behavior.
 
-A successful disable/lock must commit the intended session revocation atomically
-with its account change, as password reset already does. Otherwise re-enabling an
-account could revive an old session after an unnoticed revocation failure.
-Disable/lock transactions remain a proposed prerequisite fix.
+A successful disable/lock or password reset commits the intended session
+revocation atomically with its account change. Re-enabling does not clear those
+revocations. Review concurrent login and account mutations before grants can be
+enabled; transaction support alone does not establish those race guarantees.
 
 ## Proposed first deployment boundary
 
@@ -189,7 +192,7 @@ collisions, cold assets/frames and legacy-origin migration tests before rollout.
 Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
-separation. Next implementation batches should be disable/lock revocation
-transactions (including status PATCH), then bounded handoff state with
+separation. Next implementation batches should review account/login concurrency,
+then add bounded handoff state with
 runtime vendor dispatch still disabled. This document does not approve enabling
 virtual-host traffic.

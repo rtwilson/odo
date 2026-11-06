@@ -105,6 +105,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req userPatchRequest
+	wasActiveAdmin := existing.Status == "active" && hasSuperAdminRole(existing.Roles)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -135,6 +136,10 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		status, err := validateUserStatus(req.Status)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if wasActiveAdmin && status != "active" && s.activeSuperAdminCount() <= 1 {
+			writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
 			return
 		}
 		existing.Status = status
