@@ -137,12 +137,17 @@ func (URLRoutingContext) ParseProxyRequest(r *http.Request) (*url.URL, string, b
 	if r == nil || r.URL == nil {
 		return nil, "", false, errors.New("proxy request is invalid")
 	}
-	if raw := strings.TrimSpace(r.URL.Query().Get("url")); raw != "" {
-		target, err := url.Parse(raw)
-		if err != nil {
-			return nil, ProxyURLModeQuery, true, errors.New("target URL is invalid")
+	// Only query-form entry points use url as the proxy envelope. On a
+	// path-form request every query parameter belongs to the vendor.
+	queryForm := r.URL.Path == PublicProxyPath || r.URL.Path == PublicProxyPath+"/" || r.URL.Path == "/p"
+	if queryForm {
+		if raw := strings.TrimSpace(r.URL.Query().Get("url")); raw != "" {
+			target, err := url.Parse(raw)
+			if err != nil {
+				return nil, ProxyURLModeQuery, true, errors.New("target URL is invalid")
+			}
+			return normalizeProxyTarget(target), ProxyURLModeQuery, true, nil
 		}
-		return normalizeProxyTarget(target), ProxyURLModeQuery, true, nil
 	}
 
 	rest := strings.TrimPrefix(r.URL.Path, PublicProxyPath)
@@ -166,10 +171,11 @@ func (URLRoutingContext) ParseProxyRequest(r *http.Request) (*url.URL, string, b
 		targetPath += parts[2]
 	}
 	target := &url.URL{
-		Scheme:   "https",
-		Host:     host,
-		Path:     targetPath,
-		RawQuery: r.URL.RawQuery,
+		Scheme:     "https",
+		Host:       host,
+		Path:       targetPath,
+		RawQuery:   r.URL.RawQuery,
+		ForceQuery: r.URL.ForceQuery,
 	}
 	// Preserve escaped slashes and other path data when canonicalizing a link.
 	if escaped := r.URL.EscapedPath(); strings.HasPrefix(escaped, PublicProxyPath+"/https/"+host) {
@@ -184,7 +190,7 @@ func buildPathProxyURL(target *url.URL) string {
 		path = "/"
 	}
 	proxyURL := PublicProxyPath + "/https/" + target.Host + path
-	if target.RawQuery != "" {
+	if target.RawQuery != "" || target.ForceQuery {
 		proxyURL += "?" + target.RawQuery
 	}
 	return proxyURL

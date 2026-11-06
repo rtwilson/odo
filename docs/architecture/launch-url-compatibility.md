@@ -1,8 +1,14 @@
 # Launch URL parsing contract
 
-This batch implements `proxy.ParseLaunchQuery` only. There is no `/launch`
-handler or login continuation yet. Existing `/odo` and `/login` behavior is
-unchanged, and virtual-host routing remains disabled.
+`proxy.ParseLaunchQuery` and the URL-strategy prerequisites below are implemented.
+There is no `/launch` handler or login continuation yet. Existing `/login`
+behavior is unchanged, and virtual-host routing remains disabled.
+
+The existing path/query URL strategy now preserves vendor query parameters named
+`url`: only `/odo`, `/odo/`, and legacy `/p` treat that parameter as the proxy
+envelope. In `/odo/https/{host}/...`, it remains vendor data. URL generation and
+path parsing also preserve an empty trailing target `?`. These are prerequisites
+for routing parsed launch targets without changing their query data.
 
 ## Canonical encoded form
 

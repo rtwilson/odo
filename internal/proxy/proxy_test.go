@@ -540,6 +540,29 @@ func TestFetchHandlerAbsoluteRedirectToAllowlistedTargetIsRewritten(t *testing.T
 	}
 }
 
+func TestFetchHandlerPathTargetIsNotOverriddenByVendorURLParameter(t *testing.T) {
+	want := "https://www.jstor.org/search?url=https%3A%2F%2Fother.example%2F&term=a%2Bb"
+	fetched := false
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		fetched = true
+		if req.URL.String() != want {
+			t.Fatalf("vendor parameter changed upstream: got %q want %q", req.URL, want)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}).client()
+	req := httptest.NewRequest(http.MethodGet, "/odo/https/www.jstor.org/search?url=https%3A%2F%2Fother.example%2F&term=a%2Bb", nil)
+	rec := httptest.NewRecorder()
+	FetchHandler(client, allowedHostTargetCheck).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !fetched {
+		t.Fatalf("expected vendor fetch: status=%d fetched=%v body=%s", rec.Code, fetched, rec.Body.String())
+	}
+}
+
 func TestFetchHandlerPOSTRedirectToNonAllowlistedTargetIsRejected(t *testing.T) {
 	store := NewDiagnosticsStore(10)
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {

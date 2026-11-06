@@ -144,6 +144,37 @@ func TestParseProxyRequestQueryMode(t *testing.T) {
 	}
 }
 
+func TestProxyURLRoundTripPreservesVendorQuery(t *testing.T) {
+	for _, raw := range []string{
+		"https://vendor.example/search?url=https%3A%2F%2Fother.example%2F&term=a%2Bb",
+		"https://vendor.example/search?url=not-a-url&url=another-value",
+		"https://vendor.example/a%2Fb?",
+	} {
+		for _, mode := range []string{ProxyURLModePath, ProxyURLModeQuery, ProxyURLModeDual} {
+			t.Run(mode+raw, func(t *testing.T) {
+				target, err := url.Parse(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				built := BuildProxyURLWithMode(target, mode)
+				got, _, ok, err := ParseProxyRequest(httptest.NewRequest("GET", built, nil))
+				if err != nil || !ok || got.String() != target.String() {
+					t.Fatalf("round trip %q: got %v ok=%v err=%v", built, got, ok, err)
+				}
+			})
+		}
+	}
+}
+
+func TestQueryProxyEntryPointsRemainCompatible(t *testing.T) {
+	for _, path := range []string{PublicProxyPath, PublicProxyPath + "/", "/p"} {
+		target, mode, ok, err := ParseProxyRequest(httptest.NewRequest("GET", path+"?url=https%3A%2F%2Fvendor.example%2F", nil))
+		if err != nil || !ok || mode != ProxyURLModeQuery || target.String() != "https://vendor.example/" {
+			t.Fatalf("query entry %q: got %v mode=%q ok=%v err=%v", path, target, mode, ok, err)
+		}
+	}
+}
+
 func TestParseProxyRequestDualModeAcceptsPathAndQueryForms(t *testing.T) {
 	t.Setenv("APP_PROXY_URL_MODE", "dual")
 	for _, raw := range []string{
