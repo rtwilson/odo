@@ -5,6 +5,7 @@ func AdminHTML() string {
 <html lang="en">
 <head><link rel="icon" href="/favicon.ico">
   <meta charset="utf-8">
+  <meta name="odo-csrf-cookie" content="odo_csrf">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>odo admin</title>
   <style>
@@ -696,7 +697,8 @@ func AdminHTML() string {
       const apiKey = document.querySelector('#api-key').value.trim();
       const method = (extra['X-Odo-Method'] || '').toUpperCase();
       const unsafe = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
-      const csrf = document.cookie.split('; ').find(row => row.startsWith('odo_csrf='));
+      const csrfName = document.querySelector('meta[name="odo-csrf-cookie"]').content;
+      const csrf = document.cookie.split('; ').find(row => row.startsWith(csrfName + '='));
       return {
         'Content-Type': 'application/json',
         ...(needsAuth && apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {}),

@@ -101,7 +101,7 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(browserSessionCookieName); err == nil {
+	if cookie, err := r.Cookie(centralCookieName(browserSessionCookieName)); err == nil {
 		_ = s.store.RevokeSession(local.SessionIDFromToken(cookie.Value))
 	}
 	http.SetCookie(w, clearSessionCookie(r, browserSessionCookieName, true))
@@ -110,12 +110,24 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
-	return cookiepolicy.Apply(r, &http.Cookie{Name: name, MaxAge: -1, HttpOnly: httpOnly})
+	return cookiepolicy.Apply(r, &http.Cookie{Name: centralCookieName(name), MaxAge: -1, HttpOnly: httpOnly})
 }
 
 const browserSessionCookieName = "odo_session"
 
 const csrfCookieName = "odo_csrf"
+
+// Guarded deployments require a trusted HTTPS central origin, so their cookies
+// can use the browser-enforced host-only prefix. Never fall back to legacy names
+// when reading guarded credentials. Invalid enabled settings are blocked by the
+// guard before authentication and also select the stricter namespace here.
+func centralCookieName(legacyName string) string {
+	enabled, _, _ := hostGuardConfigFromEnv()
+	if enabled {
+		return "__Host-" + legacyName
+	}
+	return legacyName
+}
 
 func (s *Server) newBrowserSession(userID string, r *http.Request) (string, db.Session, error) {
 	idPart, err := local.NewToken("", 16)
@@ -160,7 +172,7 @@ func randomBootSecret() string {
 func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 	expiresAt, _ := time.Parse(time.RFC3339, expires)
 	return cookiepolicy.Apply(r, &http.Cookie{
-		Name:     browserSessionCookieName,
+		Name:     centralCookieName(browserSessionCookieName),
 		Value:    token,
 		HttpOnly: true,
 		Expires:  expiresAt,
@@ -169,7 +181,7 @@ func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 
 func csrfCookie(r *http.Request, token string) *http.Cookie {
 	return cookiepolicy.Apply(r, &http.Cookie{
-		Name:     csrfCookieName,
+		Name:     centralCookieName(csrfCookieName),
 		Value:    token,
 		HttpOnly: false,
 		MaxAge:   int(sessionTTL() / time.Second),
@@ -214,7 +226,7 @@ func sessionPersistOnRestart() bool {
 }
 
 func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error) {
-	cookie, err := r.Cookie(browserSessionCookieName)
+	cookie, err := r.Cookie(centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return db.User{}, db.Session{}, false, nil
 	}
@@ -270,7 +282,7 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error)
 }
 
 func (s *Server) currentUserAuth(r *http.Request) (AuthContext, bool, error) {
-	cookie, err := r.Cookie(browserSessionCookieName)
+	cookie, err := r.Cookie(centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return AuthContext{}, false, nil
 	}

@@ -313,6 +313,10 @@ go run ./cmd/odo
 
 Open `http://127.0.0.1:8080/login` to sign in; `/logout` revokes the session and clears session/CSRF cookies. Signed-in users can open `http://127.0.0.1:8080/resources` for a simple patron resource portal. Browser sessions use an HttpOnly `odo_session` cookie and proxy browsing also keeps upstream/vendor cookies in a separate server-side jar.
 
+With `APP_HOST_GUARD=true`, central authentication instead uses `__Host-odo_session`
+and `__Host-odo_csrf`; legacy cookie names are ignored. Sign out before changing
+guard mode and sign in again afterward. See [central cookie boundaries](docs/architecture/virtual-host-routing.md).
+
 In production, browser sessions can persist across Odo restarts because session rows live in SQLite until they expire or are revoked. In development, `APP_SESSION_PERSIST_ON_RESTART` defaults to `false`, so an existing browser cookie is rejected after a restart without deleting the session row. Set `APP_SESSION_PERSIST_ON_RESTART=true` when you want restart-persistent sessions during local testing. Use `APP_SESSION_TTL_MINUTES` and `APP_SESSION_IDLE_TIMEOUT_MINUTES` to control absolute and idle session limits. `last_seen_at` updates are throttled so normal browsing does not write the session row on every proxied asset request.
 
 Once local users exist, `/odo` proxy access requires login by default. When `APP_PROXY_REQUIRE_LOGIN=true`, every `/odo` proxy request requires a valid browser session unless the target matches an explicit `anonymous_url_rule`. Resource homepages, entry URLs, active resource domains, and direct deep links are not anonymous by default. For local development only, disable that gate with:

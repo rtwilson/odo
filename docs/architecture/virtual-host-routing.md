@@ -86,6 +86,33 @@ curl -H 'Host: odo.example' http://127.0.0.1:8080/api/v1/health
 Adapt container, load-balancer, and service health checks before enabling this
 flag. TLS/DNS setup and trusted-edge controls remain deployment responsibilities.
 
+## Central authentication cookie boundary
+
+With `APP_HOST_GUARD=true`, central browser login issues `__Host-odo_session`
+and `__Host-odo_csrf`. Both use Secure, Path=/, no Domain, and SameSite=Lax.
+The browser session is HttpOnly. The CSRF cookie remains readable by the admin
+UI so it can send the existing `X-Odo-CSRF` header; prefixing does not replace
+that check.
+
+Session lookup and CSRF derivation accept only the active session-cookie name.
+There is no fallback to `odo_session` while guarded mode is enabled. Logout
+revokes the active browser session and clears the active session/CSRF cookies
+with the same prefix and attributes. The UI receives its active CSRF cookie
+name through page metadata; its inline script stays static for CSP hashing.
+
+When the guard is disabled, existing `odo_session` and `odo_csrf` behavior
+remains unchanged, including on HTTPS deployments. Guard mode is a startup
+setting: sign out before switching it and sign in again afterward. Existing
+cookies and sessions from the other namespace are not automatically migrated
+or revoked. In particular, disabling the guard can expose still-valid legacy
+sessions again if their cookies remain in the browser.
+
+These prefixes prevent sibling hosts from setting central cookies through a
+parent Domain attribute in conforming browsers. They do not isolate vendor
+scripts served on the same central origin through path mode. Exact Origin
+checks and cross-host grants/revocation remain pending, and SameSite alone
+does not provide the required sibling-origin CSRF boundary.
+
 ## Required request boundary before enabling traffic
 
 Future vendor dispatch must preserve the guard's ordering before cookie/session

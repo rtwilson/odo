@@ -47,7 +47,11 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, csrfCookie(r, auth.csrfToken))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(ui.AdminHTML()))
+	// Change only metadata, keeping the trusted inline script identical to the
+	// source used by appSecurityHeaders to calculate its CSP hash.
+	page := strings.Replace(ui.AdminHTML(), `<meta name="odo-csrf-cookie" content="odo_csrf">`,
+		`<meta name="odo-csrf-cookie" content="`+centralCookieName(csrfCookieName)+`">`, 1)
+	_, _ = w.Write([]byte(page))
 }
 
 func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {

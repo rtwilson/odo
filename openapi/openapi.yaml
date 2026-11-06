@@ -47,6 +47,7 @@ paths:
       operationId: continueLaunch
       security:
         - cookieAuth: []
+        - guardedCookieAuth: []
       parameters:
         - name: token
           in: query
@@ -134,6 +135,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
+        - guardedCookieAuth: []
       responses:
         "200":
           description: Current user or API key. Does not expose password hashes, session hashes, API key hashes, or full tokens.
@@ -195,6 +197,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
+        - guardedCookieAuth: []
       parameters:
         - name: label
           in: path
@@ -234,6 +237,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
+        - guardedCookieAuth: []
       parameters:
         - name: X-Odo-CSRF
           in: header
@@ -1115,6 +1119,12 @@ components:
       type: apiKey
       in: cookie
       name: odo_session
+      description: Legacy browser-session cookie; accepted only when APP_HOST_GUARD is disabled.
+    guardedCookieAuth:
+      type: apiKey
+      in: cookie
+      name: __Host-odo_session
+      description: Host-prefixed browser-session cookie; required when APP_HOST_GUARD is enabled. The legacy cookie is not accepted in this mode.
   responses:
     Error:
       description: Error response
