@@ -700,13 +700,30 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 	return s.GetUser(user.ID)
 }
 
+// SetUserPassword commits the new password and session revocation together.
+// Missing/deleted accounts remain unavailable and do not trigger revocation.
 func (s *Store) SetUserPassword(id, hash string) (bool, error) {
-	result, err := s.db.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`, hash, time.Now().UTC().Format(time.RFC3339), id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := tx.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`, hash, now, id)
 	if err != nil {
 		return false, err
 	}
 	rows, err := result.RowsAffected()
-	return rows > 0, err
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) SetUserStatus(id, status string) (User, bool, error) {

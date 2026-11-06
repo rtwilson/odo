@@ -111,6 +111,20 @@ ID (empty for API-key callers). They do not contain usernames, passwords, passwo
 hashes, session identifiers, or tokens. Profile fields are retained in the account,
 not copied into lifecycle audit events.
 
-The existing password-change and disable/lock flows still need their separate
-atomic-session-revocation work in this checkout. This foundation does not alter
-those transaction semantics or add cross-host grants or virtual-host delivery.
+## Password changes and other revocation paths
+
+`POST /api/v1/users/{id}/set-password` commits the password hash update and
+revocation of every unrevoked session for that account in one database
+transaction. A database failure rolls back both writes and returns a generic
+`500` with request-ID logging; the old password and sessions remain unchanged.
+Missing and deleted accounts still return `404`. A successful reset invalidates
+old sessions, including the requesting session when resetting one's own password.
+Sessions for other accounts and earlier revocation timestamps are unchanged.
+
+The existing `user_password_set` audit event is attempted after commit and remains
+best-effort. A successful response confirms the password change and revocation,
+not audit durability. An audit failure does not undo a committed password reset.
+
+The disable/lock flows, including status PATCH, still need their separate
+atomic-session-revocation work. No cross-host grants or virtual-host delivery are
+implemented by these account-management changes.

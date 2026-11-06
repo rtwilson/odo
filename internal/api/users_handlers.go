@@ -186,7 +186,6 @@ func (s *Server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	_ = s.store.RevokeUserSessions(id)
 	_ = s.store.Audit("user_password_set", fmt.Sprintf(`{"id":%q}`, id))
 	writeJSON(w, http.StatusOK, map[string]any{"password_set": true, "id": id})
 }

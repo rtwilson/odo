@@ -770,6 +770,7 @@ paths:
     post:
       summary: Set a local user's password and revoke existing sessions
       operationId: setUserPassword
+      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Password update and session revocation commit atomically; database failure rolls both back. Includes revocation of the requesting session when resetting one's own password. Missing or deleted accounts return 404. The post-commit audit event remains best-effort.
       security:
         - bearerAuth: []
       parameters:
@@ -783,6 +784,8 @@ paths:
       responses:
         "200":
           description: Password set
+        "500":
+          $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
   /api/v1/users/{id}/disable:

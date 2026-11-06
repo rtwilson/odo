@@ -21,15 +21,16 @@ lookup/revocation failures; see [logout behavior and audit policy](../security/l
 Other revocation paths still need hardening before grants can be enabled:
 
 - `db.go:SetUserStatus` updates status and ignores `RevokeUserSessions` failure.
-- `users_handlers.go:setUserPassword` ignores session-revocation failure.
+- Password resets now commit the new hash and session revocation together in
+  `db.go:SetUserPassword`; revocation failure rolls back the password change and
+  produces a generic API error. The post-commit password audit remains best-effort.
 - Explicit `users_handlers.go:revokeUserSessions` already reports revocation
   errors; retain that behavior.
 
-A successful disable/lock or password reset must commit the intended session
-revocation atomically with its account change. Otherwise re-enabling an account
-could revive an old session after an unnoticed revocation failure. These
-account-change transactions remain proposed prerequisite fixes, not changes
-made by this document.
+A successful disable/lock must commit the intended session revocation atomically
+with its account change, as password reset already does. Otherwise re-enabling an
+account could revive an old session after an unnoticed revocation failure.
+Disable/lock transactions remain a proposed prerequisite fix.
 
 ## Proposed first deployment boundary
 
@@ -188,7 +189,7 @@ collisions, cold assets/frames and legacy-origin migration tests before rollout.
 Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
-separation. Next implementation batches should be account-change/revocation
-transactions, then bounded handoff state with
+separation. Next implementation batches should be disable/lock revocation
+transactions (including status PATCH), then bounded handoff state with
 runtime vendor dispatch still disabled. This document does not approve enabling
 virtual-host traffic.
