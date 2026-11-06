@@ -629,7 +629,16 @@ VALUES (?, ?, nullif(?, ''), nullif(?, ''), ?, ?, ?, ?, ?, nullif(?, ''), nullif
 }
 
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users ORDER BY username`)
+	return s.listUsers(false)
+}
+
+// ListDeletedUsers is separate so normal administration does not include deleted accounts.
+func (s *Store) ListDeletedUsers() ([]User, error) {
+	return s.listUsers(true)
+}
+
+func (s *Store) listUsers(deleted bool) ([]User, error) {
+	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE (status = 'deleted') = ? ORDER BY username`, deleted)
 	if err != nil {
 		return nil, err
 	}
@@ -660,6 +669,9 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 	if err != nil || !found {
 		return User{}, found, err
 	}
+	if existing.Status == "deleted" {
+		return User{}, true, ErrUserDeleted
+	}
 	if user.Username == "" {
 		user.Username = existing.Username
 	}
@@ -674,16 +686,22 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 		return User{}, false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = s.db.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, updated_at = ? WHERE id = ?`,
+	result, err := s.db.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`,
 		user.Email, user.DisplayName, user.Status, string(roles), now, user.ID)
 	if err != nil {
 		return User{}, false, err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows == 0 {
+		if err != nil {
+			return User{}, false, err
+		}
+		return User{}, true, ErrUserDeleted
 	}
 	return s.GetUser(user.ID)
 }
 
 func (s *Store) SetUserPassword(id, hash string) (bool, error) {
-	result, err := s.db.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, hash, time.Now().UTC().Format(time.RFC3339), id)
+	result, err := s.db.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`, hash, time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return false, err
 	}
@@ -700,7 +718,7 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if status == "locked" {
 		lockedAt = now
 	}
-	result, err := s.db.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ?`, status, disabledAt, lockedAt, now, id)
+	result, err := s.db.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`, status, disabledAt, lockedAt, now, id)
 	if err != nil {
 		return User{}, false, err
 	}
