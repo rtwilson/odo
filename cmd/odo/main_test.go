@@ -76,6 +76,7 @@ func TestProductionConfigurationFailsClosed(t *testing.T) {
 		t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
 		t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
 		t.Setenv("APP_TRUST_PROXY_HEADERS", "false")
+		t.Setenv("APP_PROXY_URL_MODE", "path")
 	}
 	tests := []struct {
 		name        string
@@ -93,6 +94,8 @@ func TestProductionConfigurationFailsClosed(t *testing.T) {
 		{name: "missing admin key", mutate: func(t *testing.T) {}, want: "APP_ADMIN_API_KEY"},
 		{name: "placeholder admin key", mutate: func(t *testing.T) {}, adminKey: "change-me", want: "APP_ADMIN_API_KEY"},
 		{name: "proxy login disabled", mutate: func(t *testing.T) { t.Setenv("APP_PROXY_REQUIRE_LOGIN", "false") }, adminKey: "real-admin-key", want: "APP_PROXY_REQUIRE_LOGIN"},
+		{name: "virtual host unsupported", mutate: func(t *testing.T) { t.Setenv("APP_PROXY_URL_MODE", "virtual_host") }, adminKey: "real-admin-key", want: "APP_PROXY_URL_MODE=virtual_host"},
+		{name: "virtual host case and spaces", mutate: func(t *testing.T) { t.Setenv("APP_PROXY_URL_MODE", " Virtual_Host ") }, adminKey: "real-admin-key", want: "APP_PROXY_URL_MODE=virtual_host"},
 		{name: "temporary database", mutate: func(t *testing.T) {}, adminKey: "real-admin-key", want: "APP_DB_PATH"},
 		{name: "trusted headers without HTTPS public URL", mutate: func(t *testing.T) { t.Setenv("APP_PUBLIC_URL", ""); t.Setenv("APP_TRUST_PROXY_HEADERS", "true") }, adminKey: "real-admin-key", want: "APP_TRUST_PROXY_HEADERS"},
 	}
@@ -119,8 +122,13 @@ func TestProductionConfigurationAcceptsStoredAdminKey(t *testing.T) {
 	t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
 	t.Setenv("APP_TRUST_PROXY_HEADERS", "true")
-	if err := validateProductionConfig("production", "/var/lib/odo/odo.db", "", true); err != nil {
-		t.Fatalf("expected valid production config: %v", err)
+	for _, mode := range []string{"", "path", "query", "dual"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("APP_PROXY_URL_MODE", mode)
+			if err := validateProductionConfig("production", "/var/lib/odo/odo.db", "", true); err != nil {
+				t.Fatalf("expected valid production config: %v", err)
+			}
+		})
 	}
 }
 
@@ -138,6 +146,7 @@ func TestProductionConfigurationAcceptsExplicitLocalAdminBootstrap(t *testing.T)
 }
 
 func TestDevelopmentConfigurationAllowsUnsafeValues(t *testing.T) {
+	t.Setenv("APP_PROXY_URL_MODE", "virtual_host")
 	t.Setenv("APP_PUBLIC_URL", "")
 	t.Setenv("APP_KEY_HASH_SECRET", "change-me")
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "false")

@@ -101,4 +101,13 @@ The intended progression is:
 3. `virtual_host`: Future mode after wildcard DNS, wildcard TLS, host decoding, redirects, cookies, diagnostics, and admin-host separation are implemented.
 4. Virtual-host preferred: Possible later deployment default for institutions that need difficult-site compatibility.
 
-Do not deploy `virtual_host` mode yet. Odo currently logs a warning and falls back to path mode if `APP_PROXY_URL_MODE=virtual_host` is configured.
+Do not deploy `virtual_host` mode yet. With `APP_ENV=production`, startup rejects
+`APP_PROXY_URL_MODE=virtual_host` rather than falling back to a different origin
+model. Development still logs a warning and falls back to path mode. Case and
+surrounding whitespace do not bypass the production check. Existing `path`,
+`query`, and `dual` modes retain their behavior.
+
+The registry and launch foundations on this branch do not implement vendor-host
+routing or credential isolation. See [hostname registry](architecture/hostname-registry.md)
+and [launch compatibility](architecture/launch-url-compatibility.md) for their
+current scope. A registry base domain alone does not enable virtual-host mode.
