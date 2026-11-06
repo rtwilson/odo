@@ -2,12 +2,16 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"sort"
 
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 )
+
+// ErrInvalidHostnameReconciliation identifies invalid enrollment input or policy.
+var ErrInvalidHostnameReconciliation = errors.New("invalid hostname reconciliation")
 
 // ReconcileProxyHostnames explicitly enrolls active exact proxy domains and
 // approved concrete hosts covered by current domain policy. It never discovers
@@ -16,10 +20,10 @@ import (
 func (s *Store) ReconcileProxyHostnames(centralHost, proxyBase string, approvedHosts []string) ([]ProxyHostname, error) {
 	// Validate deployment names even if there are no candidates.
 	if _, err := proxy.NormalizeRegistryHostname(centralHost); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrInvalidHostnameReconciliation, err)
 	}
 	if _, err := proxy.NormalizeRegistryHostname(proxyBase); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrInvalidHostnameReconciliation, err)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -60,12 +64,12 @@ func (s *Store) ReconcileProxyHostnames(centralHost, proxyBase string, approvedH
 	add := func(raw string, explicit bool) error {
 		host, label, err := proxy.RegistryHostname(raw, centralHost, proxyBase)
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrInvalidHostnameReconciliation, err)
 		}
 		result := resources.TestURL((&url.URL{Scheme: "https", Host: host, Path: "/"}).String(), items)
 		if !result.Allowed || result.Action != "proxy" {
 			if explicit {
-				return errors.New("approved hostname is not covered by active proxy domain policy")
+				return fmt.Errorf("%w: approved hostname is not covered by active proxy domain policy", ErrInvalidHostnameReconciliation)
 			}
 			return nil
 		}

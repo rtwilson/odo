@@ -127,6 +127,66 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/proxy-hostnames/reconcile:
+    post:
+      summary: Explicitly reconcile canonical proxy hostname identities
+      description: Requires resources:write. Session requests also require X-Odo-CSRF. Uses configured APP_PUBLIC_URL and APP_PROXY_BASE_DOMAIN; never request Host or forwarded headers. Enrolls active exact proxy domains and approved concrete hosts covered by current domain policy in one transaction. No DNS or HTTP fetch occurs. Does not enable virtual-host routing or grant access. Returns this batch's candidates, not the entire registry.
+      operationId: reconcileProxyHostnames
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: X-Odo-CSRF
+          in: header
+          description: Required for session-authenticated requests.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: At most 64 KiB. An empty object reconciles configured exact proxy domains only.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                approved_hosts:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+                  default: []
+      responses:
+        "200":
+          description: Canonical candidates enrolled atomically; response is no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hostnames]
+                properties:
+                  hostnames:
+                    type: array
+                    items:
+                      type: object
+                      required: [hostname, label]
+                      properties:
+                        hostname:
+                          type: string
+                        label:
+                          type: string
+        "400":
+          description: Invalid JSON, hostname, or resource policy. No mappings inserted.
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "413":
+          description: Request body exceeds 64 KiB.
+        "500":
+          description: Registry storage failure or identity conflict. Reconciliation rolls back.
+        "503":
+          description: Registry deployment settings are missing or invalid.
   /api/v1/resources/{id}:
     get:
       summary: Get one resource
