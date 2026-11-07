@@ -227,10 +227,12 @@ endpoints, routing, response rewriting, resource-schema changes or changes to
 path/query behavior are part of this foundation. Existing connection-time
 validated-IP dialing remains unchanged; future vendor fetches must use it too.
 
-The exact next milestone is a separate review of the HTTP/browser handshake:
-endpoint ownership, host-only nonce-cookie rules, central confirmation CSRF and
-Origin checks, replay/error responses, and privacy-safe redirect/log handling.
-Only after that review should endpoints be wired to these internal components.
+The [HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
+now specifies endpoint ownership, host-only cookies, an explicit Origin/CSRF-
+protected central confirmation POST and a vendor-return proof. That proof is not
+implemented by the current internal API and must be added and tested before
+HTTP controls are wired. The next small implementation milestone is internal
+return-proof state and two-browser correlation tests, without routes or cookies.
 Vendor delivery additionally needs upstream cookie isolation, session activity
 handling, validated-IP fetch integration, redirect/content rewriting, wildcard
 DNS/TLS deployment and end-to-end browser compatibility tests.

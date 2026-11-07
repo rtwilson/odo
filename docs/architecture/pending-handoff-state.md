@@ -12,11 +12,12 @@ operations only. No handoff/grant HTTP behavior or virtual-host delivery is enab
 `create` generates an opaque 32-random-byte token with the existing
 `local.NewToken`, retaining only its hash as the map key. Each record contains:
 
-- Trusted parent session ID and stored session hash.
+- Trusted parent session ID, stored session hash, user ID and `auth_version`.
 - The upstream hostname/registry-label pair and full proxy authority.
 - Hashes of the central browser nonce and, once prepared, the vendor browser
   nonce; no raw nonce is retained.
-- The short-lived target and expiry, held only in process memory.
+- The approved resource ID, short-lived target, creation time and expiry, held
+  only in process memory.
 
 There are at most 256 entries. Expiry is the earlier of five minutes after
 creation and the supplied parent absolute expiry. Exact expiry denies lookup.
@@ -30,7 +31,8 @@ before the five-minute handoff deadline; its ticket can then outlive that consum
 handoff's deadline, but never the parent expiry. Token/nonce hashes, bindings and
 the stored target transfer to the ticket; raw ticket tokens are not retained.
 
-Every retained field is bounded: session ID/hash to 128 bytes each, registry label
+Every retained field is bounded: user/session ID, session hash and resource ID
+to 128 bytes each, registry label
 to 63, host/authority to 253 each, and target to the existing 16 KiB launch envelope
 limit. Nonces and token lookup inputs must use the canonical 43-character token
 format. Target parsing reuses the launch parser, requires HTTPS and a hostname
@@ -63,7 +65,10 @@ The future vendor handler must admit the exact host and look up its mapping
 before inspecting a nonce cookie or calling this method. It must use that host's
 cookie, not a query-supplied nonce. A stolen handoff ID alone cannot authorize
 central confirmation: that later operation still requires its original central
-browser/session binding and all current authorization checks. Initial preparation
+browser/session binding and all current authorization checks. However, HTTP
+integration also needs the separately proposed vendor-return proof to prevent
+an initiator from splicing another browser's preflight into their own central
+confirmation; nonce binding alone is not sufficient for that case. Initial preparation
 by a different browser cannot be repaired by replacing its nonce; a fresh launch
 is required. No current handler invokes this behavior.
 
@@ -108,15 +113,17 @@ resource ID or browsing history. Token keys remain hashes.
 
 `inspectGrant` requires the opaque token and exact trusted registry mapping/full
 proxy authority. It returns a value copy and never renews expiry. A successful
-lookup is not authorization: the future caller must load the parent session/user
+lookup is not authorization: the coordinator loads the parent session/user
 using the trusted record and check stored-hash binding, revocation, absolute/idle
-expiry and active status, then current request policy/method and DNS safety.
+expiry, active status, user identity and `auth_version`, then current request
+policy/method and DNS safety.
 It must not fabricate a central browser cookie or cache a positive authorization.
 
 `removeParent` erases pending, ticket and grant records for a trusted parent
 session ID, including entries
 with older stored-hash bindings. It is idempotent and preserves unrelated parents.
-It is not connected to runtime revocation yet and cannot replace database checks.
+The internal live validator invokes it for definitively invalid parents; it
+cannot replace durable database revocation and live validation.
 
 All operations purge expired pending, ticket and grant records under the same
 mutex; explicit `cleanup` is also available. There is no background sweeper. Expired targets are removed on
@@ -132,14 +139,23 @@ Nothing here logs tokens, target URLs, cookies or parent references.
 
 ## Next boundary
 
-Pending-to-ticket confirmation and ticket-to-grant redemption are now atomic,
-without HTTP routes. The next batch is live validation of the trusted parent
-session reference, still without enabling vendor routing. Later HTTP confirmation,
-redemption and grant use must independently check current parent/user eligibility,
-registry, policy, method and DNS safety. Memory cleanup does not replace durable
-revocation. Renewal requires a new authenticated handoff, not inspection or a
-vendor asset request. Non-consuming inspection alone is not authorization or
-redemption; there is no standalone consume API.
+Pending-to-ticket confirmation and ticket-to-grant redemption are atomic,
+without HTTP routes. `handoff_security.go` now checks live parent/user/version,
+registry, original ticket resource/target, method policy and DNS safety. The
+coordinator does not touch session timestamps or cache positive authorization.
+It is deliberately not attached to runtime handlers.
+
+The next internal batch is a fresh, hashed vendor-return proof bound to the
+pending handoff and its vendor nonce. Current `confirm` requires preflight but
+not that proof; it is not ready to expose as an HTTP operation. The revised
+[cross-host protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
+specifies the two-browser threat, proof lifetime/retry rules and explicit
+Origin/CSRF-protected central confirmation POST. No new store, endpoints,
+cookies or routing are implemented by that proposal.
+
+Memory cleanup does not replace durable revocation. Renewal requires a fresh
+handoff, not inspection or a vendor asset request. Non-consuming inspection is
+not authorization; there is no standalone consume API.
 
 See [cross-host grants](cross-host-grants.md) and the
 [origin/cookie checkpoint](vendor-origin-cookie-boundary.md) for the remaining
