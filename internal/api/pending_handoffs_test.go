@@ -22,7 +22,7 @@ func pendingHandoffFixture(t *testing.T) (handoffBinding, string, string, time.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	return handoffBinding{parentSessionID: "sess_parent", parentSessionHash: local.HashToken("parent-token"), hostname: host, label: label, proxyAuthority: label + ".proxy.library.example"},
+	return handoffBinding{parentUserID: "user_parent", parentSessionID: "sess_parent", parentSessionHash: local.HashToken("parent-token"), hostname: host, label: label, proxyAuthority: label + ".proxy.library.example"},
 		"https://vendor.example/private?ticket=vendor-ticket&url=vendor-value&search=private-search", nonce, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 }
 
@@ -45,6 +45,8 @@ func TestPendingHandoffBindingsAndPrivateStorage(t *testing.T) {
 	}
 	for _, alter := range []func(*handoffBinding){
 		func(b *handoffBinding) { b.parentSessionID = "other-session" },
+		func(b *handoffBinding) { b.parentUserID = "other-user" },
+		func(b *handoffBinding) { b.parentAuthVersion++ },
 		func(b *handoffBinding) { b.parentSessionHash = local.HashToken("other-session-token") },
 		func(b *handoffBinding) { b.hostname = "other.example" },
 		func(b *handoffBinding) { b.label = "other-label" },

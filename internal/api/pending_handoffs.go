@@ -33,6 +33,8 @@ var (
 // state, never directly from request cookies, Host headers or query parameters.
 // Registry identity is the hostname/label pair, not a resource identifier.
 type handoffBinding struct {
+	parentUserID      string
+	parentAuthVersion int64
 	parentSessionID   string
 	parentSessionHash string
 	hostname          string
@@ -45,6 +47,7 @@ type pendingHandoff struct {
 	centralNonceHash string
 	vendorNonceHash  string
 	target           string
+	created          time.Time
 	expires          time.Time
 	parentExpires    time.Time
 }
@@ -54,6 +57,7 @@ type handoffTicket struct {
 	centralNonceHash string
 	vendorNonceHash  string
 	target           string
+	created          time.Time
 	expires          time.Time
 	parentExpires    time.Time
 }
@@ -61,6 +65,7 @@ type handoffTicket struct {
 // A grant retains no target, browser nonce or browsing history.
 type handoffGrant struct {
 	binding handoffBinding
+	created time.Time
 	expires time.Time
 }
 
@@ -84,7 +89,8 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, centralNonce st
 	s.cleanupLocked(now)
 	// Bound every retained input, not only the number of records. Syntax checks
 	// do not establish live session validity, registry membership or SSRF safety.
-	if binding.parentSessionID == "" || len(binding.parentSessionID) > maxHandoffSessionFieldBytes ||
+	if binding.parentUserID == "" || len(binding.parentUserID) > maxHandoffSessionFieldBytes || binding.parentAuthVersion < 0 ||
+		binding.parentSessionID == "" || len(binding.parentSessionID) > maxHandoffSessionFieldBytes ||
 		binding.parentSessionHash == "" || len(binding.parentSessionHash) > maxHandoffSessionFieldBytes ||
 		binding.label == "" || len(binding.label) > 63 ||
 		binding.proxyAuthority == "" || len(binding.proxyAuthority) > 253 ||
@@ -118,7 +124,7 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, centralNonce st
 	if parentExpires.Before(expires) {
 		expires = parentExpires
 	}
-	s.entries[key] = pendingHandoff{binding: binding, centralNonceHash: local.HashToken(centralNonce), target: parsed.String(), expires: expires, parentExpires: parentExpires}
+	s.entries[key] = pendingHandoff{binding: binding, centralNonceHash: local.HashToken(centralNonce), target: parsed.String(), created: now, expires: expires, parentExpires: parentExpires}
 	return token, nil
 }
 
@@ -200,7 +206,7 @@ func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralN
 	if pending.parentExpires.Before(expires) {
 		expires = pending.parentExpires
 	}
-	s.tickets[ticketKey] = handoffTicket{binding: pending.binding, centralNonceHash: pending.centralNonceHash, vendorNonceHash: pending.vendorNonceHash, target: pending.target, expires: expires, parentExpires: pending.parentExpires}
+	s.tickets[ticketKey] = handoffTicket{binding: pending.binding, centralNonceHash: pending.centralNonceHash, vendorNonceHash: pending.vendorNonceHash, target: pending.target, created: now, expires: expires, parentExpires: pending.parentExpires}
 	delete(s.entries, key)
 	return ticket, nil
 }
@@ -269,7 +275,7 @@ func (s *pendingHandoffs) redeem(token string, binding handoffBinding, vendorNon
 	if ticket.parentExpires.Before(expires) {
 		expires = ticket.parentExpires
 	}
-	s.grants[grantKey] = handoffGrant{binding: ticket.binding, expires: expires}
+	s.grants[grantKey] = handoffGrant{binding: ticket.binding, created: now, expires: expires}
 	delete(s.tickets, key)
 	return grantToken, ticket.target, nil
 }

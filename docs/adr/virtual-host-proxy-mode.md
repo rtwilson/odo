@@ -1,8 +1,8 @@
 # Stable launch URLs and virtual-host proxy routing
 
-Status: proposed; first review checkpoint, 2026-10-25.
-Scope: architecture only. No settings, routes, tables, or authentication changes
-in this document are implemented by this task.
+Status: proposed architecture; first review checkpoint, 2026-10-25.
+Internal handoff security foundation implemented 2026-11-06; vendor delivery
+remains disabled. See the implementation update at the end of this ADR.
 
 ## Problem and direction
 
@@ -23,10 +23,10 @@ They must not need a resource ID or know the selected routing mode. Constructing
 a launch redirect must never fetch vendor content. DNS safety checks are allowed;
 HTTP requests to discover redirects, content, or hostnames are not.
 
-## Verified current-code inventory
+## Original review inventory (2026-10-25)
 
 Paths are relative to the repository root. This inventory describes inspected
-code, not the proposed behavior below.
+code at the original review date, not current completion status.
 
 | Area | Current implementation and evidence |
 | --- | --- |
@@ -218,3 +218,59 @@ no sensitive target/ticket logs; old GET bookmarks and rollback documented.
 - Set ticket/continuation limits and retention, exact nonce-binding protocol,
   iframe bootstrapping expectations, and shared-host resource-policy conflict
   behavior in the detailed specifications before runtime implementation.
+
+## Implemented internal handoff security foundation
+
+`internal/api/handoff_security.go` coordinates the bounded in-memory state in
+`pending_handoffs.go`. It is internal and deliberately not constructed by the
+HTTP server. No public handoff protocol, wildcard delivery, browser grant cookie,
+content rewriting, or change to path/query proxying is enabled.
+
+Pending browser handoffs last at most five minutes. Confirmation replaces a
+prepared handoff with a cryptographically random, single-use 60-second ticket;
+redemption atomically replaces that ticket with a host-specific grant lasting
+at most 30 minutes. All lifetimes are capped by the original central session's
+absolute expiration. Records include creation/expiration times, parent user and
+session references, the captured account `auth_version`, and exact registry
+hostname/label and proxy authority. Tokens and browser nonces are stored only as
+SHA-256 hashes. Tickets retain the approved destination only until redemption;
+grants retain no destination or browsing history.
+
+The coordinator verifies the complete central token before beginning or
+confirming a handoff. Vendor operations require their own browser nonce and
+never receive that central token. Issuance, confirmation, redemption, and grant
+validation recheck the persistent registry, current resource/method policy and
+existing DNS/SSRF validation. Grant validation takes the actual requested
+upstream target and method: host enrollment alone never authorizes a resource.
+These checks perform no fetch and do not update session activity timestamps.
+
+Each redemption and grant use reads a joined session/account snapshot and
+requires an active account, matching user and authentication version, matching
+session hash, no revocation, and valid absolute and idle lifetimes. Central
+logout revokes that session. Password, account status, role, deletion and
+restoration changes transactionally advance the account authentication version
+and revoke affected sessions. An old grant therefore cannot survive such a
+change simply because its own TTL remains. Definitively invalid parents remove
+all their local handoff state; absence represents local revocation rather than
+retaining unbounded revocation tombstones. Database errors fail closed without
+asserting successful revocation. No authentication result is cached.
+
+Database validation and memory transitions are separate operations. A concurrent
+revocation can occur after a validation snapshot; every subsequent use must
+validate again, including any newly minted grant. Requests already authorized
+before a security change may finish. This is not a cross-store transaction or a
+promise to cancel requests already in flight.
+
+State has hard limits of 256 pending records, 256 tickets, 4096 grants overall
+and 64 grants per parent session. Retained fields are length-bounded. Expired
+entries are reclaimed on operations; capacity exhaustion rejects new state and
+preserves live entries for retry. Restart loses all state and requires a new
+handoff. State is process-local: multiple replicas require a deliberate shared
+storage/affinity design before deployment. No persistent patron destination
+history or background worker is introduced.
+
+Remaining delivery gates include the reviewed HTTP/browser handshake with
+host-only nonce/grant cookies and CSRF defenses, validated-IP dialing on actual
+fetches, session activity handling, origin-isolated upstream cookie jars,
+redirect/content rewriting, wildcard DNS/TLS deployment, and end-to-end browser
+and privacy testing. The current host guard continues rejecting vendor traffic.
