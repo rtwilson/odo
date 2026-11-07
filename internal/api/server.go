@@ -29,6 +29,8 @@ type Server struct {
 
 	loginThrottle       *loginThrottle
 	launchContinuations *launchContinuations
+	handoff             *handoffSecurity
+	handoffErr          error
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -61,7 +63,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 	if client == nil {
 		client = proxy.DefaultHTTPClientWithResolver(lookup)
 	}
-	return &Server{
+	server := &Server{
 		store:      store,
 		configDir:  configDir,
 		adminKey:   adminKey,
@@ -79,6 +81,12 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		loginThrottle:       newLoginThrottle(),
 		launchContinuations: newLaunchContinuations(),
 	}
+	enabled, config, err := experimentalHandoffConfig()
+	server.handoffErr = err
+	if enabled && err == nil {
+		server.handoff = &handoffSecurity{server: server, config: config, state: newPendingHandoffs()}
+	}
+	return server
 }
 
 func (s *Server) Routes() http.Handler {
@@ -153,6 +161,12 @@ func (s *Server) Routes() http.Handler {
 		DebugHeaders: s.proxyDebug,
 		Diagnostics:  s.proxyDiag,
 	}))
+	if s.handoff != nil {
+		proxyHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handoffHeaders(w, r, "handoff_content_disabled")
+			writeError(w, 403, "vendor content delivery is disabled")
+		})
+	}
 	s.proxyH = proxyHandler
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /odo", s.requireProxySession(proxyHandler))
@@ -160,5 +174,9 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
-	return s.logging(appSecurityHeaders(s.guardHost(s.guardCentralOrigin(s.requireAPIAuthentication(mux)))))
+	var central http.Handler = mux
+	if s.handoff != nil {
+		central = s.handoff.dispatchCentral(central)
+	}
+	return s.logging(appSecurityHeaders(s.guardHost(s.guardCentralOrigin(s.requireAPIAuthentication(central)))))
 }

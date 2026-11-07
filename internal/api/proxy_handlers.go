@@ -14,6 +14,11 @@ import (
 )
 
 func (s *Server) handleUnknownPath(w http.ResponseWriter, r *http.Request) {
+	if s.handoff != nil {
+		handoffHeaders(w, r, "handoff_content_disabled")
+		writeError(w, 404, "vendor content delivery is disabled")
+		return
+	}
 	event := proxy.MissedRewriteEvent{
 		Type:                proxy.MissedRewriteEventType,
 		Method:              r.Method,

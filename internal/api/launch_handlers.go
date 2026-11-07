@@ -44,6 +44,10 @@ func (s *Server) redirectLaunchTarget(w http.ResponseWriter, r *http.Request, ra
 		writeError(w, http.StatusForbidden, "launch target is not allowed")
 		return
 	}
+	if s.handoff != nil {
+		s.handoff.launch(w, r, target)
+		return
+	}
 	if s.proxyLoginRequired() {
 		anonymous := s.explicitAnonymousProxyResult(r, target)
 		if anonymous.InternalError != nil {

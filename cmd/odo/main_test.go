@@ -181,3 +181,14 @@ func TestStartupRejectsInvalidHostGuardInAllEnvironments(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionRejectsExperimentalHandoff(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_EXPERIMENTAL_HANDOFF", "true")
+	t.Setenv("APP_HOST_GUARD", "true")
+	t.Setenv("APP_PUBLIC_URL", "https://odo.example")
+	t.Setenv("APP_PROXY_BASE_DOMAIN", "proxy.example")
+	if err := validateProductionConfig("production", filepath.Join(t.TempDir(), "odo.db"), "secret", true); err == nil || !strings.Contains(err.Error(), "experimental handoff") {
+		t.Fatal("production accepted experimental handoff")
+	}
+}

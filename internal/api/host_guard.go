@@ -26,15 +26,24 @@ func hostGuardConfigFromEnv() (bool, proxy.HostRoutingConfig, error) {
 // It does not enable virtual-host routing or perform DNS/HTTP requests.
 func ValidateHostGuardConfig() error {
 	_, _, err := hostGuardConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	_, _, err = experimentalHandoffConfig()
 	return err
 }
 
 func (s *Server) guardHost(next http.Handler) http.Handler {
 	enabled, config, configErr := hostGuardConfigFromEnv()
-	if !enabled {
+	if !enabled && s.handoffErr == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.handoff != nil || s.handoffErr != nil {
+			if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
+				metadata.SuppressBrowserHeaders = true
+			}
+		}
 		reject := func(status int, message string) {
 			// Do not record arbitrary paths submitted to a rejected authority.
 			if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
@@ -43,11 +52,15 @@ func (s *Server) guardHost(next http.Handler) http.Handler {
 			w.Header().Set("Cache-Control", "no-store")
 			writeError(w, status, message)
 		}
-		if configErr != nil {
+		if configErr != nil || s.handoffErr != nil {
 			reject(http.StatusServiceUnavailable, "host guard configuration is invalid")
 			return
 		}
 		if !requestOnCentralHost(r, config) {
+			if s.handoff != nil && s.handoff.vendorRequest(r) {
+				s.handoff.serveVendor(w, r)
+				return
+			}
 			reject(http.StatusMisdirectedRequest, "request authority is not admitted")
 			return
 		}

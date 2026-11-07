@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/auth/local"
 )
 
@@ -22,22 +21,14 @@ const (
 	maxConfirmationBody = 4096
 )
 
-// This HTTP boundary is deliberately not registered by Server.Routes. No runtime
-// switch constructs handoffSecurity, creates nonce cookies or launches this flow.
+// Standalone wrapper for focused tests; runtime registration requires the
+// explicit experimental handoff-only mode.
 func (h *handoffSecurity) centralConfirmationHandler() http.Handler {
 	return h.server.logging(appSecurityHeaders(http.HandlerFunc(h.serveConfirmation)))
 }
 
 func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Request) {
-	if policy, ok := r.Context().Value(responsePolicyKey{}).(*appResponseWriter); ok {
-		policy.csp = "default-src 'none'; script-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	r.Pattern = handoffConfirmPath
-	if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
-		metadata.Route = "handoff_confirmation"
-	}
+	handoffHeaders(w, r, "handoff_confirmation")
 	if !requestOnCentralHost(r, h.config) {
 		writeError(w, http.StatusMisdirectedRequest, "request authority is not admitted")
 		return
@@ -101,7 +92,7 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		h.confirmationError(w, r, err)
 		return
 	}
-	location := url.URL{Scheme: "https", Host: pending.binding.proxyAuthority, Path: "/.well-known/odo/redeem", RawQuery: url.Values{"ticket": {ticket}}.Encode()}
+	location := url.URL{Scheme: "https", Host: pending.binding.proxyAuthority, Path: handoffVendorPath, RawQuery: url.Values{"ticket": {ticket}}.Encode()}
 	http.Redirect(w, r, location.String(), http.StatusSeeOther)
 }
 
@@ -163,11 +154,11 @@ func confirmationFields(w http.ResponseWriter, r *http.Request) (url.Values, int
 
 func (h *handoffSecurity) confirmationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, errInvalidPendingHandoff):
+	case errors.Is(err, errInvalidPendingHandoff), errors.Is(err, errInvalidHandoffTicket):
 		writeError(w, http.StatusNotFound, "handoff not found")
 	case errors.Is(err, errHandoffDenied):
 		writeError(w, http.StatusForbidden, "handoff is not allowed")
-	case errors.Is(err, errHandoffTicketsFull):
+	case errors.Is(err, errHandoffTicketsFull), errors.Is(err, errPendingHandoffsFull), errors.Is(err, errHandoffGrantsFull):
 		writeError(w, http.StatusServiceUnavailable, "handoff temporarily unavailable")
 	default:
 		h.server.internalError(w, r, err)
