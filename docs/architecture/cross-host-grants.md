@@ -1,6 +1,7 @@
 # Cross-host grants and revocation
 
-Status: protocol proposed, with an implemented but unconnected
+Status: protocol proposed, with implemented but unconnected pending storage and
+single-assignment vendor preflight nonce binding in the
 [pending-state foundation](pending-handoff-state.md). No handoff endpoints,
 tables, cookies, tickets or grants are enabled. Virtual-host routing remains
 disabled. The current local `/launch/continue` is not a host grant.
@@ -206,6 +207,7 @@ Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
 separation. Bounded pending state is implemented without runtime integration.
-The next focused state-only batch is single-assignment vendor nonce binding;
-ticket transitions and all routes remain separate work. This document does not approve enabling
+Single-assignment vendor nonce binding is also implemented without handlers.
+The next focused state-only batch is bounded ticket creation with an atomic
+pending-to-ticket transition; all routes remain separate work. This document does not approve enabling
 virtual-host traffic.

@@ -13,7 +13,8 @@ unimplemented; virtual-host delivery remains disabled.
 
 - Trusted parent session ID and stored session hash.
 - The upstream hostname/registry-label pair and full proxy authority.
-- A hash of the central browser nonce; no raw nonce is retained.
+- Hashes of the central browser nonce and, once prepared, the vendor browser
+  nonce; no raw nonce is retained.
 - The short-lived target and expiry, held only in process memory.
 
 There are at most 256 entries. Expiry is the earlier of five minutes after
@@ -35,6 +36,29 @@ mismatches return an empty result with the same false status. It returns a value
 copy without consuming or extending the record. Failed lookups do not destroy
 another browser's live state. Inspection is not authorization or ticket issuance.
 
+`bindVendorNonce` binds the first vendor nonce under the store's existing mutex.
+It takes the opaque handoff token, a trusted `db.ProxyHostname` identity, the
+admitted full proxy authority, and a canonical vendor nonce. It does not take
+central cookies, the central nonce, or a client-supplied parent-session ID, and
+returns only a boolean, never the target or parent details. The record's exact
+hostname, label and authority must match before anything changes.
+
+Only the vendor nonce hash is retained. Repeating the same nonce succeeds
+idempotently; a different nonce cannot replace it. Wrong host/mapping/authority,
+malformed or unknown tokens/nonces, expired records and removed parents all fail
+without modifying another live record. Preparation neither extends expiry nor
+consumes/allocates an entry, so existing entries can prepare at full capacity.
+Expired entries are purged during preparation as on every other store operation.
+There is no endpoint or cookie issuance yet; this is state binding, not a grant.
+
+The future vendor handler must admit the exact host and look up its mapping
+before inspecting a nonce cookie or calling this method. It must use that host's
+cookie, not a query-supplied nonce. A stolen handoff ID alone cannot authorize
+central confirmation: that later operation still requires its original central
+browser/session binding and all current authorization checks. Initial preparation
+by a different browser cannot be repaired by replacing its nonce; a fresh launch
+is required. No current handler invokes this behavior.
+
 `removeParent` erases records for a trusted parent session ID, including entries
 with older stored-hash bindings. It is idempotent and preserves unrelated parents.
 It is not connected to runtime revocation yet and cannot replace database checks.
@@ -53,11 +77,14 @@ Nothing here logs tokens, target URLs, cookies or parent references.
 
 ## Next boundary
 
-Add single-assignment vendor preflight nonce binding as a separate state-only
-batch. Later confirmation must recheck live authorization and atomically convert
-pending state into a ticket under one state lock, preserving the pending record
-on ticket-capacity failure. Do not build that transition as inspect-then-consume.
-The current store deliberately exposes no consume operation.
+Single-assignment vendor preflight binding is implemented without routes. The
+next state-only batch is a bounded ticket store and atomic confirmation transition.
+It must require prepared vendor state plus the original central browser/session
+binding, preserve the pending record on ticket-capacity failure, and consume it
+only when ticket creation succeeds. Later HTTP confirmation must also recheck
+live authorization. Do not build the transition as inspect-then-consume; the
+current non-consuming inspection alone is not a confirmation check. The current
+store deliberately exposes no consume operation.
 
 See [cross-host grants](cross-host-grants.md) and the
 [origin/cookie checkpoint](vendor-origin-cookie-boundary.md) for the remaining

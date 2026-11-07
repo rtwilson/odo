@@ -155,7 +155,8 @@ Verify that rejected operations neither fetch upstream nor mint credentials.
 
 The [bounded pending-state foundation](pending-handoff-state.md) now implements
 hashed opaque identifiers, trusted parent/mapping/authority and browser-nonce
-bindings, expiry, capacity and cleanup without runtime integration. The next
-state-only batch is single-assignment vendor preflight nonce binding. Routes,
+bindings, expiry, capacity and cleanup without runtime integration. Single-assignment
+vendor preflight nonce binding is implemented in that store too. The next
+state-only batch is bounded ticket creation and atomic confirmation. Routes,
 cookies, ticket redemption, jars and vendor dispatch remain separate work. Origin
 migration and jar enforcement remain mandatory gates before delivery is enabled.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"example.org/odo/internal/auth/local"
+	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
 )
 
@@ -34,6 +35,7 @@ type handoffBinding struct {
 type pendingHandoff struct {
 	binding          handoffBinding
 	centralNonceHash string
+	vendorNonceHash  string
 	target           string
 	expires          time.Time
 }
@@ -103,6 +105,31 @@ func (s *pendingHandoffs) inspect(token string, binding handoffBinding, centralN
 		return pendingHandoff{}, false
 	}
 	return pending, true
+}
+
+// bindVendorNonce records the first vendor browser nonce after exact host
+// admission/registry lookup by the caller. Vendor preflight does not receive
+// central-session credentials or the central nonce. This operation reveals no
+// target/parent data and is not authorization or ticket issuance.
+func (s *pendingHandoffs) bindVendorNonce(token string, mapping db.ProxyHostname, authority, nonce string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(now)
+	if !validLaunchToken(token) || !validLaunchToken(nonce) {
+		return false
+	}
+	key := local.HashToken(token)
+	pending, found := s.entries[key]
+	if !found || pending.binding.hostname != mapping.Hostname || pending.binding.label != mapping.Label || pending.binding.proxyAuthority != authority {
+		return false
+	}
+	hash := local.HashToken(nonce)
+	if pending.vendorNonceHash != "" {
+		return pending.vendorNonceHash == hash
+	}
+	pending.vendorNonceHash = hash
+	s.entries[key] = pending
+	return true
 }
 
 // removeParent accepts a trusted parent reference for explicit local cleanup.
