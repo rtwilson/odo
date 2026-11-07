@@ -158,6 +158,7 @@ hashed opaque identifiers, trusted parent/mapping/authority and browser-nonce
 bindings, expiry, capacity and cleanup without runtime integration. Single-assignment
 vendor preflight nonce binding is implemented in that store too. The store also
 implements bounded ticket creation and atomic
-confirmation. The next batch is bounded grants and atomic redemption. Routes,
-cookies, ticket redemption, jars and vendor dispatch remain separate work. Origin
+confirmation. Bounded grants and atomic redemption are implemented as state
+operations too. Next is live parent-session validation. Routes,
+cookies, live authorization, jars and vendor dispatch remain separate work. Origin
 migration and jar enforcement remain mandatory gates before delivery is enabled.

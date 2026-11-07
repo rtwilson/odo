@@ -15,6 +15,9 @@ const (
 	maxPendingHandoffs          = 256
 	handoffTicketTTL            = time.Minute
 	maxHandoffTickets           = 256
+	handoffGrantTTL             = 30 * time.Minute
+	maxHandoffGrants            = 4096
+	maxHandoffGrantsPerParent   = 64
 	maxHandoffSessionFieldBytes = 128
 )
 
@@ -22,6 +25,8 @@ var (
 	errPendingHandoffsFull   = errors.New("pending handoff capacity reached")
 	errInvalidPendingHandoff = errors.New("pending handoff state is invalid")
 	errHandoffTicketsFull    = errors.New("handoff ticket capacity reached")
+	errInvalidHandoffTicket  = errors.New("handoff ticket state is invalid")
+	errHandoffGrantsFull     = errors.New("host grant capacity reached")
 )
 
 // All fields must come from authenticated/current datastore and deployment
@@ -50,6 +55,13 @@ type handoffTicket struct {
 	vendorNonceHash  string
 	target           string
 	expires          time.Time
+	parentExpires    time.Time
+}
+
+// A grant retains no target, browser nonce or browsing history.
+type handoffGrant struct {
+	binding handoffBinding
+	expires time.Time
 }
 
 // This passive store has no routes, cookie handling, database access, DNS or
@@ -59,10 +71,11 @@ type pendingHandoffs struct {
 	mu      sync.Mutex
 	entries map[string]pendingHandoff
 	tickets map[string]handoffTicket
+	grants  map[string]handoffGrant
 }
 
 func newPendingHandoffs() *pendingHandoffs {
-	return &pendingHandoffs{entries: make(map[string]pendingHandoff), tickets: make(map[string]handoffTicket)}
+	return &pendingHandoffs{entries: make(map[string]pendingHandoff), tickets: make(map[string]handoffTicket), grants: make(map[string]handoffGrant)}
 }
 
 func (s *pendingHandoffs) create(binding handoffBinding, target, centralNonce string, parentExpires, now time.Time) (string, error) {
@@ -96,6 +109,9 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, centralNonce st
 		return "", errors.New("pending handoff token collision")
 	}
 	if _, exists := s.tickets[key]; exists {
+		return "", errors.New("pending handoff token collision")
+	}
+	if _, exists := s.grants[key]; exists {
 		return "", errors.New("pending handoff token collision")
 	}
 	expires := now.Add(pendingHandoffTTL)
@@ -177,19 +193,22 @@ func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralN
 	if _, exists := s.entries[ticketKey]; exists {
 		return "", errors.New("handoff ticket collision")
 	}
+	if _, exists := s.grants[ticketKey]; exists {
+		return "", errors.New("handoff ticket collision")
+	}
 	expires := now.Add(handoffTicketTTL)
 	if pending.parentExpires.Before(expires) {
 		expires = pending.parentExpires
 	}
-	s.tickets[ticketKey] = handoffTicket{binding: pending.binding, centralNonceHash: pending.centralNonceHash, vendorNonceHash: pending.vendorNonceHash, target: pending.target, expires: expires}
+	s.tickets[ticketKey] = handoffTicket{binding: pending.binding, centralNonceHash: pending.centralNonceHash, vendorNonceHash: pending.vendorNonceHash, target: pending.target, expires: expires, parentExpires: pending.parentExpires}
 	delete(s.entries, key)
 	return ticket, nil
 }
 
 // inspectTicket is not redemption. It returns a value copy for the exact vendor
 // mapping/authority and browser nonce, without needing central credentials.
-// A future ticket-to-grant transition must consume/create atomically, after live
-// authorization; do not implement it as inspection followed by separate removal.
+// HTTP redemption must recheck live authorization before calling redeem;
+// inspection followed by a separate consume step would not be atomic.
 func (s *pendingHandoffs) inspectTicket(token string, mapping db.ProxyHostname, authority, nonce string, now time.Time) (handoffTicket, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,6 +221,74 @@ func (s *pendingHandoffs) inspectTicket(token string, mapping db.ProxyHostname, 
 		return handoffTicket{}, false
 	}
 	return ticket, true
+}
+
+// redeem atomically replaces a ticket with a grant and returns the stored target
+// separately, so no destination survives in grant state. binding must include
+// the parent reference verified by the caller, not a client-supplied session ID.
+// All failures preserve a live ticket; replay cannot produce another grant.
+func (s *pendingHandoffs) redeem(token string, binding handoffBinding, vendorNonce string, now time.Time) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(now)
+	if !validLaunchToken(token) || !validLaunchToken(vendorNonce) {
+		return "", "", errInvalidHandoffTicket
+	}
+	key := local.HashToken(token)
+	ticket, found := s.tickets[key]
+	if !found || ticket.binding != binding || ticket.vendorNonceHash != local.HashToken(vendorNonce) {
+		return "", "", errInvalidHandoffTicket
+	}
+	if len(s.grants) >= maxHandoffGrants {
+		return "", "", errHandoffGrantsFull
+	}
+	parentCount := 0
+	for _, grant := range s.grants {
+		if grant.binding.parentSessionID == binding.parentSessionID {
+			parentCount++
+		}
+	}
+	if parentCount >= maxHandoffGrantsPerParent {
+		return "", "", errHandoffGrantsFull
+	}
+	grantToken, err := local.NewToken("", 32)
+	if err != nil {
+		return "", "", errors.New("host grant token generation failed")
+	}
+	grantKey := local.HashToken(grantToken)
+	if _, exists := s.grants[grantKey]; exists {
+		return "", "", errors.New("host grant token collision")
+	}
+	if _, exists := s.tickets[grantKey]; exists {
+		return "", "", errors.New("host grant token collision")
+	}
+	if _, exists := s.entries[grantKey]; exists {
+		return "", "", errors.New("host grant token collision")
+	}
+	expires := now.Add(handoffGrantTTL)
+	if ticket.parentExpires.Before(expires) {
+		expires = ticket.parentExpires
+	}
+	s.grants[grantKey] = handoffGrant{binding: ticket.binding, expires: expires}
+	delete(s.tickets, key)
+	return grantToken, ticket.target, nil
+}
+
+// inspectGrant locates state for the exact admitted vendor origin. It does not
+// renew the grant or authorize a fetch. The caller must validate its trusted
+// parent reference and current user/policy/safety before using vendor content.
+func (s *pendingHandoffs) inspectGrant(token string, mapping db.ProxyHostname, authority string, now time.Time) (handoffGrant, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(now)
+	if !validLaunchToken(token) {
+		return handoffGrant{}, false
+	}
+	grant, found := s.grants[local.HashToken(token)]
+	if !found || grant.binding.hostname != mapping.Hostname || grant.binding.label != mapping.Label || grant.binding.proxyAuthority != authority {
+		return handoffGrant{}, false
+	}
+	return grant, true
 }
 
 // removeParent accepts a trusted parent reference for explicit local cleanup.
@@ -218,6 +305,11 @@ func (s *pendingHandoffs) removeParent(parentSessionID string, now time.Time) {
 	for key, ticket := range s.tickets {
 		if ticket.binding.parentSessionID == parentSessionID {
 			delete(s.tickets, key)
+		}
+	}
+	for key, grant := range s.grants {
+		if grant.binding.parentSessionID == parentSessionID {
+			delete(s.grants, key)
 		}
 	}
 }
@@ -237,6 +329,11 @@ func (s *pendingHandoffs) cleanupLocked(now time.Time) {
 	for key, ticket := range s.tickets {
 		if !now.Before(ticket.expires) {
 			delete(s.tickets, key)
+		}
+	}
+	for key, grant := range s.grants {
+		if !now.Before(grant.expires) {
+			delete(s.grants, key)
 		}
 	}
 }
