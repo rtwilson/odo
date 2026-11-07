@@ -1,8 +1,9 @@
 # First vendor-host deployment: origin and cookie boundaries
 
-Status: concrete recommendations for maintainer review. Documentation only;
-none of these deployment switches, jar policies, routes or limits are enabled.
-Virtual-host delivery remains rejected in production.
+Status: production origin/jar recommendations for maintainer review. The
+experimental handoff-only runtime now implements control routes and host-only
+nonce/grant cookies in development/test. The jar policies below are still
+unimplemented, and virtual-host delivery remains rejected in production.
 
 This checkpoint complements [cross-host grants](cross-host-grants.md). The
 account-security transactions are implemented; the grant protocol and the
@@ -163,8 +164,9 @@ operations too. Live parent/user/authentication-version, registry, resource and
 safety validation and vendor-return proofs are now implemented internally.
 The central confirmation boundary specified in the revised
 [HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
-is implemented and tested as an unregistered handler. The next batch is separately
-constructed vendor controls; runtime wiring and cookie issuance still need
-review and tests. Routes, cookies, jars and vendor dispatch
-remain unwired. Origin migration and jar enforcement remain mandatory gates
-before delivery is enabled.
+is implemented, tested and available only through the experimental flag. The
+experimental runtime now wires central/vendor controls and host-only cookie issuance behind `APP_EXPERIMENTAL_HANDOFF`. Its vendor preflight and redemption
+share only the exact redemption path, followed by an inert receipt. Default URL
+modes are unchanged; experimental mode blocks central-origin vendor content.
+Authenticated jars and vendor content dispatch remain unwired. Origin migration
+and jar enforcement remain mandatory gates before delivery is enabled.

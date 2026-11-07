@@ -2,7 +2,9 @@
 
 Status: proposed architecture; first review checkpoint, 2026-10-25.
 Internal handoff security foundation implemented 2026-11-06; vendor delivery
-remains disabled. See the implementation update at the end of this ADR.
+remains disabled. Experimental handoff-only HTTP integration is now available
+behind `APP_EXPERIMENTAL_HANDOFF` in development/test; see the implementation
+update and routing guide.
 
 ## Problem and direction
 
@@ -222,9 +224,11 @@ no sensitive target/ticket logs; old GET bookmarks and rollback documented.
 ## Implemented internal handoff security foundation
 
 `internal/api/handoff_security.go` coordinates the bounded in-memory state in
-`pending_handoffs.go`. It is internal and deliberately not constructed by the
-HTTP server. No public handoff protocol, wildcard delivery, browser grant cookie,
-content rewriting, or change to path/query proxying is enabled.
+`pending_handoffs.go`. The default server leaves it inactive. The
+`APP_EXPERIMENTAL_HANDOFF=true` test-only runtime now constructs it and connects
+launch, central confirmation and one exact registered-vendor control endpoint.
+Vendor content delivery and rewriting remain disabled; default path/query
+operation is unchanged.
 
 Pending browser handoffs last at most five minutes. Confirmation replaces a
 prepared handoff with a cryptographically random, single-use 60-second ticket;
@@ -246,10 +250,13 @@ extending the pending deadline. Confirmation requires the proof as well as the
 central session/nonce, and checks it again under the atomic transition lock.
 This prevents confirmation based only on another browser having completed
 preflight. Proofs are not retained in tickets/grants. Central confirmation now has
-an unregistered HTTP handler with exact host/Origin checks, unique prefixed
-cookie validation, form CSRF, bounded parsing and a fixed registered-vendor
-redirect. It is not connected to `Server.Routes` or launch. Vendor control
-handlers, cookie issuance and runtime dispatch remain unimplemented.
+a central HTTP handler with exact host/Origin checks, unique prefixed cookie
+validation, form CSRF, bounded parsing and a fixed registered-vendor redirect.
+The experimental flag connects it and launch to the vendor control handler.
+To admit only the redemption endpoint, preflight uses the same
+`/.well-known/odo/redeem` path with an opaque `handoff` field; ticket exchange uses
+a `ticket` field. The clean endpoint validates the grant and shows only an inert
+receipt. No upstream destination enters those redirects.
 
 The coordinator verifies the complete central token before beginning or
 confirming a handoff. Vendor operations require their own browser nonce and
@@ -289,3 +296,34 @@ host-only nonce/grant cookies and CSRF defenses, validated-IP dialing on actual
 fetches, session activity handling, origin-isolated upstream cookie jars,
 redirect/content rewriting, wildcard DNS/TLS deployment, and end-to-end browser
 and privacy testing. The current host guard continues rejecting vendor traffic.
+
+
+## Experimental handoff integration status
+
+Implemented and enabled only for testing: `/launch` authentication continuation,
+return-proof preflight, explicit central confirmation POST, atomic ticket exchange
+and host-only `__Host-odo_proxy_grant` issuance. `APP_EXPERIMENTAL_HANDOFF`
+defaults false, requires the central host guard and valid HTTPS deployment names,
+and is rejected for production or unknown environments. The flag captures
+configuration at startup and blocks central-origin path content/recovery while
+active. Ordinary path/query/dual deployments retain their behavior with it off.
+
+Only the exact redemption path is admitted on registered vendor hosts, and only
+GET control phases are supported. Other paths remain 421, including every
+central management route. Cookie nonces/grants are Secure/HttpOnly, Path=/,
+SameSite=Lax and no Domain. Grant receipts check the live parent/account version
+and current registry/domain policy; future content fetches must also check the
+actual resource URL/method and connection-time SSRF safety.
+
+All control responses use no-store/no-referrer and script-free/frame-denied
+policy. Experimental logging suppresses Referer and User-Agent even for combined
+and JSON formats. Edge log suppression is a separate deployment requirement.
+No central credential is copied to vendor URLs or cookies. State bounds and
+lifetimes above are unchanged. Restart invalidates the process-local grant state;
+requests already authorized before a revocation may finish.
+
+Not implemented/enabled: production virtual-host content, upstream jar isolation,
+resource-cookie enforcement for that mode, rewriting, cold-host bootstrap and
+multi-instance state. The old proposed separate `/prepare` vendor path is not
+admitted by this implementation. See [the routing guide](../architecture/virtual-host-routing.md)
+for the exact fake-host test commands, flag configuration and remaining gates.

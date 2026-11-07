@@ -1,12 +1,12 @@
 # Cross-host grants and revocation
 
-Status: HTTP/browser protocol proposed for review, 2026-11-06. Bounded pending
-state, return proofs, tickets, grants and live session/registry/resource/safety validation are
-implemented internally. The central confirmation HTTP handler is implemented
-and tested but unregistered. No public handoff endpoints, vendor browser cookies
-or vendor content delivery are enabled. The current local `/launch/continue` is not a host
-grant. See the [state foundation](pending-handoff-state.md) and
-[routing foundation](virtual-host-routing.md).
+Status: implemented for isolated development/test handoff behind
+`APP_EXPERIMENTAL_HANDOFF`, off by default and rejected in production. Bounded
+hashed state, return proofs, tickets, grants, central confirmation and vendor
+control HTTP integration are implemented. Vendor content remains disabled.
+The original endpoint proposal below is narrowed to one vendor redemption path;
+preflight uses its `handoff` query phase, not a separate prepare endpoint. See
+[runtime flags and fake-host tests](virtual-host-routing.md#experimental-runtime-and-trust-boundary).
 
 The [origin and cookie boundary checkpoint](vendor-origin-cookie-boundary.md)
 records concrete first-deployment recommendations and the current jar-model gap.
@@ -74,8 +74,8 @@ not reinterpret an old handoff. Registry membership never grants access.
 This revision replaces automatic GET confirmation with a central confirmation
 page followed by an explicit POST. Vendor-return proofs are now mandatory in
 the internal `prepare`/`confirm` operations. Central confirmation methods,
-Origin/CSRF checks and cookie validation are implemented in an unregistered HTTP
-handler. Vendor controls and cookie issuance remain requirements for later work.
+Origin/CSRF checks and cookie validation are implemented in HTTP handler. Central/vendor controls and cookie issuance are now wired only
+in the experimental test mode; content delivery remains later work.
 
 The nonce-only proposal had an incomplete browser correlation: an attacker
 could initiate a handoff in their central session, cause a second browser to
@@ -99,7 +99,7 @@ leakage; proof possession is a bearer check, not browser fingerprinting.
 | Host | Method and path | Proposed behavior |
 | --- | --- | --- |
 | Central | `GET /launch?url=...` and existing login continuation | Existing target validation/login, then begin a handoff only in a separately reviewed enabled mode. Current path/query behavior remains unchanged. |
-| Registered vendor | `GET /.well-known/odo/prepare?handoff=...` | Admit the exact registry host, validate pending state, bind its vendor nonce, issue a return proof, then 303 to the configured central confirmation page. |
+| Registered vendor | `GET /.well-known/odo/redeem?handoff=...` | Admit the exact registry host, validate pending state, bind its vendor nonce, issue a return proof, then 303 to the configured central confirmation page. |
 | Central | `GET /launch/handoff/confirm?handoff=...&proof=...` | Validate central session/nonce, return proof, live policy and expiry; render a plain confirmation form. Do not mint a ticket, consume the proof or redirect automatically to redemption. |
 | Central | `POST /launch/handoff/confirm` | Require exact central Origin and session-derived CSRF, plus handoff/proof form fields. Recheck all bindings and live authorization, then atomically replace pending state/proof with one ticket; 303 to the exact vendor redemption endpoint. |
 | Registered vendor | `GET /.well-known/odo/redeem?ticket=...` | Require the matching vendor nonce, recheck live authorization, and atomically replace the ticket with a host grant. Cookie issuance is a later implementation gate. |
@@ -119,9 +119,10 @@ Before any cookie/credential processing, validate request Host and any
 absolute-form URL authority together against trusted deployment configuration.
 Ignore untrusted Forwarded/X-Forwarded-Host. Only the exact registered vendor
 mapping may enter vendor controls. Do not register hosts from requests. A
-future dispatcher must change the current guard deliberately: today it rejects
-all vendor requests, including these proposed endpoints. Ordinary vendor paths
-must continue to be rejected while content delivery is disabled.
+experimental dispatcher admits only `/.well-known/odo/redeem`, after exact
+registry lookup and authority validation. All other vendor paths are rejected,
+including the old separate `/prepare` proposal. With the flag off, the existing
+guard rejects all vendor requests.
 
 ### Browser sequence and proof lifecycle
 
@@ -170,7 +171,7 @@ sequenceDiagram
 5. Central POST confirmation requires exactly the configured central HTTPS
    Origin and a CSRF value derived from the active central session. Reject
    absent, duplicate, null, sibling or malformed Origin. This is a browser
-   session operation with no bearer-key exemption. The unregistered confirmation
+   session operation with no bearer-key exemption. The confirmation
    handler uses `centralOriginAllowed` directly, before reading credentials, so
    this protection does not depend on global management-API middleware covering
    the path. Existing API CSRF enforcement uses a header; confirmation explicitly
@@ -191,8 +192,11 @@ sequenceDiagram
    consume the ticket and allocate the host grant; allocation failure leaves the
    live ticket usable for retry. A consumed ticket cannot be replayed to recover
    its raw grant. Loss of the response requires a fresh central launch.
-8. Future successful redemption sets the exact-host grant cookie and 303 redirects
-   to the validated target's stored path/query. Never accept a redemption return
+8. Current successful redemption sets the exact-host grant cookie and 303
+   redirects to the same vendor redemption path without query parameters. That
+   clean endpoint validates the live grant/parent and current domain policy, then
+   displays only an inert completion receipt. No target is shown or fetched.
+   Future delivery may redirect to the validated target's stored path/query. Never accept a redemption return
    URL or concatenate an unchecked path into Location: a path beginning `//`
    must remain on the current vendor authority, using a URL built from that
    trusted authority and parsed upstream path/query. Preserve legitimate vendor
@@ -366,8 +370,10 @@ host, original ticket resource/target, lifetime/capacity and atomic transitions;
 it now also enforces return proofs. `handoff_confirmation.go` implements the
 central confirmation HTTP boundary, including GET rendering, strict POST
 Origin/CSRF checks, unique prefixed cookie validation and bounded input parsing.
-It is deliberately absent from `Server.Routes`; no runtime flag constructs it.
-It cannot be used through the running application yet.
+`APP_EXPERIMENTAL_HANDOFF=true` now connects it to `Server.Routes` and launch
+in development/test. The flag requires host admission, rejects production and
+blocks central-origin vendor content/recovery while on. The default server
+retains existing path/query operation.
 
 The **internal vendor-return-proof state and validation** batch is implemented
 in the existing pending record, without a separate store, routes or cookies.
@@ -397,18 +403,25 @@ and unsupported methods are rejected. The shared central-authority predicate
 preserves the existing host guard; the confirmation handler applies it even
 when constructed independently of the running mux.
 
-The next small batch is unregistered vendor prepare/redemption HTTP handlers,
-with exact-host controls, nonce/grant cookie policy, fixed redirects and an inert
-completion page while ordinary vendor content remains rejected. Runtime wiring
-needs a separately reviewed disabled-by-default handoff-only gate. Do not expose
-controls to real patrons while the central origin still serves untrusted vendor response bodies through path mode; the
-host guard alone does not remove that existing origin sharing. Test exact
-methods, Origin/CSRF, cookie attributes and duplicate
-cookies, reserved paths, `//` destination paths, fixed redirects, missing cookies,
-loss/retry, two-session tab changes, no upstream fetches and sensitive-log
-suppression. A test deployment may finish redemption on a fixed inert completion
-page while content remains rejected; never redirect to working vendor content
-until its delivery gates pass. The inert page must not disclose the patron target.
+The vendor HTTP control is now implemented and registered only in experimental
+mode. Preflight and ticket exchange share `/.well-known/odo/redeem`; a clean GET
+there validates the live grant and renders the inert receipt. No separate vendor
+prepare endpoint is admitted. Cookie issuance is host-only, Secure, HttpOnly,
+SameSite=Lax and Path=/; no central credentials are copied. All other vendor
+paths, including management routes, are blocked before central authentication.
+
+End-to-end local TLS/cookie-jar tests exercise login continuation, nonce/proof
+confirmation, redemption, replay and concurrency, policy/registry changes,
+revocation, password/account changes, host spoofing, cookie isolation, state
+capacity, transaction rollback, default URL modes and all access-log formats.
+No public DNS, upstream vendor request or upstream jar is involved. See the
+[routing guide](virtual-host-routing.md#repeatable-local-test-with-fake-hostnames)
+for exact commands and current limits.
+
+The next milestone is a separate security review and design/implementation of
+bounded parent/resource upstream cookie jars, plus production origin migration
+and actual-target authorization at each fetch. Do not treat this experimental
+handoff as approval to enable vendor delivery.
 
 Origin separation, authenticated upstream jar isolation, validated-IP fetches,
 rewriting, cold-host behavior and DNS/TLS remain separate delivery gates. Do not

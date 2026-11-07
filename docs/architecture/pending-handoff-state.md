@@ -1,11 +1,13 @@
 # Pending handoff state foundation
 
 Implemented: `internal/api/pending_handoffs.go` and its focused tests. This is a
-passive, package-private state store, not connected to `Server`, routes, cookies,
-database operations, DNS, upstream fetching or vendor dispatch. Existing launch
+passive, package-private state store. The experimental runtime owns it through
+`handoffSecurity`; database/DNS checks and HTTP cookie handling remain in the
+coordinator/handlers, not in this store. Existing launch
 continuations and path/query behavior are unchanged. Bounded tickets/grants,
 atomic confirmation, vendor-return proofs and atomic ticket redemption are
-implemented as state operations only. No handoff/grant HTTP behavior or virtual-host delivery is enabled.
+implemented as state operations only. Handoff/grant HTTP behavior is enabled only with `APP_EXPERIMENTAL_HANDOFF`;
+virtual-host content delivery remains disabled.
 
 ## Retained state and bounds
 
@@ -67,7 +69,7 @@ Preparation allocates no additional map entry and works at pending capacity.
 A future vendor handler must admit the exact host and look up its mapping before
 reading that host's nonce cookie. Only that preflight response may carry the raw
 proof to the configured central callback. The coordinator's internal `preflight`
-returns it for this purpose; no HTTP handler invokes it yet. Central inspection
+returns it for this purpose; the experimental vendor preflight phase invokes it after live validation. Central inspection
 can see a hash but cannot recover the proof. Initial preparation in another
 browser cannot be repaired by replacing its nonce; launch again.
 
@@ -147,24 +149,26 @@ Nothing here logs tokens, target URLs, cookies or parent references.
 
 ## Next boundary
 
-Pending-to-ticket confirmation and ticket-to-grant redemption are atomic,
-without HTTP routes. `handoff_security.go` now checks live parent/user/version,
+Pending-to-ticket confirmation and ticket-to-grant redemption are atomic. `handoff_security.go` now checks live parent/user/version,
 registry, original ticket resource/target, method policy and DNS safety. The
 coordinator does not touch session timestamps or cache positive authorization.
-It is deliberately not attached to runtime handlers.
+Only the experimental handoff runtime attaches it to handlers.
 
 Vendor-return proofs are now implemented and tested internally, including the
 two-browser splice, nonce/proof replacement, exact expiry, capacity retry, parent
 revocation and proof rotation during live validation. The revised
 [cross-host protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
 specifies the HTTP lifetime/retry rules and explicit Origin/CSRF-protected
-central confirmation POST. `handoff_confirmation.go` now implements that HTTP
-boundary without registering it in `Server.Routes`. It checks unique prefixed
+central confirmation POST. `handoff_confirmation.go` implements that HTTP
+boundary, wired into `Server.Routes` only in experimental handoff mode. It checks
+unique prefixed
 cookies, exact central authority/Origin, session-derived form CSRF and strict
 bounded inputs. GET does not consume live state; POST rechecks live authorization
-and current proof at the atomic transition. Vendor endpoints, cookie issuance
-and runtime routing remain unimplemented. The next batch is unregistered vendor
-controls, keeping content delivery disabled.
+and current proof at the atomic transition. The experimental vendor control uses
+the single redemption endpoint for
+preflight, ticket exchange and an inert receipt. Cookie issuance and runtime
+admission are enabled only by the off-by-default test flag; content delivery
+remains disabled.
 
 Memory cleanup does not replace durable revocation. Renewal requires a fresh
 handoff, not inspection or a vendor asset request. Non-consuming inspection is
