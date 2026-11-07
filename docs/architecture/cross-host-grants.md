@@ -21,21 +21,27 @@ lookup/revocation failures; see [logout behavior and audit policy](../security/l
 Account-change revocation now has these foundations:
 
 - `db.go:SetUserStatus` commits disable/lock and session revocation together.
-  `UpdateUser` does the same for disabled/locked status PATCH, including rollback
-  of accompanying metadata/role edits. PATCH also enforces last-admin status
+  `PatchUser` does the same for disabled/locked status and effective role-set
+  changes, including rollback of accompanying metadata. PATCH enforces last-admin status
   protection. Deletion, role changes, and status changes enforce the last-admin
-  invariant under SQLite's writer lock, using current database state. Stale PATCH
-  overwrites and login racing with revocation remain separate work.
+  invariant under SQLite's writer lock, using current database state. PATCH applies
+  only supplied fields to that current state, preserving omitted roles/status.
 - Password resets now commit the new hash and session revocation together in
   `db.go:SetUserPassword`; revocation failure rolls back the password change and
   produces a generic API error. The post-commit password audit remains best-effort.
-- Explicit `users_handlers.go:revokeUserSessions` already reports revocation
-  errors; retain that behavior.
+- Explicit user-session revocation increments the account security version and
+  revokes sessions atomically, while retaining existing error reporting.
+- Guarded browser-session insertion matches the active account's verified password
+  hash and private security version. Security mutations increment that version in
+  the same transaction as revocation, preventing pending logins from escaping it.
+  Validation reads session/user state from one snapshot. See the full
+  [account-security inventory and race boundary](../security/user-lifecycle.md).
 
 A successful disable/lock or password reset commits the intended session
 revocation atomically with its account change. Re-enabling does not clear those
-revocations. Review concurrent login and account mutations before grants can be
-enabled; transaction support alone does not establish those race guarantees.
+revocations. Tests cover both insertion/revocation orders, concurrent login, role
+changes, rollback, restoration and last-admin mutations. Already-authorized
+requests may finish; revocation does not cancel in-flight streams.
 
 ## Proposed first deployment boundary
 
@@ -194,7 +200,7 @@ collisions, cold assets/frames and legacy-origin migration tests before rollout.
 Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
-separation. Next implementation batches should review account/login concurrency,
-including stale PATCH overwrites and login/revocation races, then add bounded handoff state with
+separation. After approving those decisions, the next implementation batch can
+add bounded handoff state with
 runtime vendor dispatch still disabled. This document does not approve enabling
 virtual-host traffic.

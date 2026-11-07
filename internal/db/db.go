@@ -54,6 +54,7 @@ type User struct {
 	Email        string   `json:"email,omitempty"`
 	DisplayName  string   `json:"display_name,omitempty"`
 	PasswordHash string   `json:"-"`
+	AuthVersion  int64    `json:"-"`
 	Status       string   `json:"status"`
 	Roles        []string `json:"roles"`
 	CreatedAt    string   `json:"created_at"`
@@ -170,6 +171,39 @@ CREATE TABLE IF NOT EXISTS sessions (
 	ip_hash TEXT NULL
 );
 `)
+	if err != nil {
+		return err
+	}
+	// Additive, idempotent migration for existing databases. Keep this private
+	// counter out of user JSON; zero preserves all existing account/session data.
+	rows, err := s.db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "auth_version" {
+			found = true
+		}
+	}
+	readErr := rows.Err()
+	closeErr := rows.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !found {
+		_, err = s.db.Exec(`ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0`)
+	}
 	return err
 }
 
@@ -638,7 +672,7 @@ func (s *Store) ListDeletedUsers() ([]User, error) {
 }
 
 func (s *Store) listUsers(deleted bool) ([]User, error) {
-	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE (status = 'deleted') = ? ORDER BY username`, deleted)
+	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE (status = 'deleted') = ? ORDER BY username`, deleted)
 	if err != nil {
 		return nil, err
 	}
@@ -655,37 +689,54 @@ func (s *Store) listUsers(deleted bool) ([]User, error) {
 }
 
 func (s *Store) GetUser(id string) (User, bool, error) {
-	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, id)
 	return scanUserFound(row)
 }
 
 func (s *Store) GetUserByUsername(username string) (User, bool, error) {
-	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE username = ?`, username)
+	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE username = ?`, username)
 	return scanUserFound(row)
 }
 
+// UserPatch carries only fields explicitly supplied by a management caller.
+type UserPatch struct {
+	Email       *string
+	DisplayName *string
+	Status      string
+	Roles       []string
+}
+
 func (s *Store) UpdateUser(user User) (User, bool, error) {
+	return s.PatchUser(user.ID, UserPatch{Email: &user.Email, DisplayName: &user.DisplayName, Status: user.Status, Roles: user.Roles})
+}
+
+func (s *Store) PatchUser(id string, patch UserPatch) (User, bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return User{}, false, err
 	}
 	defer tx.Rollback()
-	existing, found, err := userForUpdate(tx, user.ID)
+	existing, found, err := userForUpdate(tx, id)
 	if err != nil || !found {
 		return User{}, found, err
 	}
 	if existing.Status == "deleted" {
 		return User{}, true, ErrUserDeleted
 	}
-	if user.Username == "" {
-		user.Username = existing.Username
+	user := existing
+	if patch.Email != nil {
+		user.Email = *patch.Email
 	}
-	if user.Status == "" {
-		user.Status = existing.Status
+	if patch.DisplayName != nil {
+		user.DisplayName = *patch.DisplayName
 	}
-	if len(user.Roles) == 0 {
-		user.Roles = existing.Roles
+	if patch.Status != "" {
+		user.Status = patch.Status
 	}
+	if len(patch.Roles) > 0 {
+		user.Roles = patch.Roles
+	}
+	securityChange := user.Status == "disabled" || user.Status == "locked" || !sameRoles(existing.Roles, user.Roles)
 	if err := protectLastAdministrator(tx, existing, user.Status, user.Roles); err != nil {
 		return User{}, false, err
 	}
@@ -694,6 +745,9 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 		return User{}, false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	if securityChange {
+		user.AuthVersion++
+	}
 	disabledAt, lockedAt := existing.DisabledAt, existing.LockedAt
 	if user.Status != existing.Status {
 		disabledAt, lockedAt = "", ""
@@ -704,8 +758,8 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 			lockedAt = now
 		}
 	}
-	result, err := tx.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`,
-		user.Email, user.DisplayName, user.Status, string(roles), disabledAt, lockedAt, now, user.ID)
+	result, err := tx.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ?, auth_version = ? WHERE id = ? AND status != 'deleted'`,
+		user.Email, user.DisplayName, user.Status, string(roles), disabledAt, lockedAt, now, user.AuthVersion, user.ID)
 	if err != nil {
 		return User{}, false, err
 	}
@@ -715,12 +769,12 @@ func (s *Store) UpdateUser(user User) (User, bool, error) {
 		}
 		return User{}, true, ErrUserDeleted
 	}
-	if user.Status == "disabled" || user.Status == "locked" {
+	if securityChange {
 		if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, user.ID); err != nil {
 			return User{}, false, err
 		}
 	}
-	updated, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, user.ID))
+	updated, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, user.ID))
 	if err != nil || !found {
 		return User{}, found, err
 	}
@@ -739,7 +793,7 @@ func (s *Store) SetUserPassword(id, hash string) (bool, error) {
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := tx.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND status != 'deleted'`, hash, now, id)
+	result, err := tx.Exec(`UPDATE users SET password_hash = ?, updated_at = ?, auth_version = auth_version + 1 WHERE id = ? AND status != 'deleted'`, hash, now, id)
 	if err != nil {
 		return false, err
 	}
@@ -780,7 +834,11 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if status == "locked" {
 		lockedAt = now
 	}
-	result, err := tx.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ? AND status != 'deleted'`, status, disabledAt, lockedAt, now, id)
+	version := existing.AuthVersion
+	if status == "disabled" || status == "locked" {
+		version++
+	}
+	result, err := tx.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ?, auth_version = ? WHERE id = ? AND status != 'deleted'`, status, disabledAt, lockedAt, now, version, id)
 	if err != nil {
 		return User{}, false, err
 	}
@@ -793,7 +851,7 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 			return User{}, false, err
 		}
 	}
-	user, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id))
+	user, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, id))
 	if err != nil || !found {
 		return User{}, found, err
 	}
@@ -808,6 +866,8 @@ func (s *Store) MarkUserLogin(id string) error {
 	return err
 }
 
+// CreateSession stores trusted prepared session data (including test fixtures).
+// Browser login must use CreateAuthenticatedSession to recheck eligibility.
 func (s *Store) CreateSession(session Session) error {
 	_, err := s.db.Exec(`
 INSERT INTO sessions (id, user_id, session_hash, created_at, last_seen_at, expires_at, revoked_at, user_agent_hash, ip_hash)
@@ -851,8 +911,18 @@ func (s *Store) RevokeSession(id string) error {
 }
 
 func (s *Store) RevokeUserSessions(userID string) error {
-	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), userID)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE users SET auth_version = auth_version + 1 WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type userScanner interface {
@@ -873,7 +943,7 @@ func scanUserFound(row userScanner) (User, bool, error) {
 func scanUser(row userScanner) (User, error) {
 	var user User
 	var rolesJSON string
-	if err := row.Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash, &user.Status, &rolesJSON, &user.CreatedAt, &user.UpdatedAt, &user.LastLoginAt, &user.LockedAt, &user.DisabledAt); err != nil {
+	if err := row.Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash, &user.Status, &rolesJSON, &user.CreatedAt, &user.UpdatedAt, &user.LastLoginAt, &user.LockedAt, &user.DisabledAt, &user.AuthVersion); err != nil {
 		return User{}, err
 	}
 	if err := json.Unmarshal([]byte(rolesJSON), &user.Roles); err != nil {

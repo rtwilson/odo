@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -68,7 +69,13 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, fmt.Errorf("session creation failed: %w", err))
 		return
 	}
-	if err := s.store.CreateSession(session); err != nil {
+	if err := s.store.CreateAuthenticatedSession(session, user); err != nil {
+		if errors.Is(err, db.ErrLoginStateChanged) {
+			failed = true
+			_ = s.store.Audit("login_failed", `{"path":"/login"}`)
+			writeError(w, http.StatusUnauthorized, "invalid username or password")
+			return
+		}
 		s.internalError(w, r, err)
 		return
 	}
@@ -294,7 +301,7 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error)
 		return db.User{}, db.Session{}, false, nil
 	}
 	sessionID := local.SessionIDFromToken(cookie.Value)
-	session, found, err := s.store.GetSession(sessionID)
+	session, user, found, err := s.store.GetSessionWithUser(sessionID)
 	if err != nil {
 		return db.User{}, db.Session{}, false, fmt.Errorf("load browser session: %w", err)
 	}
@@ -324,11 +331,7 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error)
 		_ = s.store.Audit("session_rejected_idle_timeout", fmt.Sprintf(`{"session_id":%q}`, session.ID))
 		return db.User{}, db.Session{}, false, nil
 	}
-	user, found, err := s.store.GetUser(session.UserID)
-	if err != nil {
-		return db.User{}, db.Session{}, false, fmt.Errorf("load session user: %w", err)
-	}
-	if !found || user.Status != "active" {
+	if user.Status != "active" {
 		_ = s.store.RevokeSession(session.ID)
 		return db.User{}, db.Session{}, false, nil
 	}

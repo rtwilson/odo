@@ -6,7 +6,8 @@ The database, documented management APIs, and Users section of the admin UI
 support transactional soft deletion and restoration.
 
 Deletion uses the existing persistent `status` column with value `deleted`.
-No schema migration or rewrite of existing accounts is needed. `disabled_at`
+Soft deletion itself needs no new status column. The account-security migration
+adds a private `users.auth_version` counter (see below). `disabled_at`
 records when deletion disabled the account; the `user_deleted` audit event
 records the deletion time. `ListUsers` excludes deleted accounts;
 `ListDeletedUsers` explicitly selects them. `CountUsers` still includes them:
@@ -146,8 +147,73 @@ disable/lock endpoints (`400`). Scope and browser CSRF checks remain required.
 The existing post-commit `user_status_set` and `user_updated` audit events remain
 best-effort; success does not guarantee audit persistence.
 
-Last-admin removal is protected across concurrent account mutations. Stale PATCH
-edits that overwrite another administrator's changes, and login racing with
-revocation, still need separate fixes. Production lock contention fails closed
-through the existing generic server-error path; this change adds no retry policy.
-These changes do not add cross-host grants or virtual-host delivery.
+Last-admin removal is protected across concurrent account mutations. Production
+lock contention fails closed through the existing generic server-error path;
+there is no automatic retry policy.
+
+## Account-security inventory and transaction boundaries
+
+| Mutation | Session behavior and transaction boundary |
+| --- | --- |
+| Create/bootstrap local user | Creates a new identity; no pre-existing sessions to revoke. Existing creation/audit behavior is unchanged. |
+| Set password | Update hash, increment security version, and revoke all unrevoked sessions in one transaction. This applies even when setting the same password. |
+| Disable/lock, including PATCH | Update status/timestamps, increment version, and revoke sessions in one transaction. Repeated disable/lock also invalidates pending login state. |
+| Effective role-set change, including generic PATCH | Both promotion and demotion increment the version and revoke sessions atomically with any accompanying metadata/status edits. Role ordering, case normalization, or duplicate entries alone do not count as a change. |
+| Active-account email/display-name edit | Preserve roles, status, version and sessions when those fields are omitted. |
+| Enable/unlock | Keep the security version and all prior revocations. Fresh login is required; old sessions do not revive. |
+| Delete | Change status, discard password hash, increment version, revoke sessions and insert the lifecycle audit in one transaction. |
+| Restore | Set a fresh hash, leave disabled, increment version, revoke sessions and insert the lifecycle audit in one transaction. |
+| Explicit user-session revocation | Increment the version and revoke sessions in one transaction, including when no current sessions exist. A new login based on current state remains permitted. |
+| Logout | Revoke only the verified requesting session; separate fresh logins for that user are not revoked. |
+| Login/session-touch metadata | Update login/last-seen timestamps; do not change account eligibility or the security version. |
+
+`PatchUser` loads current state under SQLite's writer lock and applies only the
+fields supplied by the caller. Omitted fields never come from an earlier API
+snapshot. Explicit edits to the same field still use ordinary last-writer-wins
+semantics; there is no new ETag or version-precondition API. The existing full
+`UpdateUser` datastore helper delegates to the same transaction/revocation logic;
+it is not used to implement HTTP PATCH.
+
+Metadata PATCH on an already disabled/locked account defensively repeats session
+revocation/version advancement. A failed revocation rolls back roles, status,
+metadata, timestamps and the security version. Last-admin checks remain inside
+the same write transaction. Post-commit password/status/profile/role audit events
+retain their existing best-effort policy; deletion/restoration audit insertion
+remains transactional. No response claims failed audit writes are durable.
+
+## Concurrent login and session validation
+
+Migration adds `auth_version INTEGER NOT NULL DEFAULT 0` to users when absent.
+It is additive and idempotent, preserves existing accounts and sessions, and
+persists across restart. Password hashes and security versions are never included
+in user JSON. Existing startup session-persistence policy remains unchanged.
+Run migration through normal startup before serving requests with the new binary.
+
+Login checks the password outside the database write lock. It then calls
+`CreateAuthenticatedSession`, whose single `INSERT ... SELECT` requires an active
+account with the exact password hash and security version observed during that
+check. Account writes and session insertion are ordered by SQLite's writer lock:
+
+- If insertion happens first, the later security transaction revokes it.
+- If the security transaction happens first, insertion from the old state is
+  rejected with the ordinary generic invalid-login response and no session cookie.
+- A disable/enable, role-change/revert, restoration or explicit revocation cannot
+  recreate the old version, even if the final status and password match.
+- Database insertion failures return a generic server error with request-ID
+  logging, without a successful login redirect, cookie or success audit event.
+
+The low-level `CreateSession` helper remains for trusted prepared data/test
+fixtures; production browser login exclusively uses the guarded insertion.
+Session validation reads the session and user in one SQL snapshot, then applies
+existing token-binding, revocation, expiry, active-status and touch checks. It
+cannot combine an earlier unrevoked session with newly changed user roles.
+
+Revocation governs authorization checks made after its commit. Requests already
+authorized may finish; this does not cancel in-flight streams or recall delivered
+content. A login inserted before revocation may finish sending a now-invalid
+cookie; that cookie cannot authenticate after the revocation commit. No positive
+authorization cache delays these database checks.
+
+These changes do not add cross-host grants or virtual-host delivery. Central/vendor
+origin separation, the grant protocol, parent-bound vendor jar policy, and rollout
+security/compatibility tests remain separate prerequisites.

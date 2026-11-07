@@ -95,25 +95,16 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	id := strings.TrimSpace(r.PathValue("id"))
-	existing, found, err := s.store.GetUser(id)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if !found {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
-	}
 	var req userPatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if req.Email != nil {
-		existing.Email = strings.TrimSpace(*req.Email)
+		*req.Email = strings.TrimSpace(*req.Email)
 	}
 	if req.DisplayName != nil {
-		existing.DisplayName = strings.TrimSpace(*req.DisplayName)
+		*req.DisplayName = strings.TrimSpace(*req.DisplayName)
 	}
 	if len(req.Roles) > 0 {
 		if !s.requestHasAdminScope(r) {
@@ -125,7 +116,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		existing.Roles = roles
+		req.Roles = roles
 	}
 	if strings.TrimSpace(req.Status) != "" {
 		status, err := validateUserStatus(req.Status)
@@ -133,9 +124,9 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		existing.Status = status
+		req.Status = status
 	}
-	user, found, err := s.store.UpdateUser(existing)
+	user, found, err := s.store.PatchUser(id, db.UserPatch{Email: req.Email, DisplayName: req.DisplayName, Status: strings.TrimSpace(req.Status), Roles: req.Roles})
 	if errors.Is(err, db.ErrLastAdministrator) {
 		writeError(w, http.StatusBadRequest, "cannot remove or deactivate the last admin account")
 		return

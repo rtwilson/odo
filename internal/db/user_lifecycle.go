@@ -53,7 +53,7 @@ func (s *Store) DeleteUser(id, actorID string) (bool, error) {
 		return false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.Exec(`UPDATE users SET status = 'deleted', password_hash = '', disabled_at = ?, updated_at = ? WHERE id = ?`, now, now, id); err != nil {
+	if _, err := tx.Exec(`UPDATE users SET status = 'deleted', password_hash = '', disabled_at = ?, updated_at = ?, auth_version = auth_version + 1 WHERE id = ?`, now, now, id); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
@@ -81,7 +81,7 @@ func (s *Store) RestoreUser(id, actorID, passwordHash string) (bool, error) {
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := tx.Exec(`UPDATE users SET status = 'disabled', password_hash = ?, disabled_at = ?, locked_at = NULL, updated_at = ? WHERE id = ? AND status = 'deleted'`, passwordHash, now, now, id)
+	result, err := tx.Exec(`UPDATE users SET status = 'disabled', password_hash = ?, disabled_at = ?, locked_at = NULL, updated_at = ?, auth_version = auth_version + 1 WHERE id = ? AND status = 'deleted'`, passwordHash, now, now, id)
 	if err != nil {
 		return false, err
 	}
@@ -132,6 +132,25 @@ func administratorRoles(roles []string) bool {
 	return false
 }
 
+func sameRoles(left, right []string) bool {
+	a, b := map[string]bool{}, map[string]bool{}
+	for _, role := range left {
+		a[strings.ToLower(strings.TrimSpace(role))] = true
+	}
+	for _, role := range right {
+		b[strings.ToLower(strings.TrimSpace(role))] = true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for role := range a {
+		if !b[role] {
+			return false
+		}
+	}
+	return true
+}
+
 // userForUpdate acquires SQLite's writer lock before reading account state.
 // Every account mutation that can remove an administrator holds this lock until
 // commit, so its admin count cannot race with deletion, disablement or demotion.
@@ -139,7 +158,7 @@ func userForUpdate(tx *sql.Tx, id string) (User, bool, error) {
 	if _, err := tx.Exec(`UPDATE users SET id = id WHERE id = ?`, id); err != nil {
 		return User{}, false, err
 	}
-	return scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id))
+	return scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, id))
 }
 
 func protectLastAdministrator(tx *sql.Tx, current User, status string, roles []string) error {
