@@ -16,7 +16,7 @@ func grantTicketFixture(t *testing.T, s *pendingHandoffs, parentID string, now, 
 	t.Helper()
 	binding, target, central, _ := pendingHandoffFixture(t)
 	binding.parentSessionID = parentID
-	handoff, err := s.create(binding, target, central, parentExpires, now)
+	handoff, err := s.create(binding, target, "vendor", central, parentExpires, now)
 	if err != nil {
 		t.Fatal(err)
 	}

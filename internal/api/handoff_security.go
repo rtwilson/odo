@@ -58,22 +58,22 @@ func (h *handoffSecurity) parent(binding handoffBinding, now time.Time) (db.Sess
 	return session, nil
 }
 
-func (h *handoffSecurity) target(ctx context.Context, binding handoffBinding, raw, method string) error {
+func (h *handoffSecurity) target(ctx context.Context, binding handoffBinding, raw, method, resourceID string) (string, error) {
 	mapping, err := h.mapping(binding.proxyAuthority)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if mapping.Hostname != binding.hostname || mapping.Label != binding.label {
-		return errHandoffDenied
+		return "", errHandoffDenied
 	}
 	target, result := h.server.proxyTarget(ctx, raw)
 	if result.InternalError != nil {
-		return errors.New("handoff resource lookup failed")
+		return "", errors.New("handoff resource lookup failed")
 	}
-	if target == nil || target.Scheme != "https" || target.Hostname() != binding.hostname || !result.Allowed || !resources.MethodAllowed(result, method) {
-		return errHandoffDenied
+	if target == nil || target.Scheme != "https" || target.Hostname() != binding.hostname || !result.Allowed || !resources.MethodAllowed(result, method) || result.ResourceID == "" || (resourceID != "" && result.ResourceID != resourceID) {
+		return "", errHandoffDenied
 	}
-	return nil
+	return result.ResourceID, nil
 }
 
 // begin accepts the complete central credential only in process memory. Later
@@ -99,11 +99,12 @@ func (h *handoffSecurity) begin(ctx context.Context, centralToken, authority, ta
 	if _, err = h.parent(binding, now); err != nil {
 		return "", err
 	}
-	if err = h.target(ctx, binding, target, "GET"); err != nil {
+	resourceID, err := h.target(ctx, binding, target, "GET", "")
+	if err != nil {
 		return "", err
 	}
 	expires, _ := time.Parse(time.RFC3339, session.ExpiresAt)
-	return h.state.create(binding, target, centralNonce, expires, now)
+	return h.state.create(binding, target, resourceID, centralNonce, expires, now)
 }
 
 func (h *handoffSecurity) preflight(token, authority, nonce string, now time.Time) error {
@@ -130,7 +131,7 @@ func (h *handoffSecurity) confirm(ctx context.Context, token, centralToken, auth
 	if _, err := h.parent(pending.binding, now); err != nil {
 		return "", err
 	}
-	if err := h.target(ctx, pending.binding, pending.target, "GET"); err != nil {
+	if _, err := h.target(ctx, pending.binding, pending.target, "GET", pending.resourceID); err != nil {
 		return "", err
 	}
 	return h.state.confirm(token, pending.binding, nonce, now)
@@ -148,7 +149,7 @@ func (h *handoffSecurity) redeem(ctx context.Context, token, authority, nonce st
 	if _, err := h.parent(ticket.binding, now); err != nil {
 		return "", "", err
 	}
-	if err := h.target(ctx, ticket.binding, ticket.target, "GET"); err != nil {
+	if _, err := h.target(ctx, ticket.binding, ticket.target, "GET", ticket.resourceID); err != nil {
 		return "", "", err
 	}
 	return h.state.redeem(token, ticket.binding, nonce, now)
@@ -166,5 +167,6 @@ func (h *handoffSecurity) validateGrant(ctx context.Context, token, authority, t
 	if _, err := h.parent(grant.binding, now); err != nil {
 		return err
 	}
-	return h.target(ctx, grant.binding, target, method)
+	_, err = h.target(ctx, grant.binding, target, method, "")
+	return err
 }

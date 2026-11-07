@@ -14,7 +14,7 @@ func preparedTicketFixture(t *testing.T, s *pendingHandoffs, parentID string, pa
 	t.Helper()
 	binding, target, centralNonce, now := pendingHandoffFixture(t)
 	binding.parentSessionID = parentID
-	token, err := s.create(binding, target, centralNonce, now.Add(parentTTL), now)
+	token, err := s.create(binding, target, "vendor", centralNonce, now.Add(parentTTL), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestHandoffTicketAtomicConfirmationAndInspection(t *testing.T) {
 func TestHandoffTicketConfirmationRequiresOriginalPreparedBinding(t *testing.T) {
 	binding, target, nonce, now := pendingHandoffFixture(t)
 	s := newPendingHandoffs()
-	token, err := s.create(binding, target, nonce, now.Add(time.Hour), now)
+	token, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}

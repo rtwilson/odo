@@ -13,7 +13,7 @@ import (
 func TestPendingHandoffVendorNonceSingleAssignment(t *testing.T) {
 	binding, target, centralNonce, now := pendingHandoffFixture(t)
 	s := newPendingHandoffs()
-	token, err := s.create(binding, target, centralNonce, now.Add(time.Hour), now)
+	token, err := s.create(binding, target, "vendor", centralNonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestPendingHandoffVendorNonceSingleAssignment(t *testing.T) {
 func TestPendingHandoffVendorNonceMismatchDoesNotBind(t *testing.T) {
 	binding, target, centralNonce, now := pendingHandoffFixture(t)
 	s := newPendingHandoffs()
-	token, err := s.create(binding, target, centralNonce, now.Add(time.Hour), now)
+	token, err := s.create(binding, target, "vendor", centralNonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestPendingHandoffVendorNonceExpiryAndRemoval(t *testing.T) {
 		t.Run(ttl.String(), func(t *testing.T) {
 			binding, target, centralNonce, now := pendingHandoffFixture(t)
 			s := newPendingHandoffs()
-			token, err := s.create(binding, target, centralNonce, now.Add(ttl), now)
+			token, err := s.create(binding, target, "vendor", centralNonce, now.Add(ttl), now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +120,7 @@ func TestPendingHandoffVendorNonceExpiryAndRemoval(t *testing.T) {
 			if s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now.Add(ttl)) || len(s.entries) != 0 {
 				t.Fatal("preparation extended expiry or retained expired state")
 			}
-			token, err = s.create(binding, target, centralNonce, now.Add(time.Hour), now)
+			token, err = s.create(binding, target, "vendor", centralNonce, now.Add(time.Hour), now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -137,7 +137,7 @@ func TestPendingHandoffVendorNonceConcurrentBinding(t *testing.T) {
 		t.Run(map[bool]string{false: "competing browsers", true: "same browser retries"}[sameNonce], func(t *testing.T) {
 			binding, target, centralNonce, now := pendingHandoffFixture(t)
 			s := newPendingHandoffs()
-			token, err := s.create(binding, target, centralNonce, now.Add(time.Hour), now)
+			token, err := s.create(binding, target, "vendor", centralNonce, now.Add(time.Hour), now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +196,7 @@ func TestPendingHandoffVendorNonceWorksAtCapacity(t *testing.T) {
 	var token string
 	for range maxPendingHandoffs {
 		var err error
-		token, err = s.create(binding, target, centralNonce, now.Add(time.Hour), now)
+		token, err = s.create(binding, target, "vendor", centralNonce, now.Add(time.Hour), now)
 		if err != nil {
 			t.Fatal(err)
 		}

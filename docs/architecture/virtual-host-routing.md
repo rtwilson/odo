@@ -110,7 +110,8 @@ sessions again if their cookies remain in the browser.
 These prefixes prevent sibling hosts from setting central cookies through a
 parent Domain attribute in conforming browsers. They do not isolate vendor
 scripts served on the same central origin through path mode. The Origin checks
-below address sibling origins; cross-host grants/revocation remain pending.
+below address sibling origins. Internal grants now depend on live central-session
+validity; HTTP-level cross-host handoff and vendor cookies remain disabled.
 
 ## Guarded central Origin checks
 
@@ -162,8 +163,74 @@ processing, target fetches, or registry enrollment. A vendor's own `/about`,
 `/login`, or `/api` path belongs to its vendor origin, not Odo's central mux.
 
 The opt-in central host, cookie, and Origin boundaries are implemented.
-Cross-host grant handoff/revocation and path-mode origin separation remain
-release gates. See the proposed [cross-host grant protocol](cross-host-grants.md)
-for the next review checkpoint and prerequisite revocation fixes. The current
-local login continuation is not a cross-host grant. Vendor dispatch, DNS/TLS
-deployment guidance, and vendor compatibility validation remain pending.
+Host admission is therefore already active when the guard is enabled; it admits
+only the configured central host, not registered vendor hosts. The internal
+ticket/grant foundation described below is implemented, but its HTTP/browser
+protocol and path-mode origin separation remain release gates. See the proposed
+[cross-host grant protocol](cross-host-grants.md) for the protocol review. The
+current local login continuation is not a cross-host grant. Vendor dispatch,
+DNS/TLS deployment guidance, and vendor compatibility validation remain pending.
+
+
+## Implemented isolated ticket and grant lifecycle
+
+`internal/api/handoff_security.go` coordinates `pending_handoffs.go` without any
+HTTP registration or runtime attachment to `Server`. It does not set cookies,
+redirect browsers, fetch upstream content, or use forwarded headers. Registry
+lookup never registers a hostname. A validated deployment configuration and an
+exact persistent hostname/label mapping are required. Mappings are retained
+identities, not independently revocable permissions: disabling/removing resource
+policy removes authorization. There is no new hostname-revocation API.
+
+1. Begin verifies the complete central-session credential and the joined current
+   session/user snapshot, then checks the registered host, current resource/method
+   policy and target safety. It creates a pending handoff lasting at most five
+   minutes, bound to the central browser nonce.
+2. Vendor preflight binds one separate vendor browser nonce once to that exact
+   vendor authority. It returns no central credentials or target information.
+3. Central confirmation verifies the original central credential and nonce and
+   rechecks live session, registry, resource and target safety. It atomically
+   replaces prepared state with a 60-second ticket.
+4. Redemption verifies the vendor nonce and exact host and rechecks the parent
+   and current policy. The original approved resource ID must still be selected
+   for the stored target; a different resource cannot replace it silently.
+   Redemption atomically consumes the ticket and creates a host-specific grant.
+5. Grants last at most 30 minutes. Every use checks the live parent session,
+   account eligibility and captured `auth_version`, registry mapping, and current
+   policy/safety for the actual target and method. Grants are host authorization,
+   not independent vendor identities or permission to bypass resource checks.
+
+All lifetimes are capped by the parent session's absolute expiration; parent
+idle expiration also denies use. Logout/session revocation, password changes,
+disablement, locking, deletion and role changes deny subsequent validations,
+regardless of grant TTL. Restoration/re-enablement cannot revive old sessions.
+Invalid parents remove local state; database failures deny access without
+claiming revocation succeeded. Checks do not touch session activity. Database
+snapshots and memory transitions are separate: an operation authorized before a
+concurrent revocation may finish, and subsequent operations must revalidate.
+
+Tokens use 32 cryptographically random bytes; only SHA-256 token/nonce hashes
+are retained. Pending records and tickets bind parent user/session/hash,
+`auth_version`, registry identity, approved resource ID and target. They include
+creation/expiration times. Resource IDs are limited to 128 bytes in this internal
+state; URLs and other fields also have explicit bounds. Grants retain no target,
+resource ID or nonce. The store has at most 256 pending handoffs, 256 tickets,
+4096 grants overall and 64 grants per parent. Expiration cleanup runs on store
+operations. Exhaustion rejects new state without evicting live state or consuming
+a ticket on failed grant allocation. No tokens or patron destinations are logged.
+
+Storage is in process memory, deliberately independent of persistent central
+sessions. Restart loses tickets and grants and requires a new handoff. Multiple
+replicas need an explicit shared-storage or affinity design before deployment.
+No parent-domain authentication cookies, vendor-host cookies, public handoff
+endpoints, routing, response rewriting, resource-schema changes or changes to
+path/query behavior are part of this foundation. Existing connection-time
+validated-IP dialing remains unchanged; future vendor fetches must use it too.
+
+The exact next milestone is a separate review of the HTTP/browser handshake:
+endpoint ownership, host-only nonce-cookie rules, central confirmation CSRF and
+Origin checks, replay/error responses, and privacy-safe redirect/log handling.
+Only after that review should endpoints be wired to these internal components.
+Vendor delivery additionally needs upstream cookie isolation, session activity
+handling, validated-IP fetch integration, redirect/content rewriting, wildcard
+DNS/TLS deployment and end-to-end browser compatibility tests.

@@ -47,6 +47,7 @@ type pendingHandoff struct {
 	centralNonceHash string
 	vendorNonceHash  string
 	target           string
+	resourceID       string
 	created          time.Time
 	expires          time.Time
 	parentExpires    time.Time
@@ -57,6 +58,7 @@ type handoffTicket struct {
 	centralNonceHash string
 	vendorNonceHash  string
 	target           string
+	resourceID       string
 	created          time.Time
 	expires          time.Time
 	parentExpires    time.Time
@@ -83,13 +85,14 @@ func newPendingHandoffs() *pendingHandoffs {
 	return &pendingHandoffs{entries: make(map[string]pendingHandoff), tickets: make(map[string]handoffTicket), grants: make(map[string]handoffGrant)}
 }
 
-func (s *pendingHandoffs) create(binding handoffBinding, target, centralNonce string, parentExpires, now time.Time) (string, error) {
+func (s *pendingHandoffs) create(binding handoffBinding, target, resourceID, centralNonce string, parentExpires, now time.Time) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLocked(now)
 	// Bound every retained input, not only the number of records. Syntax checks
 	// do not establish live session validity, registry membership or SSRF safety.
-	if binding.parentUserID == "" || len(binding.parentUserID) > maxHandoffSessionFieldBytes || binding.parentAuthVersion < 0 ||
+	if resourceID == "" || len(resourceID) > maxHandoffSessionFieldBytes ||
+		binding.parentUserID == "" || len(binding.parentUserID) > maxHandoffSessionFieldBytes || binding.parentAuthVersion < 0 ||
 		binding.parentSessionID == "" || len(binding.parentSessionID) > maxHandoffSessionFieldBytes ||
 		binding.parentSessionHash == "" || len(binding.parentSessionHash) > maxHandoffSessionFieldBytes ||
 		binding.label == "" || len(binding.label) > 63 ||
@@ -124,7 +127,7 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, centralNonce st
 	if parentExpires.Before(expires) {
 		expires = parentExpires
 	}
-	s.entries[key] = pendingHandoff{binding: binding, centralNonceHash: local.HashToken(centralNonce), target: parsed.String(), created: now, expires: expires, parentExpires: parentExpires}
+	s.entries[key] = pendingHandoff{binding: binding, centralNonceHash: local.HashToken(centralNonce), target: parsed.String(), resourceID: resourceID, created: now, expires: expires, parentExpires: parentExpires}
 	return token, nil
 }
 
@@ -206,7 +209,7 @@ func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralN
 	if pending.parentExpires.Before(expires) {
 		expires = pending.parentExpires
 	}
-	s.tickets[ticketKey] = handoffTicket{binding: pending.binding, centralNonceHash: pending.centralNonceHash, vendorNonceHash: pending.vendorNonceHash, target: pending.target, created: now, expires: expires, parentExpires: pending.parentExpires}
+	s.tickets[ticketKey] = handoffTicket{binding: pending.binding, centralNonceHash: pending.centralNonceHash, vendorNonceHash: pending.vendorNonceHash, target: pending.target, resourceID: pending.resourceID, created: now, expires: expires, parentExpires: pending.parentExpires}
 	delete(s.entries, key)
 	return ticket, nil
 }

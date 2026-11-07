@@ -29,7 +29,7 @@ func pendingHandoffFixture(t *testing.T) (handoffBinding, string, string, time.T
 func TestPendingHandoffBindingsAndPrivateStorage(t *testing.T) {
 	binding, target, nonce, now := pendingHandoffFixture(t)
 	s := newPendingHandoffs()
-	token, err := s.create(binding, target, nonce, now.Add(time.Hour), now)
+	token, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestPendingHandoffExactExpiryAndParentLimit(t *testing.T) {
 		t.Run(ttl.String(), func(t *testing.T) {
 			binding, target, nonce, now := pendingHandoffFixture(t)
 			s := newPendingHandoffs()
-			token, err := s.create(binding, target, nonce, now.Add(ttl), now)
+			token, err := s.create(binding, target, "vendor", nonce, now.Add(ttl), now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +110,7 @@ func TestPendingHandoffCapacityAndCleanup(t *testing.T) {
 	s := newPendingHandoffs()
 	var first string
 	for i := 0; i < maxPendingHandoffs; i++ {
-		token, err := s.create(binding, target, nonce, now.Add(time.Hour), now)
+		token, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -118,13 +118,13 @@ func TestPendingHandoffCapacityAndCleanup(t *testing.T) {
 			first = token
 		}
 	}
-	if token, err := s.create(binding, target, nonce, now.Add(time.Hour), now); token != "" || !errors.Is(err, errPendingHandoffsFull) {
+	if token, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now); token != "" || !errors.Is(err, errPendingHandoffsFull) {
 		t.Fatal("capacity not enforced")
 	}
 	if _, ok := s.inspect(first, binding, nonce, now); !ok {
 		t.Fatal("full store evicted live state")
 	}
-	if _, err := s.create(binding, target, nonce, now.Add(time.Hour), now.Add(pendingHandoffTTL)); err != nil {
+	if _, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now.Add(pendingHandoffTTL)); err != nil {
 		t.Fatal("expired entries did not free capacity")
 	}
 	if len(s.entries) != 1 {
@@ -135,7 +135,7 @@ func TestPendingHandoffCapacityAndCleanup(t *testing.T) {
 	if len(s.entries) != 0 {
 		t.Fatal("inspect did not clean unrelated expired state")
 	}
-	if _, err := s.create(binding, target, nonce, now.Add(time.Hour), now); err != nil {
+	if _, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now); err != nil {
 		t.Fatal(err)
 	}
 	s.cleanup(now.Add(pendingHandoffTTL))
@@ -147,19 +147,19 @@ func TestPendingHandoffCapacityAndCleanup(t *testing.T) {
 func TestPendingHandoffParentRemoval(t *testing.T) {
 	binding, target, nonce, now := pendingHandoffFixture(t)
 	s := newPendingHandoffs()
-	first, err := s.create(binding, target, nonce, now.Add(time.Hour), now)
+	first, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	changedHash := binding
 	changedHash.parentSessionHash = local.HashToken("replacement-parent-token")
-	second, err := s.create(changedHash, target, nonce, now.Add(time.Hour), now)
+	second, err := s.create(changedHash, target, "vendor", nonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := binding
 	other.parentSessionID = "other-parent"
-	third, err := s.create(other, target, nonce, now.Add(time.Hour), now)
+	third, err := s.create(other, target, "vendor", nonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestPendingHandoffRejectsInvalidOrUnboundedState(t *testing.T) {
 			s := newPendingHandoffs()
 			b, u, n, e := binding, target, nonce, now.Add(time.Hour)
 			invalid.change(&b, &u, &n, &e)
-			if token, err := s.create(b, u, n, e, now); token != "" || !errors.Is(err, errInvalidPendingHandoff) || len(s.entries) != 0 {
+			if token, err := s.create(b, u, "vendor", n, e, now); token != "" || !errors.Is(err, errInvalidPendingHandoff) || len(s.entries) != 0 {
 				t.Fatal("invalid state was retained")
 			}
 		})
@@ -229,7 +229,7 @@ func TestPendingHandoffConcurrentCapacity(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := s.create(binding, target, nonce, now.Add(time.Hour), now)
+			_, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
 			if err == nil {
 				successes.Add(1)
 			} else if errors.Is(err, errPendingHandoffsFull) {
@@ -248,7 +248,7 @@ func TestPendingHandoffConcurrentCapacity(t *testing.T) {
 func TestPendingHandoffConcurrentInspectionAndCleanup(t *testing.T) {
 	binding, target, nonce, now := pendingHandoffFixture(t)
 	s := newPendingHandoffs()
-	token, err := s.create(binding, target, nonce, now.Add(time.Hour), now)
+	token, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,5 +274,22 @@ func TestPendingHandoffConcurrentInspectionAndCleanup(t *testing.T) {
 	}
 	if _, ok := s.inspect(token, binding, nonce, now); ok || len(s.entries) != 0 {
 		t.Fatal("parent cleanup failed during inspection")
+	}
+}
+
+func TestPendingHandoffResourceBindingAndBounds(t *testing.T) {
+	binding, target, nonce, now := pendingHandoffFixture(t)
+	for _, id := range []string{"", strings.Repeat("x", maxHandoffSessionFieldBytes+1)} {
+		if token, err := newPendingHandoffs().create(binding, target, id, nonce, now.Add(time.Hour), now); err == nil || token != "" {
+			t.Fatal("unbounded or absent resource accepted")
+		}
+	}
+	s := newPendingHandoffs()
+	token, err := s.create(binding, target, "approved-resource", nonce, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, ok := s.inspect(token, binding, nonce, now); !ok || pending.resourceID != "approved-resource" {
+		t.Fatal("resource binding missing")
 	}
 }

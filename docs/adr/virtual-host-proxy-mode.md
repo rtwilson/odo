@@ -233,7 +233,10 @@ at most 30 minutes. All lifetimes are capped by the original central session's
 absolute expiration. Records include creation/expiration times, parent user and
 session references, the captured account `auth_version`, and exact registry
 hostname/label and proxy authority. Tokens and browser nonces are stored only as
-SHA-256 hashes. Tickets retain the approved destination only until redemption;
+SHA-256 hashes. Pending handoffs and tickets also bind the selected approved
+resource ID (at most 128 bytes); confirmation and redemption reject a change to
+the resource selected for that same target, even when the replacement permits
+access. Tickets retain the approved destination only until redemption;
 grants retain no destination or browsing history.
 
 The coordinator verifies the complete central token before beginning or

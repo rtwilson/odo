@@ -232,3 +232,113 @@ func TestHandoffSecurityConfirmationRechecksPolicy(t *testing.T) {
 		t.Fatal("denied confirmation created ticket")
 	}
 }
+
+func TestHandoffSecurityKeepsOriginalResource(t *testing.T) {
+	for _, phase := range []string{"confirmation", "redemption"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newSecurityFixture(t)
+			var token string
+			var err error
+			if phase == "redemption" {
+				token = f.ticket(t)
+			} else {
+				token, err = f.h.begin(context.Background(), f.central, f.authority, f.target, f.nonce, f.now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = f.h.preflight(token, f.authority, f.vendor, f.now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if deleted, err := f.h.server.store.DeleteResource("vendor"); err != nil || !deleted {
+				t.Fatalf("remove original resource: %v", err)
+			}
+			if err := f.h.server.store.UpsertResource(resources.Resource{ID: "replacement", Name: "Replacement", Domains: []resources.DomainRule{{Host: "vendor.example"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if target, result := f.h.server.proxyTarget(context.Background(), f.target); target == nil || !result.Allowed || result.ResourceID != "replacement" {
+				t.Fatal("replacement must independently authorize the same target")
+			}
+			if phase == "confirmation" {
+				if ticket, err := f.h.confirm(context.Background(), token, f.central, f.authority, f.nonce, f.now); err == nil || ticket != "" {
+					t.Fatal("pending handoff changed resources")
+				}
+			} else {
+				if grant, target, err := f.h.redeem(context.Background(), token, f.authority, f.vendor, f.now); err == nil || grant != "" || target != "" {
+					t.Fatal("ticket changed resources")
+				}
+			}
+			if len(f.h.state.grants) != 0 {
+				t.Fatal("denied resource replacement created grant")
+			}
+		})
+	}
+}
+
+func TestHandoffSecurityIsolationBetweenRegisteredVendors(t *testing.T) {
+	f := newSecurityFixture(t)
+	other, err := f.h.server.store.RegisterProxyHostname("other.example", "odo.example", "proxy.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.h.server.store.UpsertResource(resources.Resource{ID: "other", Name: "Other", Domains: []resources.DomainRule{{Host: "other.example"}}}); err != nil {
+		t.Fatal(err)
+	}
+	authority := other.Label + ".proxy.example"
+	ticket := f.ticket(t)
+	if grant, target, err := f.h.redeem(context.Background(), ticket, authority, f.vendor, f.now); err == nil || grant != "" || target != "" {
+		t.Fatal("ticket accepted by another registered vendor")
+	}
+	grant, _, err := f.h.redeem(context.Background(), ticket, f.authority, f.vendor, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.h.validateGrant(context.Background(), grant, authority, "https://other.example/", "GET", f.now); err == nil {
+		t.Fatal("grant accepted by another registered vendor")
+	}
+	if err := f.h.validateGrant(context.Background(), grant, f.authority, f.target, "GET", f.now); err != nil {
+		t.Fatalf("wrong host invalidated legitimate grant: %v", err)
+	}
+}
+
+func TestHandoffSecurityRejectsExpiredParentAtRedemption(t *testing.T) {
+	for _, column := range []string{"expires_at", "last_seen_at"} {
+		t.Run(column, func(t *testing.T) {
+			f := newSecurityFixture(t)
+			ticket := f.ticket(t)
+			stamp := f.now.Add(-sessionIdleTimeout() - time.Minute).Format(time.RFC3339)
+			// column is fixed by this test, not request input.
+			if _, err := f.control.Exec("UPDATE sessions SET "+column+"=? WHERE id=?", stamp, local.SessionIDFromToken(f.central)); err != nil {
+				t.Fatal(err)
+			}
+			if grant, target, err := f.h.redeem(context.Background(), ticket, f.authority, f.vendor, f.now); err == nil || grant != "" || target != "" {
+				t.Fatal("expired parent redeemed ticket")
+			}
+		})
+	}
+}
+
+func TestHandoffSecurityManipulatedTokensAndRestart(t *testing.T) {
+	f := newSecurityFixture(t)
+	ticket := f.ticket(t)
+	replacement, _ := local.NewToken("", 32)
+	for _, token := range []string{"", "malformed", ticket + "=", replacement} {
+		if grant, target, err := f.h.redeem(context.Background(), token, f.authority, f.vendor, f.now); err == nil || grant != "" || target != "" {
+			t.Fatal("manipulated ticket redeemed")
+		}
+	}
+	if _, _, err := f.h.redeem(context.Background(), ticket, f.authority, replacement, f.now); err == nil {
+		t.Fatal("wrong browser nonce redeemed ticket")
+	}
+	restarted := &handoffSecurity{server: f.h.server, config: f.h.config, state: newPendingHandoffs()}
+	if _, _, err := restarted.redeem(context.Background(), ticket, f.authority, f.vendor, f.now); err == nil {
+		t.Fatal("restart recovered ticket")
+	}
+	grant, _, err := f.h.redeem(context.Background(), ticket, f.authority, f.vendor, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.validateGrant(context.Background(), grant, f.authority, f.target, "GET", f.now); err == nil {
+		t.Fatal("restart recovered grant")
+	}
+}
