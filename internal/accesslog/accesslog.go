@@ -25,22 +25,23 @@ const (
 )
 
 type Metadata struct {
-	RequestID            string
-	Route                string
-	UserID               string
-	SessionID            string
-	TargetHost           string
-	ResourceID           string
-	RuleHost             string
-	RuleMatch            string
-	Decision             string
-	DenialReason         string
-	NextPath             string
-	PathKind             string
-	UpstreamStatus       int
-	RateLimited          bool
-	Recovered            bool
-	AnonymousRuleMatched *bool
+	SuppressBrowserHeaders bool // Sensitive controls must not log raw Referer/User-Agent.
+	RequestID              string
+	Route                  string
+	UserID                 string
+	SessionID              string
+	TargetHost             string
+	ResourceID             string
+	RuleHost               string
+	RuleMatch              string
+	Decision               string
+	DenialReason           string
+	NextPath               string
+	PathKind               string
+	UpstreamStatus         int
+	RateLimited            bool
+	Recovered              bool
+	AnonymousRuleMatched   *bool
 }
 
 type Logger struct {
@@ -214,7 +215,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		Recovered:            metadata.Recovered,
 		AnonymousRuleMatched: metadata.AnonymousRuleMatched,
 	}
-	if l.format == FormatCombined || l.format == FormatJSON {
+	if !metadata.SuppressBrowserHeaders && (l.format == FormatCombined || l.format == FormatJSON) {
 		e.UserAgent = r.UserAgent()
 		e.Referer = r.Referer()
 	}
