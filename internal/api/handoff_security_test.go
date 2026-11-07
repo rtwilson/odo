@@ -47,13 +47,14 @@ func (f securityFixture) ticket(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = f.h.preflight(pending, f.authority, f.vendor, f.now); err != nil {
+	proof, err := f.h.preflight(pending, f.authority, f.vendor, f.now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.h.confirm(context.Background(), pending, "wrong-token", f.authority, f.nonce, f.now); err == nil {
+	if _, err = f.h.confirm(context.Background(), pending, "wrong-token", f.authority, f.nonce, proof, f.now); err == nil {
 		t.Fatal("wrong central credential confirmed")
 	}
-	ticket, err := f.h.confirm(context.Background(), pending, f.central, f.authority, f.nonce, f.now)
+	ticket, err := f.h.confirm(context.Background(), pending, f.central, f.authority, f.nonce, proof, f.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,13 +220,14 @@ func TestHandoffSecurityConfirmationRechecksPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.h.preflight(pending, f.authority, f.vendor, f.now); err != nil {
+	proof, err := f.h.preflight(pending, f.authority, f.vendor, f.now)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.h.server.store.UpsertResource(resources.Resource{ID: "vendor", Name: "Vendor", Status: "disabled", Domains: []resources.DomainRule{{Host: "vendor.example"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if token, err := f.h.confirm(context.Background(), pending, f.central, f.authority, f.nonce, f.now); err == nil || token != "" {
+	if token, err := f.h.confirm(context.Background(), pending, f.central, f.authority, f.nonce, proof, f.now); err == nil || token != "" {
 		t.Fatal("changed policy confirmed")
 	}
 	if len(f.h.state.tickets) != 0 {
@@ -237,7 +239,7 @@ func TestHandoffSecurityKeepsOriginalResource(t *testing.T) {
 	for _, phase := range []string{"confirmation", "redemption"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newSecurityFixture(t)
-			var token string
+			var token, proof string
 			var err error
 			if phase == "redemption" {
 				token = f.ticket(t)
@@ -246,7 +248,7 @@ func TestHandoffSecurityKeepsOriginalResource(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err = f.h.preflight(token, f.authority, f.vendor, f.now); err != nil {
+				if proof, err = f.h.preflight(token, f.authority, f.vendor, f.now); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -260,7 +262,7 @@ func TestHandoffSecurityKeepsOriginalResource(t *testing.T) {
 				t.Fatal("replacement must independently authorize the same target")
 			}
 			if phase == "confirmation" {
-				if ticket, err := f.h.confirm(context.Background(), token, f.central, f.authority, f.nonce, f.now); err == nil || ticket != "" {
+				if ticket, err := f.h.confirm(context.Background(), token, f.central, f.authority, f.nonce, proof, f.now); err == nil || ticket != "" {
 					t.Fatal("pending handoff changed resources")
 				}
 			} else {

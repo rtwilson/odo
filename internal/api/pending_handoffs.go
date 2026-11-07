@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"errors"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 const (
 	pendingHandoffTTL           = 5 * time.Minute
+	returnProofTTL              = time.Minute
 	maxPendingHandoffs          = 256
 	handoffTicketTTL            = time.Minute
 	maxHandoffTickets           = 256
@@ -43,14 +45,16 @@ type handoffBinding struct {
 }
 
 type pendingHandoff struct {
-	binding          handoffBinding
-	centralNonceHash string
-	vendorNonceHash  string
-	target           string
-	resourceID       string
-	created          time.Time
-	expires          time.Time
-	parentExpires    time.Time
+	returnProofHash    string
+	returnProofExpires time.Time
+	binding            handoffBinding
+	centralNonceHash   string
+	vendorNonceHash    string
+	target             string
+	resourceID         string
+	created            time.Time
+	expires            time.Time
+	parentExpires      time.Time
 }
 
 type handoffTicket struct {
@@ -148,35 +152,55 @@ func (s *pendingHandoffs) inspect(token string, binding handoffBinding, centralN
 	return pending, true
 }
 
-// bindVendorNonce records the first vendor browser nonce after exact host
-// admission/registry lookup by the caller. Vendor preflight does not receive
-// central-session credentials or the central nonce. This operation reveals no
-// target/parent data and is not authorization or ticket issuance.
-func (s *pendingHandoffs) bindVendorNonce(token string, mapping db.ProxyHostname, authority, nonce string, now time.Time) bool {
+// prepare binds the vendor browser nonce once and issues a fresh return proof.
+// Only the caller performing vendor preflight receives the raw proof; inspection
+// cannot recover it. Same-nonce retries replace only this record's proof.
+func (s *pendingHandoffs) prepare(token string, mapping db.ProxyHostname, authority, nonce string, now time.Time) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLocked(now)
 	if !validLaunchToken(token) || !validLaunchToken(nonce) {
-		return false
+		return "", errInvalidPendingHandoff
 	}
 	key := local.HashToken(token)
 	pending, found := s.entries[key]
 	if !found || pending.binding.hostname != mapping.Hostname || pending.binding.label != mapping.Label || pending.binding.proxyAuthority != authority {
-		return false
+		return "", errInvalidPendingHandoff
 	}
 	hash := local.HashToken(nonce)
-	if pending.vendorNonceHash != "" {
-		return pending.vendorNonceHash == hash
+	if pending.vendorNonceHash != "" && pending.vendorNonceHash != hash {
+		return "", errInvalidPendingHandoff
+	}
+	proof, err := local.NewToken("", 32)
+	if err != nil {
+		return "", errors.New("handoff return proof generation failed")
+	}
+	proofHash := local.HashToken(proof)
+	if proofHash == key || proofHash == hash || proofHash == pending.centralNonceHash || proofHash == pending.returnProofHash {
+		return "", errors.New("handoff return proof collision")
+	}
+	expires := now.Add(returnProofTTL)
+	if pending.expires.Before(expires) {
+		expires = pending.expires
 	}
 	pending.vendorNonceHash = hash
+	pending.returnProofHash = proofHash
+	pending.returnProofExpires = expires
 	s.entries[key] = pending
-	return true
+	return proof, nil
+}
+
+// This check is repeated under the store lock at confirmation, so proof rotation
+// between live authorization and the transition cannot authorize an old proof.
+func (p pendingHandoff) acceptsReturnProof(proof string, now time.Time) bool {
+	return validLaunchToken(proof) && now.Before(p.returnProofExpires) &&
+		subtle.ConstantTimeCompare([]byte(p.returnProofHash), []byte(local.HashToken(proof))) == 1
 }
 
 // confirm atomically replaces a prepared handoff with a bounded ticket. The
 // caller must first check live parent/user, registry, method and target safety.
 // Capacity/randomness/collision failure preserves pending state for retry.
-func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralNonce string, now time.Time) (string, error) {
+func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralNonce, proof string, now time.Time) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLocked(now)
@@ -185,7 +209,7 @@ func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralN
 	}
 	key := local.HashToken(token)
 	pending, found := s.entries[key]
-	if !found || pending.binding != binding || pending.centralNonceHash != local.HashToken(centralNonce) || pending.vendorNonceHash == "" {
+	if !found || pending.binding != binding || pending.centralNonceHash != local.HashToken(centralNonce) || pending.vendorNonceHash == "" || !pending.acceptsReturnProof(proof, now) {
 		return "", errInvalidPendingHandoff
 	}
 	if len(s.tickets) >= maxHandoffTickets {

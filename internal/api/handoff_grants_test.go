@@ -24,10 +24,11 @@ func grantTicketFixture(t *testing.T, s *pendingHandoffs, parentID string, now, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.bindVendorNonce(handoff, db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}, binding.proxyAuthority, vendor, now) {
+	proof, err := s.prepare(handoff, db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}, binding.proxyAuthority, vendor, now)
+	if err != nil {
 		t.Fatal("preflight failed")
 	}
-	ticket, err := s.confirm(handoff, binding, central, now)
+	ticket, err := s.confirm(handoff, binding, central, proof, now)
 	if err != nil {
 		t.Fatal(err)
 	}

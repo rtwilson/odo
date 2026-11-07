@@ -239,6 +239,15 @@ the resource selected for that same target, even when the replacement permits
 access. Tickets retain the approved destination only until redemption;
 grants retain no destination or browsing history.
 
+Vendor preparation now issues a separate 32-random-byte return proof, retaining
+only its hash in the pending record. It lasts at most 60 seconds and is capped by
+pending/parent expiry. Same-vendor-nonce retries replace that proof without
+extending the pending deadline. Confirmation requires the proof as well as the
+central session/nonce, and checks it again under the atomic transition lock.
+This prevents confirmation based only on another browser having completed
+preflight. Proofs are not retained in tickets/grants; HTTP cookie, Origin/CSRF and
+redirect checks remain unimplemented prerequisites.
+
 The coordinator verifies the complete central token before beginning or
 confirming a handoff. Vendor operations require their own browser nonce and
 never receive that central token. Issuance, confirmation, redemption, and grant

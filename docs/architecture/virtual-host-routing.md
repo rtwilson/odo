@@ -228,11 +228,13 @@ path/query behavior are part of this foundation. Existing connection-time
 validated-IP dialing remains unchanged; future vendor fetches must use it too.
 
 The [HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
-now specifies endpoint ownership, host-only cookies, an explicit Origin/CSRF-
-protected central confirmation POST and a vendor-return proof. That proof is not
-implemented by the current internal API and must be added and tested before
-HTTP controls are wired. The next small implementation milestone is internal
-return-proof state and two-browser correlation tests, without routes or cookies.
+specifies endpoint ownership, host-only cookies, an explicit Origin/CSRF-
+protected central confirmation POST and a vendor-return proof. Return proofs are
+now implemented internally: one hashed proof per pending record, a 60-second
+maximum capped by pending/parent expiry, same-nonce rotation and mandatory atomic
+confirmation checks. Tests cover two-browser correlation and rotation during
+validation. The next small milestone is central confirmation handling, without
+vendor dispatch; HTTP Origin/CSRF and cookie checks still need implementation.
 Vendor delivery additionally needs upstream cookie isolation, session activity
 handling, validated-IP fetch integration, redirect/content rewriting, wildcard
 DNS/TLS deployment and end-to-end browser compatibility tests.

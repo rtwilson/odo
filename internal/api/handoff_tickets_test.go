@@ -10,7 +10,7 @@ import (
 	"example.org/odo/internal/db"
 )
 
-func preparedTicketFixture(t *testing.T, s *pendingHandoffs, parentID string, parentTTL time.Duration) (pendingHandoff, string, string, string, time.Time) {
+func preparedTicketFixture(t *testing.T, s *pendingHandoffs, parentID string, parentTTL time.Duration) (pendingHandoff, string, string, string, string, time.Time) {
 	t.Helper()
 	binding, target, centralNonce, now := pendingHandoffFixture(t)
 	binding.parentSessionID = parentID
@@ -22,16 +22,17 @@ func preparedTicketFixture(t *testing.T, s *pendingHandoffs, parentID string, pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.bindVendorNonce(token, db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}, binding.proxyAuthority, vendorNonce, now) {
+	proof, err := s.prepare(token, db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}, binding.proxyAuthority, vendorNonce, now)
+	if err != nil {
 		t.Fatal("preflight failed")
 	}
-	return s.entries[local.HashToken(token)], token, centralNonce, vendorNonce, now
+	return s.entries[local.HashToken(token)], token, centralNonce, vendorNonce, proof, now
 }
 
 func TestHandoffTicketAtomicConfirmationAndInspection(t *testing.T) {
 	s := newPendingHandoffs()
-	pending, handoff, centralNonce, vendorNonce, now := preparedTicketFixture(t, s, "parent", time.Hour)
-	token, err := s.confirm(handoff, pending.binding, centralNonce, now)
+	pending, handoff, centralNonce, vendorNonce, proof, now := preparedTicketFixture(t, s, "parent", time.Hour)
+	token, err := s.confirm(handoff, pending.binding, centralNonce, proof, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,11 +49,11 @@ func TestHandoffTicketAtomicConfirmationAndInspection(t *testing.T) {
 	if stored.binding != pending.binding || stored.centralNonceHash != local.HashToken(centralNonce) || stored.vendorNonceHash != local.HashToken(vendorNonce) || stored.target != pending.target || stored.expires != now.Add(handoffTicketTTL) {
 		t.Fatal("ticket lost trusted bindings, target or expiry")
 	}
-	if again, err := s.confirm(handoff, pending.binding, centralNonce, now); again != "" || !errors.Is(err, errInvalidPendingHandoff) {
+	if again, err := s.confirm(handoff, pending.binding, centralNonce, proof, now); again != "" || !errors.Is(err, errInvalidPendingHandoff) {
 		t.Fatal("replayed confirmation minted another ticket")
 	}
 	mapping := db.ProxyHostname{Hostname: pending.binding.hostname, Label: pending.binding.label}
-	if s.bindVendorNonce(handoff, mapping, pending.binding.proxyAuthority, vendorNonce, now) {
+	if _, err := s.prepare(handoff, mapping, pending.binding.proxyAuthority, vendorNonce, now); err == nil {
 		t.Fatal("consumed handoff accepted preparation")
 	}
 	for _, tc := range []struct {
@@ -92,7 +93,8 @@ func TestHandoffTicketConfirmationRequiresOriginalPreparedBinding(t *testing.T) 
 		t.Fatal(err)
 	}
 	before := s.entries[local.HashToken(token)]
-	if ticket, err := s.confirm(token, binding, nonce, now); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) {
+	proof := ""
+	if ticket, err := s.confirm(token, binding, nonce, proof, now); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) {
 		t.Fatal("unprepared handoff confirmed")
 	}
 	if s.entries[local.HashToken(token)] != before || len(s.tickets) != 0 {
@@ -102,7 +104,8 @@ func TestHandoffTicketConfirmationRequiresOriginalPreparedBinding(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.bindVendorNonce(token, db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}, binding.proxyAuthority, vendor, now) {
+	proof, err = s.prepare(token, db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}, binding.proxyAuthority, vendor, now)
+	if err != nil {
 		t.Fatal("preparation failed")
 	}
 	before = s.entries[local.HashToken(token)]
@@ -112,19 +115,19 @@ func TestHandoffTicketConfirmationRequiresOriginalPreparedBinding(t *testing.T) 
 	} {
 		wrong := binding
 		change(&wrong)
-		if ticket, err := s.confirm(token, wrong, nonce, now); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) {
+		if ticket, err := s.confirm(token, wrong, nonce, proof, now); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) {
 			t.Fatal("swapped binding confirmed")
 		}
 	}
 	for _, input := range []struct{ token, nonce string }{{token, vendor}, {token, "malformed"}, {"malformed", nonce}, {vendor, nonce}} {
-		if ticket, err := s.confirm(input.token, binding, input.nonce, now); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) {
+		if ticket, err := s.confirm(input.token, binding, input.nonce, proof, now); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) {
 			t.Fatal("swapped token/nonce confirmed")
 		}
 	}
 	if s.entries[local.HashToken(token)] != before || len(s.tickets) != 0 {
 		t.Fatal("invalid confirmations changed state")
 	}
-	if _, err := s.confirm(token, binding, nonce, now); err != nil {
+	if _, err := s.confirm(token, binding, nonce, proof, now); err != nil {
 		t.Fatal("valid confirmation lost after mismatches")
 	}
 }
@@ -133,8 +136,8 @@ func TestHandoffTicketExpiryAndParentCap(t *testing.T) {
 	for _, parentTTL := range []time.Duration{30 * time.Second, time.Hour} {
 		t.Run(parentTTL.String(), func(t *testing.T) {
 			s := newPendingHandoffs()
-			pending, handoff, central, vendor, now := preparedTicketFixture(t, s, "parent", parentTTL)
-			token, err := s.confirm(handoff, pending.binding, central, now)
+			pending, handoff, central, vendor, proof, now := preparedTicketFixture(t, s, "parent", parentTTL)
+			token, err := s.confirm(handoff, pending.binding, central, proof, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,9 +155,13 @@ func TestHandoffTicketExpiryAndParentCap(t *testing.T) {
 		})
 	}
 	s := newPendingHandoffs()
-	pending, handoff, central, vendor, now := preparedTicketFixture(t, s, "parent", time.Hour)
+	pending, handoff, central, vendor, proof, now := preparedTicketFixture(t, s, "parent", time.Hour)
 	confirmedAt := now.Add(pendingHandoffTTL - time.Nanosecond)
-	ticket, err := s.confirm(handoff, pending.binding, central, confirmedAt)
+	proof, err := s.prepare(handoff, db.ProxyHostname{Hostname: pending.binding.hostname, Label: pending.binding.label}, pending.binding.proxyAuthority, vendor, confirmedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := s.confirm(handoff, pending.binding, central, proof, confirmedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,8 +170,8 @@ func TestHandoffTicketExpiryAndParentCap(t *testing.T) {
 		t.Fatal("ticket TTL incorrectly capped by consumed handoff deadline")
 	}
 	s = newPendingHandoffs()
-	pending, handoff, central, _, now = preparedTicketFixture(t, s, "parent", time.Hour)
-	if ticket, err := s.confirm(handoff, pending.binding, central, now.Add(pendingHandoffTTL)); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) || len(s.entries) != 0 {
+	pending, handoff, central, _, proof, now = preparedTicketFixture(t, s, "parent", time.Hour)
+	if ticket, err := s.confirm(handoff, pending.binding, central, proof, now.Add(pendingHandoffTTL)); ticket != "" || !errors.Is(err, errInvalidPendingHandoff) || len(s.entries) != 0 {
 		t.Fatal("expired handoff confirmed")
 	}
 }
@@ -174,8 +181,8 @@ func TestHandoffTicketCapacityPreservesPendingForRetry(t *testing.T) {
 	var firstTicket, firstVendor string
 	var firstPending pendingHandoff
 	for i := 0; i < maxHandoffTickets; i++ {
-		pending, handoff, central, vendor, now := preparedTicketFixture(t, s, "parent", time.Hour)
-		ticket, err := s.confirm(handoff, pending.binding, central, now)
+		pending, handoff, central, vendor, proof, now := preparedTicketFixture(t, s, "parent", time.Hour)
+		ticket, err := s.confirm(handoff, pending.binding, central, proof, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,8 +190,8 @@ func TestHandoffTicketCapacityPreservesPendingForRetry(t *testing.T) {
 			firstTicket, firstVendor, firstPending = ticket, vendor, pending
 		}
 	}
-	pending, handoff, central, _, now := preparedTicketFixture(t, s, "parent", time.Hour)
-	if ticket, err := s.confirm(handoff, pending.binding, central, now); ticket != "" || !errors.Is(err, errHandoffTicketsFull) {
+	pending, handoff, central, vendor, proof, now := preparedTicketFixture(t, s, "parent", time.Hour)
+	if ticket, err := s.confirm(handoff, pending.binding, central, proof, now); ticket != "" || !errors.Is(err, errHandoffTicketsFull) {
 		t.Fatal("ticket capacity not enforced")
 	}
 	if len(s.tickets) != maxHandoffTickets || len(s.entries) != 1 || s.entries[local.HashToken(handoff)] != pending {
@@ -194,10 +201,14 @@ func TestHandoffTicketCapacityPreservesPendingForRetry(t *testing.T) {
 	if _, ok := s.inspectTicket(firstTicket, mapping, firstPending.binding.proxyAuthority, firstVendor, now); !ok {
 		t.Fatal("capacity failure evicted live ticket")
 	}
-	if _, err := s.confirm("malformed", pending.binding, central, now); !errors.Is(err, errInvalidPendingHandoff) {
+	if _, err := s.confirm("malformed", pending.binding, central, proof, now); !errors.Is(err, errInvalidPendingHandoff) {
 		t.Fatal("full store changed invalid-state response")
 	}
-	if _, err := s.confirm(handoff, pending.binding, central, now.Add(handoffTicketTTL)); err != nil {
+	proof, err := s.prepare(handoff, db.ProxyHostname{Hostname: pending.binding.hostname, Label: pending.binding.label}, pending.binding.proxyAuthority, vendor, now.Add(handoffTicketTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirm(handoff, pending.binding, central, proof, now.Add(handoffTicketTTL)); err != nil {
 		t.Fatal("could not retry after expired tickets freed capacity")
 	}
 	if len(s.entries) != 0 || len(s.tickets) != 1 {
@@ -207,13 +218,13 @@ func TestHandoffTicketCapacityPreservesPendingForRetry(t *testing.T) {
 
 func TestHandoffTicketParentCleanup(t *testing.T) {
 	s := newPendingHandoffs()
-	pending, handoff, central, _, now := preparedTicketFixture(t, s, "parent", time.Hour)
-	if _, err := s.confirm(handoff, pending.binding, central, now); err != nil {
+	pending, handoff, central, _, proof, now := preparedTicketFixture(t, s, "parent", time.Hour)
+	if _, err := s.confirm(handoff, pending.binding, central, proof, now); err != nil {
 		t.Fatal(err)
 	}
 	preparedTicketFixture(t, s, "parent", time.Hour)
-	other, otherHandoff, otherCentral, otherVendor, _ := preparedTicketFixture(t, s, "other-parent", time.Hour)
-	otherTicket, err := s.confirm(otherHandoff, other.binding, otherCentral, now)
+	other, otherHandoff, otherCentral, otherVendor, otherProof, _ := preparedTicketFixture(t, s, "other-parent", time.Hour)
+	otherTicket, err := s.confirm(otherHandoff, other.binding, otherCentral, otherProof, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +243,7 @@ func TestHandoffTicketParentCleanup(t *testing.T) {
 
 func TestHandoffTicketConcurrentConfirmation(t *testing.T) {
 	s := newPendingHandoffs()
-	pending, handoff, central, _, now := preparedTicketFixture(t, s, "parent", time.Hour)
+	pending, handoff, central, _, proof, now := preparedTicketFixture(t, s, "parent", time.Hour)
 	const attempts = 16
 	results := make(chan error, attempts)
 	start := make(chan struct{})
@@ -242,7 +253,7 @@ func TestHandoffTicketConcurrentConfirmation(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := s.confirm(handoff, pending.binding, central, now)
+			_, err := s.confirm(handoff, pending.binding, central, proof, now)
 			results <- err
 		}()
 	}

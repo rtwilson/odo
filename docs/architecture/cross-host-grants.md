@@ -1,7 +1,7 @@
 # Cross-host grants and revocation
 
 Status: HTTP/browser protocol proposed for review, 2026-11-06. Bounded pending
-state, tickets, grants and live session/registry/resource/safety validation are
+state, return proofs, tickets, grants and live session/registry/resource/safety validation are
 implemented internally. No handoff endpoints, vendor browser cookies or vendor
 content delivery are enabled. The current local `/launch/continue` is not a host
 grant. See the [state foundation](pending-handoff-state.md) and
@@ -71,9 +71,9 @@ not reinterpret an old handoff. Registry membership never grants access.
 ## HTTP/browser protocol review checkpoint
 
 This revision replaces automatic GET confirmation with a central confirmation
-page followed by an explicit POST. It also requires a new vendor-return proof
-before exposing any HTTP handshake. These are protocol requirements for future
-implementation, not properties of the current internal `confirm` API.
+page followed by an explicit POST. Vendor-return proofs are now mandatory in
+the internal `prepare`/`confirm` operations. The HTTP methods, Origin/CSRF checks
+and cookie behavior below remain requirements for future handlers.
 
 The nonce-only proposal had an incomplete browser correlation: an attacker
 could initiate a handoff in their central session, cause a second browser to
@@ -179,8 +179,9 @@ sequenceDiagram
    the proof and atomically remove it with pending state only when the ticket
    insertion succeeds. Capacity/randomness failure preserves the current live
    pending state/proof for retry; neither expiry is extended. Competing POSTs
-   produce at most one ticket. Proof expiry requires a fresh launch, rather than
-   silently confirming without it.
+   produce at most one ticket. Expired proof confirmation fails without silently refreshing it. Browser
+   recovery starts a fresh launch; an explicit same-nonce preflight retry can
+   replace the proof only within the original pending/parent deadlines.
 7. Vendor redemption uses the exact host and its nonce, without inspecting
    central session/CSRF cookies or management API keys. Recheck the trusted
    parent's live database state and original resource/target safety. Atomically
@@ -267,7 +268,7 @@ and trusted bindings in server-side records, alongside the short-lived target.
 | State | Lifetime and capacity |
 | --- | --- |
 | Pending authenticated handoffs | Five minutes; 256 globally |
-| Vendor-return proof (not implemented) | At most 60 seconds, capped by pending/parent expiry; one hash per pending record |
+| Vendor-return proof (implemented internally) | At most 60 seconds, capped by pending/parent expiry; one hash per pending record |
 | Redemption tickets | 60 seconds; 256 globally |
 | Vendor grants | 30 minutes, capped by parent absolute expiry; 4,096 globally and 64 per parent session |
 
@@ -359,12 +360,12 @@ requirement, cookie table, failure mapping and privacy rules above are concrete
 review choices. No endpoints or delivery are authorized by this document.
 Existing internal state already enforces parent/user/version, exact registry
 host, original ticket resource/target, lifetime/capacity and atomic transitions;
-it does not yet implement return proofs or the HTTP checks described here.
+it now also enforces return proofs. It does not implement the HTTP checks
+described here.
 
-The next small implementation batch is **internal vendor-return-proof state and
-validation, without routes or cookies**. Extend the existing pending record
-rather than add a separate store. Add focused two-browser attack tests before
-changing the HTTP boundary:
+The **internal vendor-return-proof state and validation** batch is implemented
+in the existing pending record, without a separate store, routes or cookies.
+Regression tests cover these conditions:
 
 - Attacker begins in session A; browser B prepares using nonce B. Session A
   cannot confirm with just the handoff ID and its own CSRF/central nonce, or a
@@ -380,8 +381,9 @@ changing the HTTP boundary:
   and ticket-capacity failure preserve live retry state without false success.
   Parent revocation and restart invalidate the proof with its pending record.
 
-After that batch passes review, implement central confirmation rendering/POST
-and separately reviewed vendor control dispatch behind a disabled-by-default
+The next reviewable implementation batch is central confirmation rendering/POST
+without vendor dispatch; then add separately reviewed vendor control dispatch
+behind a disabled-by-default
 handoff-only gate. Do not expose controls to real patrons while the central
 origin still serves untrusted vendor response bodies through path mode; the
 host guard alone does not remove that existing origin sharing. Test exact

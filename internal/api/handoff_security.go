@@ -107,24 +107,21 @@ func (h *handoffSecurity) begin(ctx context.Context, centralToken, authority, ta
 	return h.state.create(binding, target, resourceID, centralNonce, expires, now)
 }
 
-func (h *handoffSecurity) preflight(token, authority, nonce string, now time.Time) error {
+func (h *handoffSecurity) preflight(token, authority, nonce string, now time.Time) (string, error) {
 	mapping, err := h.mapping(authority)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if !h.state.bindVendorNonce(token, mapping, authority, nonce, now) {
-		return errHandoffDenied
-	}
-	return nil
+	return h.state.prepare(token, mapping, authority, nonce, now)
 }
 
-func (h *handoffSecurity) confirm(ctx context.Context, token, centralToken, authority, nonce string, now time.Time) (string, error) {
+func (h *handoffSecurity) confirm(ctx context.Context, token, centralToken, authority, nonce, proof string, now time.Time) (string, error) {
 	// Inspection uses a copied record, but confirmation still checks the complete
 	// immutable binding under the state lock. No separate consume operation.
 	h.state.mu.Lock()
 	pending, found := h.state.entries[local.HashToken(token)]
 	h.state.mu.Unlock()
-	if !found || !validLaunchToken(token) || local.SessionIDFromToken(centralToken) != pending.binding.parentSessionID ||
+	if !found || !validLaunchToken(token) || !pending.acceptsReturnProof(proof, now) || local.SessionIDFromToken(centralToken) != pending.binding.parentSessionID ||
 		subtle.ConstantTimeCompare([]byte(h.server.browserSessionHash(centralToken)), []byte(pending.binding.parentSessionHash)) != 1 || authority != pending.binding.proxyAuthority {
 		return "", errHandoffDenied
 	}
@@ -134,7 +131,7 @@ func (h *handoffSecurity) confirm(ctx context.Context, token, centralToken, auth
 	if _, err := h.target(ctx, pending.binding, pending.target, "GET", pending.resourceID); err != nil {
 		return "", err
 	}
-	return h.state.confirm(token, pending.binding, nonce, now)
+	return h.state.confirm(token, pending.binding, nonce, proof, now)
 }
 
 func (h *handoffSecurity) redeem(ctx context.Context, token, authority, nonce string, now time.Time) (string, string, error) {

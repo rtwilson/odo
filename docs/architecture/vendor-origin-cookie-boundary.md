@@ -160,9 +160,9 @@ vendor preflight nonce binding is implemented in that store too. The store also
 implements bounded ticket creation and atomic
 confirmation. Bounded grants and atomic redemption are implemented as state
 operations too. Live parent/user/authentication-version, registry, resource and
-safety validation is now implemented by the internal coordinator. The next batch
-is the vendor-return proof specified in the revised [HTTP/browser protocol
-review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint), followed by
-separately reviewed HTTP controls. Routes, cookies, jars and vendor dispatch
+safety validation and vendor-return proofs are now implemented internally.
+The next batch is the central confirmation boundary specified in the revised
+[HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint),
+followed by separately reviewed vendor controls. Routes, cookies, jars and vendor dispatch
 remain unwired. Origin migration and jar enforcement remain mandatory gates
 before delivery is enabled.

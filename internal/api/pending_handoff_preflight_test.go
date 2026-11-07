@@ -26,27 +26,38 @@ func TestPendingHandoffVendorNonceSingleAssignment(t *testing.T) {
 	if before.vendorNonceHash != "" {
 		t.Fatal("new handoff already prepared")
 	}
-	if !s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now) {
+	proof, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now)
+	if err != nil {
 		t.Fatal("first binding rejected")
 	}
 	prepared := s.entries[local.HashToken(token)]
 	expected := before
 	expected.vendorNonceHash = local.HashToken(nonce)
+	expected.returnProofHash = local.HashToken(proof)
+	expected.returnProofExpires = now.Add(returnProofTTL)
 	if prepared != expected || prepared.vendorNonceHash == nonce {
 		t.Fatal("binding retained plaintext nonce or changed unrelated state")
 	}
-	if !s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now.Add(time.Minute)) {
-		t.Fatal("idempotent preparation rejected")
+	retryAt := now.Add(time.Second)
+	nextProof, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, retryAt)
+	if err != nil || nextProof == proof {
+		t.Fatal("same-nonce retry did not replace proof")
+	}
+	expected.returnProofHash = local.HashToken(nextProof)
+	expected.returnProofExpires = retryAt.Add(returnProofTTL)
+	prepared = s.entries[local.HashToken(token)]
+	if prepared != expected {
+		t.Fatal("proof retry changed unrelated state")
 	}
 	otherNonce, err := local.NewToken("", 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.bindVendorNonce(token, mapping, binding.proxyAuthority, otherNonce, now.Add(time.Minute)) {
+	if _, err := s.prepare(token, mapping, binding.proxyAuthority, otherNonce, now.Add(time.Minute)); err == nil {
 		t.Fatal("replaced original vendor nonce")
 	}
 	if s.entries[local.HashToken(token)] != prepared {
-		t.Fatal("retry/replacement changed pending state or expiry")
+		t.Fatal("different nonce changed pending state or expiry")
 	}
 	if got, ok := s.inspect(token, binding, centralNonce, now); !ok || got.vendorNonceHash != local.HashToken(nonce) || got.target != target {
 		t.Fatal("central inspection lost prepared state")
@@ -87,7 +98,7 @@ func TestPendingHandoffVendorNonceMismatchDoesNotBind(t *testing.T) {
 		{"unknown token", unknown, binding.proxyAuthority, nonce, mapping},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if s.bindVendorNonce(tc.token, tc.mapping, tc.authority, tc.nonce, now) {
+			if _, err := s.prepare(tc.token, tc.mapping, tc.authority, tc.nonce, now); err == nil {
 				t.Fatal("invalid preparation succeeded")
 			}
 			if len(s.entries) != 1 || s.entries[local.HashToken(token)] != before {
@@ -95,7 +106,7 @@ func TestPendingHandoffVendorNonceMismatchDoesNotBind(t *testing.T) {
 			}
 		})
 	}
-	if !s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now) {
+	if _, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now); err != nil {
 		t.Fatal("mismatches consumed valid handoff")
 	}
 }
@@ -114,10 +125,10 @@ func TestPendingHandoffVendorNonceExpiryAndRemoval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now.Add(ttl-time.Nanosecond)) {
+			if _, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now.Add(ttl-time.Nanosecond)); err != nil {
 				t.Fatal("expired early")
 			}
-			if s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now.Add(ttl)) || len(s.entries) != 0 {
+			if _, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now.Add(ttl)); err == nil || len(s.entries) != 0 {
 				t.Fatal("preparation extended expiry or retained expired state")
 			}
 			token, err = s.create(binding, target, "vendor", centralNonce, now.Add(time.Hour), now)
@@ -125,7 +136,7 @@ func TestPendingHandoffVendorNonceExpiryAndRemoval(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.removeParent(binding.parentSessionID, now)
-			if s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now) || len(s.entries) != 0 {
+			if _, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now); err == nil || len(s.entries) != 0 {
 				t.Fatal("preparation resurrected removed parent state")
 			}
 		})
@@ -162,7 +173,7 @@ func TestPendingHandoffVendorNonceConcurrentBinding(t *testing.T) {
 				go func() {
 					defer wg.Done()
 					<-start
-					if s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now) {
+					if _, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now); err == nil {
 						successes.Add(1)
 					}
 				}()
@@ -206,7 +217,7 @@ func TestPendingHandoffVendorNonceWorksAtCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	mapping := db.ProxyHostname{Hostname: binding.hostname, Label: binding.label}
-	if !s.bindVendorNonce(token, mapping, binding.proxyAuthority, nonce, now) || len(s.entries) != maxPendingHandoffs {
+	if _, err := s.prepare(token, mapping, binding.proxyAuthority, nonce, now); err != nil || len(s.entries) != maxPendingHandoffs {
 		t.Fatal("binding consumed capacity or evicted live state")
 	}
 }

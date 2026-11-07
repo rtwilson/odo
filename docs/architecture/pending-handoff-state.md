@@ -4,8 +4,8 @@ Implemented: `internal/api/pending_handoffs.go` and its focused tests. This is a
 passive, package-private state store, not connected to `Server`, routes, cookies,
 database operations, DNS, upstream fetching or vendor dispatch. Existing launch
 continuations and path/query behavior are unchanged. Bounded tickets/grants,
-atomic confirmation, and atomic ticket redemption are implemented as state
-operations only. No handoff/grant HTTP behavior or virtual-host delivery is enabled.
+atomic confirmation, vendor-return proofs and atomic ticket redemption are
+implemented as state operations only. No handoff/grant HTTP behavior or virtual-host delivery is enabled.
 
 ## Retained state and bounds
 
@@ -16,6 +16,8 @@ operations only. No handoff/grant HTTP behavior or virtual-host delivery is enab
 - The upstream hostname/registry-label pair and full proxy authority.
 - Hashes of the central browser nonce and, once prepared, the vendor browser
   nonce; no raw nonce is retained.
+- One vendor-return proof hash and deadline after preparation; no raw proof is
+  retained or recoverable through inspection.
 - The approved resource ID, short-lived target, creation time and expiry, held
   only in process memory.
 
@@ -46,40 +48,46 @@ mismatches return an empty result with the same false status. It returns a value
 copy without consuming or extending the record. Failed lookups do not destroy
 another browser's live state. Inspection is not authorization or ticket issuance.
 
-`bindVendorNonce` binds the first vendor nonce under the store's existing mutex.
-It takes the opaque handoff token, a trusted `db.ProxyHostname` identity, the
-admitted full proxy authority, and a canonical vendor nonce. It does not take
-central cookies, the central nonce, or a client-supplied parent-session ID, and
-returns only a boolean, never the target or parent details. The record's exact
-hostname, label and authority must match before anything changes.
+`prepare` takes the opaque handoff token, trusted `db.ProxyHostname` identity,
+admitted full proxy authority and canonical vendor browser nonce. Under the
+store mutex it binds that nonce once and generates a fresh 32-random-byte return
+proof, returning only that raw proof to the preflight caller. It takes no central
+credentials and returns no target or parent details. The record's exact hostname,
+label and authority must match before anything changes.
 
-Only the vendor nonce hash is retained. Repeating the same nonce succeeds
-idempotently; a different nonce cannot replace it. Wrong host/mapping/authority,
-malformed or unknown tokens/nonces, expired records and removed parents all fail
-without modifying another live record. Preparation neither extends expiry nor
-consumes/allocates an entry, so existing entries can prepare at full capacity.
-Expired entries are purged during preparation as on every other store operation.
-There is no endpoint or cookie issuance yet; this is state binding, not a grant.
+Only the nonce/proof hashes are retained. Proof expiry is the earlier of 60
+seconds after preparation and the pending deadline, already capped by parent
+expiry. Repeating preparation with the same nonce replaces the proof hash and
+deadline, invalidating the previous confirmation link; it never extends pending
+or parent expiry. A different nonce cannot replace the binding. Wrong mapping,
+authority, malformed/unknown tokens, expiry and removed parents all fail without
+modifying another live record. Randomness/collision failure preserves the record.
+Preparation allocates no additional map entry and works at pending capacity.
 
-The future vendor handler must admit the exact host and look up its mapping
-before inspecting a nonce cookie or calling this method. It must use that host's
-cookie, not a query-supplied nonce. A stolen handoff ID alone cannot authorize
-central confirmation: that later operation still requires its original central
-browser/session binding and all current authorization checks. However, HTTP
-integration also needs the separately proposed vendor-return proof to prevent
-an initiator from splicing another browser's preflight into their own central
-confirmation; nonce binding alone is not sufficient for that case. Initial preparation
-by a different browser cannot be repaired by replacing its nonce; a fresh launch
-is required. No current handler invokes this behavior.
+A future vendor handler must admit the exact host and look up its mapping before
+reading that host's nonce cookie. Only that preflight response may carry the raw
+proof to the configured central callback. The coordinator's internal `preflight`
+returns it for this purpose; no HTTP handler invokes it yet. Central inspection
+can see a hash but cannot recover the proof. Initial preparation in another
+browser cannot be repaired by replacing its nonce; launch again.
+
+The [HTTP/browser review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
+explains why session/nonce checks alone cannot prevent an initiator from splicing
+another browser's preflight into their own confirmation. The new proof is
+mandatory in both the coordinator and the atomic store transition. It does not
+replace the Origin/CSRF checks required by future HTTP handlers.
 
 `confirm` requires the original handoff token, complete trusted binding, central
-browser nonce, and a nonempty vendor preflight nonce hash. It creates the ticket
-and removes the pending record under the same mutex. The handoff can confirm only
+browser nonce, a nonempty vendor preflight nonce hash, and the matching unexpired
+return proof. Proof comparisons use the hash and constant-time comparison. It creates the ticket
+and removes the pending record, including its proof, under the same mutex. The handoff can confirm only
 once, including under concurrent attempts. Unknown/malformed/expired/unprepared
 or swapped inputs return the same invalid-state error without a ticket or target.
 Valid confirmation at ticket capacity returns a separate capacity error (future
-HTTP 503), preserving the pending record, browser bindings and expiry for retry.
-Token-generation or collision failures also preserve the record. No live state
+HTTP 503), preserving the pending record, proof, browser bindings and expiry for retry.
+Token-generation or collision failures also preserve the record. The proof must
+still be live on retry; confirmation never renews it. Proof fields are not copied
+into ticket or grant state. No live state
 is evicted; expired tickets are removed before testing capacity. Tokens are checked
 for collisions across pending, ticket and grant maps.
 
@@ -145,13 +153,14 @@ registry, original ticket resource/target, method policy and DNS safety. The
 coordinator does not touch session timestamps or cache positive authorization.
 It is deliberately not attached to runtime handlers.
 
-The next internal batch is a fresh, hashed vendor-return proof bound to the
-pending handoff and its vendor nonce. Current `confirm` requires preflight but
-not that proof; it is not ready to expose as an HTTP operation. The revised
+Vendor-return proofs are now implemented and tested internally, including the
+two-browser splice, nonce/proof replacement, exact expiry, capacity retry, parent
+revocation and proof rotation during live validation. The revised
 [cross-host protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
-specifies the two-browser threat, proof lifetime/retry rules and explicit
-Origin/CSRF-protected central confirmation POST. No new store, endpoints,
-cookies or routing are implemented by that proposal.
+specifies the HTTP lifetime/retry rules and explicit Origin/CSRF-protected
+central confirmation POST. The next batch is that central confirmation boundary,
+keeping vendor dispatch and content disabled. Endpoints, cookies and routing
+remain unimplemented; this state change does not approve enabling them.
 
 Memory cleanup does not replace durable revocation. Renewal requires a fresh
 handoff, not inspection or a vendor asset request. Non-consuming inspection is
