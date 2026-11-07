@@ -4,6 +4,10 @@ Status: proposed maintainer review checkpoint. No endpoints, tables, cookies,
 or runtime behavior in this proposal are implemented. Virtual-host routing
 remains disabled. The current local `/launch/continue` is not a host grant.
 
+The [origin and cookie boundary checkpoint](vendor-origin-cookie-boundary.md)
+records concrete first-deployment recommendations and the current jar-model gap.
+It is also proposed; it does not approve or enable vendor traffic.
+
 ## Existing foundations and gaps
 
 `internal/api/launch_handlers.go` validates launch targets and supports local
