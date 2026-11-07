@@ -2,8 +2,9 @@
 
 Status: HTTP/browser protocol proposed for review, 2026-11-06. Bounded pending
 state, return proofs, tickets, grants and live session/registry/resource/safety validation are
-implemented internally. No handoff endpoints, vendor browser cookies or vendor
-content delivery are enabled. The current local `/launch/continue` is not a host
+implemented internally. The central confirmation HTTP handler is implemented
+and tested but unregistered. No public handoff endpoints, vendor browser cookies
+or vendor content delivery are enabled. The current local `/launch/continue` is not a host
 grant. See the [state foundation](pending-handoff-state.md) and
 [routing foundation](virtual-host-routing.md).
 
@@ -72,8 +73,9 @@ not reinterpret an old handoff. Registry membership never grants access.
 
 This revision replaces automatic GET confirmation with a central confirmation
 page followed by an explicit POST. Vendor-return proofs are now mandatory in
-the internal `prepare`/`confirm` operations. The HTTP methods, Origin/CSRF checks
-and cookie behavior below remain requirements for future handlers.
+the internal `prepare`/`confirm` operations. Central confirmation methods,
+Origin/CSRF checks and cookie validation are implemented in an unregistered HTTP
+handler. Vendor controls and cookie issuance remain requirements for later work.
 
 The nonce-only proposal had an incomplete browser correlation: an attacker
 could initiate a handoff in their central session, cause a second browser to
@@ -168,12 +170,13 @@ sequenceDiagram
 5. Central POST confirmation requires exactly the configured central HTTPS
    Origin and a CSRF value derived from the active central session. Reject
    absent, duplicate, null, sibling or malformed Origin. This is a browser
-   session operation with no bearer-key exemption. `origin_guard.go` currently
-   covers login/logout and management APIs, not this proposed path; extending
-   that coverage is mandatory before wiring it. Existing API CSRF enforcement
-   uses a header; this plain HTML form needs an explicit, narrowly scoped hidden
-   form-field comparison against the same session-derived value. Do not put
-   CSRF in URLs or relax the existing management API's header checks.
+   session operation with no bearer-key exemption. The unregistered confirmation
+   handler uses `centralOriginAllowed` directly, before reading credentials, so
+   this protection does not depend on global management-API middleware covering
+   the path. Existing API CSRF enforcement uses a header; confirmation explicitly
+   compares its hidden form field against the same session-derived value. It
+   accepts no header fallback. Do not put CSRF in URLs or relax management API
+   header checks. Future registration must retain this handler-level boundary.
 6. Recheck parent/user/version, registry, original selected resource, method,
    target safety, both nonce bindings, proof hash and all expirations. Compare
    the proof and atomically remove it with pending state only when the ticket
@@ -360,8 +363,11 @@ requirement, cookie table, failure mapping and privacy rules above are concrete
 review choices. No endpoints or delivery are authorized by this document.
 Existing internal state already enforces parent/user/version, exact registry
 host, original ticket resource/target, lifetime/capacity and atomic transitions;
-it now also enforces return proofs. It does not implement the HTTP checks
-described here.
+it now also enforces return proofs. `handoff_confirmation.go` implements the
+central confirmation HTTP boundary, including GET rendering, strict POST
+Origin/CSRF checks, unique prefixed cookie validation and bounded input parsing.
+It is deliberately absent from `Server.Routes`; no runtime flag constructs it.
+It cannot be used through the running application yet.
 
 The **internal vendor-return-proof state and validation** batch is implemented
 in the existing pending record, without a separate store, routes or cookies.
@@ -381,11 +387,21 @@ Regression tests cover these conditions:
   and ticket-capacity failure preserve live retry state without false success.
   Parent revocation and restart invalidate the proof with its pending record.
 
-The next reviewable implementation batch is central confirmation rendering/POST
-without vendor dispatch; then add separately reviewed vendor control dispatch
-behind a disabled-by-default
-handoff-only gate. Do not expose controls to real patrons while the central
-origin still serves untrusted vendor response bodies through path mode; the
+Central confirmation is implemented as a separately constructed, tested handler.
+GET does not consume live state or touch sessions; POST revalidates and checks
+proof expiry again with a fresh clock at the atomic transition. It emits a 303
+only to the stored registered vendor redemption endpoint. It creates no cookies
+or grants and fetches no upstream content. Malformed/duplicate fields, unknown
+parameters, POST query strings, duplicate active cookies, encoded path aliases
+and unsupported methods are rejected. The shared central-authority predicate
+preserves the existing host guard; the confirmation handler applies it even
+when constructed independently of the running mux.
+
+The next small batch is unregistered vendor prepare/redemption HTTP handlers,
+with exact-host controls, nonce/grant cookie policy, fixed redirects and an inert
+completion page while ordinary vendor content remains rejected. Runtime wiring
+needs a separately reviewed disabled-by-default handoff-only gate. Do not expose
+controls to real patrons while the central origin still serves untrusted vendor response bodies through path mode; the
 host guard alone does not remove that existing origin sharing. Test exact
 methods, Origin/CSRF, cookie attributes and duplicate
 cookies, reserved paths, `//` destination paths, fixed redirects, missing cookies,

@@ -245,8 +245,11 @@ pending/parent expiry. Same-vendor-nonce retries replace that proof without
 extending the pending deadline. Confirmation requires the proof as well as the
 central session/nonce, and checks it again under the atomic transition lock.
 This prevents confirmation based only on another browser having completed
-preflight. Proofs are not retained in tickets/grants; HTTP cookie, Origin/CSRF and
-redirect checks remain unimplemented prerequisites.
+preflight. Proofs are not retained in tickets/grants. Central confirmation now has
+an unregistered HTTP handler with exact host/Origin checks, unique prefixed
+cookie validation, form CSRF, bounded parsing and a fixed registered-vendor
+redirect. It is not connected to `Server.Routes` or launch. Vendor control
+handlers, cookie issuance and runtime dispatch remain unimplemented.
 
 The coordinator verifies the complete central token before beginning or
 confirming a handoff. Vendor operations require their own browser nonce and

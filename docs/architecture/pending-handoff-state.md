@@ -158,9 +158,13 @@ two-browser splice, nonce/proof replacement, exact expiry, capacity retry, paren
 revocation and proof rotation during live validation. The revised
 [cross-host protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
 specifies the HTTP lifetime/retry rules and explicit Origin/CSRF-protected
-central confirmation POST. The next batch is that central confirmation boundary,
-keeping vendor dispatch and content disabled. Endpoints, cookies and routing
-remain unimplemented; this state change does not approve enabling them.
+central confirmation POST. `handoff_confirmation.go` now implements that HTTP
+boundary without registering it in `Server.Routes`. It checks unique prefixed
+cookies, exact central authority/Origin, session-derived form CSRF and strict
+bounded inputs. GET does not consume live state; POST rechecks live authorization
+and current proof at the atomic transition. Vendor endpoints, cookie issuance
+and runtime routing remain unimplemented. The next batch is unregistered vendor
+controls, keeping content delivery disabled.
 
 Memory cleanup does not replace durable revocation. Renewal requires a fresh
 handoff, not inspection or a vendor asset request. Non-consuming inspection is

@@ -161,8 +161,10 @@ implements bounded ticket creation and atomic
 confirmation. Bounded grants and atomic redemption are implemented as state
 operations too. Live parent/user/authentication-version, registry, resource and
 safety validation and vendor-return proofs are now implemented internally.
-The next batch is the central confirmation boundary specified in the revised
-[HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint),
-followed by separately reviewed vendor controls. Routes, cookies, jars and vendor dispatch
+The central confirmation boundary specified in the revised
+[HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
+is implemented and tested as an unregistered handler. The next batch is separately
+constructed vendor controls; runtime wiring and cookie issuance still need
+review and tests. Routes, cookies, jars and vendor dispatch
 remain unwired. Origin migration and jar enforcement remain mandatory gates
 before delivery is enabled.

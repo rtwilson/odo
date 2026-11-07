@@ -233,8 +233,40 @@ protected central confirmation POST and a vendor-return proof. Return proofs are
 now implemented internally: one hashed proof per pending record, a 60-second
 maximum capped by pending/parent expiry, same-nonce rotation and mandatory atomic
 confirmation checks. Tests cover two-browser correlation and rotation during
-validation. The next small milestone is central confirmation handling, without
-vendor dispatch; HTTP Origin/CSRF and cookie checks still need implementation.
+validation. Central confirmation handling is now implemented as described
+below; vendor dispatch and cookie issuance remain absent.
 Vendor delivery additionally needs upstream cookie isolation, session activity
 handling, validated-IP fetch integration, redirect/content rewriting, wildcard
 DNS/TLS deployment and end-to-end browser compatibility tests.
+
+
+## Unregistered central confirmation HTTP handler
+
+`handoff_confirmation.go:centralConfirmationHandler` is a testable HTTP boundary
+for `/launch/handoff/confirm`. It is not registered by `Server.Routes`, no runtime
+switch constructs it, and launch still follows existing path/query behavior.
+
+The handler shares the current host guard's central/absolute-authority check and
+ignores forwarded hosts. GET requires the bound session, central nonce and return
+proof, checks live authorization, and renders a plain escaped form without
+consuming live state or touching session timestamps. POST requires exact central
+Origin and the session-derived CSRF form value, then rechecks current parent,
+registry, original resource, target safety and proof. The atomic transition uses
+a fresh timestamp and rejects a proof that expired or rotated during validation.
+A successful POST returns 303 to the exact bound vendor redemption endpoint;
+that endpoint is still unavailable on the running server.
+
+Only GET and POST are accepted; HEAD returns 405 without state changes. Active
+session/nonce cookies must be unique and prefixed, with no legacy fallback.
+Inputs permit only the documented fields, reject duplicate keys and POST query
+strings, and cap form bodies at 4 KiB. POST accepts URL-encoded UTF-8 forms only;
+missing/bad CSRF is 403 and receives no header-based fallback. No cookies are
+issued or cleared. Controls use fixed log labels, no-store/no-referrer, a
+script-free CSP and frame denial on successes and failures. Generic failures do
+not log or expose proofs, tokens or targets.
+
+The next milestone is separately constructed vendor prepare/redemption handlers
+with cookie, exact-host and inert-completion tests. Registering any handshake
+controls, enabling the launch flow and relaxing vendor host admission remain a
+later reviewed gate. Central-origin migration and all vendor delivery gates
+remain mandatory before patron use.

@@ -47,19 +47,25 @@ func (s *Server) guardHost(next http.Handler) http.Handler {
 			reject(http.StatusServiceUnavailable, "host guard configuration is invalid")
 			return
 		}
-		central, _, err := config.ClassifyAuthority(r.Host)
-		if err != nil || !central || r.URL == nil || r.URL.User != nil || r.URL.Opaque != "" {
+		if !requestOnCentralHost(r, config) {
 			reject(http.StatusMisdirectedRequest, "request authority is not admitted")
 			return
-		}
-		if r.URL.Host != "" || r.URL.Scheme != "" {
-			absoluteCentral, _, err := config.ClassifyAuthority(r.URL.Host)
-			if err != nil || !absoluteCentral || r.URL.Scheme != "https" {
-				reject(http.StatusMisdirectedRequest, "request authority is not admitted")
-				return
-			}
 		}
 		// Forwarded and X-Forwarded-Host never influence this decision.
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Shared by the current host guard and the unregistered confirmation handler.
+// Forwarded headers never supply authority; absolute-form requests must agree.
+func requestOnCentralHost(r *http.Request, config proxy.HostRoutingConfig) bool {
+	central, _, err := config.ClassifyAuthority(r.Host)
+	if err != nil || !central || r.URL == nil || r.URL.User != nil || r.URL.Opaque != "" {
+		return false
+	}
+	if r.URL.Host != "" || r.URL.Scheme != "" {
+		absoluteCentral, _, err := config.ClassifyAuthority(r.URL.Host)
+		return err == nil && absoluteCentral && r.URL.Scheme == "https"
+	}
+	return true
 }

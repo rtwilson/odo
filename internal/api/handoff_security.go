@@ -115,21 +115,38 @@ func (h *handoffSecurity) preflight(token, authority, nonce string, now time.Tim
 	return h.state.prepare(token, mapping, authority, nonce, now)
 }
 
-func (h *handoffSecurity) confirm(ctx context.Context, token, centralToken, authority, nonce, proof string, now time.Time) (string, error) {
-	// Inspection uses a copied record, but confirmation still checks the complete
-	// immutable binding under the state lock. No separate consume operation.
+// confirmation is a read-only authorization check for central rendering and
+// POST. The state transition still repeats all immutable bindings under its lock.
+func (h *handoffSecurity) confirmation(ctx context.Context, token, centralToken, nonce, proof string, now time.Time) (pendingHandoff, error) {
+	if !validLaunchToken(token) || !validLaunchToken(nonce) {
+		return pendingHandoff{}, errInvalidPendingHandoff
+	}
 	h.state.mu.Lock()
 	pending, found := h.state.entries[local.HashToken(token)]
 	h.state.mu.Unlock()
-	if !found || !validLaunchToken(token) || !pending.acceptsReturnProof(proof, now) || local.SessionIDFromToken(centralToken) != pending.binding.parentSessionID ||
-		subtle.ConstantTimeCompare([]byte(h.server.browserSessionHash(centralToken)), []byte(pending.binding.parentSessionHash)) != 1 || authority != pending.binding.proxyAuthority {
-		return "", errHandoffDenied
+	if !found || !pending.acceptsReturnProof(proof, now) || pending.centralNonceHash != local.HashToken(nonce) || local.SessionIDFromToken(centralToken) != pending.binding.parentSessionID ||
+		subtle.ConstantTimeCompare([]byte(h.server.browserSessionHash(centralToken)), []byte(pending.binding.parentSessionHash)) != 1 {
+		return pendingHandoff{}, errInvalidPendingHandoff
 	}
 	if _, err := h.parent(pending.binding, now); err != nil {
-		return "", err
+		if errors.Is(err, errHandoffDenied) {
+			return pendingHandoff{}, errInvalidPendingHandoff
+		}
+		return pendingHandoff{}, err
 	}
 	if _, err := h.target(ctx, pending.binding, pending.target, "GET", pending.resourceID); err != nil {
+		return pendingHandoff{}, err
+	}
+	return pending, nil
+}
+
+func (h *handoffSecurity) confirm(ctx context.Context, token, centralToken, authority, nonce, proof string, now time.Time) (string, error) {
+	pending, err := h.confirmation(ctx, token, centralToken, nonce, proof, now)
+	if err != nil {
 		return "", err
+	}
+	if authority != pending.binding.proxyAuthority {
+		return "", errHandoffDenied
 	}
 	return h.state.confirm(token, pending.binding, nonce, proof, now)
 }
