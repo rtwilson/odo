@@ -3,8 +3,9 @@
 Implemented: `internal/api/pending_handoffs.go` and its focused tests. This is a
 passive, package-private state store, not connected to `Server`, routes, cookies,
 database operations, DNS, upstream fetching or vendor dispatch. Existing launch
-continuations and path/query behavior are unchanged. Tickets and grants remain
-unimplemented; virtual-host delivery remains disabled.
+continuations and path/query behavior are unchanged. Bounded tickets and atomic
+confirmation are implemented as state operations only. Ticket redemption, grants
+and virtual-host delivery remain unimplemented/disabled.
 
 ## Retained state and bounds
 
@@ -21,6 +22,13 @@ There are at most 256 entries. Expiry is the earlier of five minutes after
 creation and the supplied parent absolute expiry. Exact expiry denies lookup.
 Full capacity returns a private capacity error without evicting live entries.
 Future HTTP callers must map that error to a generic 503.
+
+The original parent absolute expiry is retained alongside the pending deadline.
+Tickets have a separate 256-entry bound and expire at the earlier of 60 seconds
+after confirmation and the parent absolute expiry. Confirmation may occur just
+before the five-minute handoff deadline; its ticket can then outlive that consumed
+handoff's deadline, but never the parent expiry. Token/nonce hashes, bindings and
+the stored target transfer to the ticket; raw ticket tokens are not retained.
 
 Every retained field is bounded: session ID/hash to 128 bytes each, registry label
 to 63, host/authority to 253 each, and target to the existing 16 KiB launch envelope
@@ -59,11 +67,29 @@ browser/session binding and all current authorization checks. Initial preparatio
 by a different browser cannot be repaired by replacing its nonce; a fresh launch
 is required. No current handler invokes this behavior.
 
-`removeParent` erases records for a trusted parent session ID, including entries
+`confirm` requires the original handoff token, complete trusted binding, central
+browser nonce, and a nonempty vendor preflight nonce hash. It creates the ticket
+and removes the pending record under the same mutex. The handoff can confirm only
+once, including under concurrent attempts. Unknown/malformed/expired/unprepared
+or swapped inputs return the same invalid-state error without a ticket or target.
+Valid confirmation at ticket capacity returns a separate capacity error (future
+HTTP 503), preserving the pending record, browser bindings and expiry for retry.
+Token-generation or collision failures also preserve the record. No live state
+is evicted; expired tickets are removed before testing capacity. Tokens are checked
+for collisions across both pending and ticket maps.
+
+`inspectTicket` returns a value copy only for the ticket token and exact trusted
+vendor hostname/label/authority and vendor nonce. It needs no central cookie or
+nonce. Failure returns an empty record and false; failure cannot consume a live
+ticket. Successful inspection neither consumes nor renews a ticket and is **not
+redemption**. The target still comes from stored state, including legitimate
+vendor parameters named `ticket` or `url`.
+
+`removeParent` erases pending and ticket records for a trusted parent session ID, including entries
 with older stored-hash bindings. It is idempotent and preserves unrelated parents.
 It is not connected to runtime revocation yet and cannot replace database checks.
 
-All operations purge expired records under the same mutex; explicit `cleanup` is
+All operations purge expired pending and ticket records under the same mutex; explicit `cleanup` is
 also available. There is no background sweeper. Expired targets are removed on
 the next store operation, not necessarily while the process is idle. A newly
 constructed store cannot recover an earlier store's tokens, including after restart.
@@ -77,14 +103,14 @@ Nothing here logs tokens, target URLs, cookies or parent references.
 
 ## Next boundary
 
-Single-assignment vendor preflight binding is implemented without routes. The
-next state-only batch is a bounded ticket store and atomic confirmation transition.
-It must require prepared vendor state plus the original central browser/session
-binding, preserve the pending record on ticket-capacity failure, and consume it
-only when ticket creation succeeds. Later HTTP confirmation must also recheck
-live authorization. Do not build the transition as inspect-then-consume; the
-current non-consuming inspection alone is not a confirmation check. The current
-store deliberately exposes no consume operation.
+Pending-to-ticket confirmation is now atomic, without HTTP routes. The next
+state-only batch is bounded grant creation and atomic ticket redemption, including
+per-parent capacity. It must require the vendor nonce/authority and trusted parent
+binding, preserve a ticket on grant-capacity failure, and consume it only when
+grant creation succeeds. Later HTTP confirmation/redemption must independently
+recheck current parent/user eligibility, registry, policy, method and DNS safety.
+Do not build redemption as inspect-then-consume. Non-consuming inspection alone
+is not an authorization or redemption check; there is no standalone consume API.
 
 See [cross-host grants](cross-host-grants.md) and the
 [origin/cookie checkpoint](vendor-origin-cookie-boundary.md) for the remaining
