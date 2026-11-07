@@ -153,8 +153,9 @@ and reversion; revocation/restoration; restart; database errors; hostile sibling
 origins; cold assets/frames; legacy GET migration and unsafe-method rejection.
 Verify that rejected operations neither fetch upstream nor mint credentials.
 
-After maintainer review, the next code batch can implement **only bounded pending
-handoff state**: hashed opaque identifiers, trusted parent/mapping/authority and
-browser-nonce bindings, expiry, capacity and cleanup. No routes, cookies, ticket
-redemption, jars or vendor dispatch need to be connected in that batch. Origin
+The [bounded pending-state foundation](pending-handoff-state.md) now implements
+hashed opaque identifiers, trusted parent/mapping/authority and browser-nonce
+bindings, expiry, capacity and cleanup without runtime integration. The next
+state-only batch is single-assignment vendor preflight nonce binding. Routes,
+cookies, ticket redemption, jars and vendor dispatch remain separate work. Origin
 migration and jar enforcement remain mandatory gates before delivery is enabled.

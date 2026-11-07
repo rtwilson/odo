@@ -1,8 +1,9 @@
 # Cross-host grants and revocation
 
-Status: proposed maintainer review checkpoint. No endpoints, tables, cookies,
-or runtime behavior in this proposal are implemented. Virtual-host routing
-remains disabled. The current local `/launch/continue` is not a host grant.
+Status: protocol proposed, with an implemented but unconnected
+[pending-state foundation](pending-handoff-state.md). No handoff endpoints,
+tables, cookies, tickets or grants are enabled. Virtual-host routing remains
+disabled. The current local `/launch/continue` is not a host grant.
 
 The [origin and cookie boundary checkpoint](vendor-origin-cookie-boundary.md)
 records concrete first-deployment recommendations and the current jar-model gap.
@@ -204,7 +205,7 @@ collisions, cold assets/frames and legacy-origin migration tests before rollout.
 Maintainer decisions at this checkpoint: approve or revise the four-step
 handoff and limits, the reserved vendor namespace, single-process state, grant
 renewal, jar policy, cold-host bootstrap expectations, and legacy-origin
-separation. After approving those decisions, the next implementation batch can
-add bounded handoff state with
-runtime vendor dispatch still disabled. This document does not approve enabling
+separation. Bounded pending state is implemented without runtime integration.
+The next focused state-only batch is single-assignment vendor nonce binding;
+ticket transitions and all routes remain separate work. This document does not approve enabling
 virtual-host traffic.
