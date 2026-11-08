@@ -36,22 +36,30 @@ TLS for both host spaces, and prevent direct untrusted backend access.
 
 By default, `Routes` in `internal/api/server.go` still serves `/odo` path/query
 traffic on the central host. `APP_HOST_GUARD=true` alone does not isolate vendor
-scripts. Experimental handoff mode blocks this content and recovery, but does
-not implement a production bookmark migration or vendor delivery.
+scripts. With `APP_EXPERIMENTAL_HANDOFF=true`, the implemented migration boundary
+intercepts legacy proxy routes before mux canonicalization and ordinary proxy
+session/login handling:
 
-Before enabling vendor-host delivery, the new mode must:
-
-1. Remove central-origin vendor content delivery, including `/odo` and any
-   fallback/recovery path that can reach the proxy handler. Review diagnostics
-   separately to ensure they never render untrusted vendor HTML as central HTML.
-2. Accept only supported old GET bookmark forms for a redirect through the
-   validated central launch workflow. Retain target parsing, current policy,
-   method and SSRF checks. Never fetch a vendor merely to discover a destination.
-3. Reject legacy unsafe-method requests instead of replaying their bodies across
-   origins. HEAD must not initiate an authentication handoff. Malformed targets
-   fail without fetching content or setting vendor credentials.
-4. Use configured authorities, not request-supplied return URLs. Apply no-store,
-   no-referrer and query/token log suppression through the migration/handoff.
+1. GET `/odo?url=...`, `/odo/?url=...`, `/p?url=...`, and literal
+   `/odo/https/<host>/<path>?<vendor-query>` bookmarks validate through the launch
+   parser and current resource, GET-method and DNS/SSRF policy, then return an
+   empty-body 303 to the configured central HTTPS `/launch?url=...`. Encoded
+   query envelopes and launch's raw `url=https://...` compatibility form are
+   supported. Escaped target paths and query bytes are preserved. Duplicate or
+   unexpected encoded-envelope fields, malformed targets and encoded route
+   aliases fail closed. Inputs use the launch parser's 16 KiB bound.
+2. Migration performs no upstream fetch, jar allocation, login or grant issuance.
+   `/launch` revalidates on the subsequent request, then uses existing opaque
+   login continuation and experimental handoff. Registry admission remains a
+   launch/handoff check, not hostname enrollment during migration.
+3. HEAD and all other non-GET methods on legacy proxy routes return 405 with
+   `Allow: GET`, without reading/replaying bodies or initiating a handoff.
+   Missed-rewrite recovery and direct proxy-engine access remain blocked. The
+   diagnostic test-fetch API also returns 403 before reading its body or fetching;
+   it cannot return a vendor body preview in experimental mode.
+4. Migration responses use no-store/no-referrer, fixed privacy-safe log routes
+   and no reflected target in the response body. Central management, login, API
+   and source/legal notice routes remain central; vendor hosts cannot reach them.
 
 This mode-specific migration must preserve existing path/query/dual deployments
 when virtual-host mode is not selected. A separate legacy content deployment is
@@ -268,5 +276,6 @@ experimental runtime now wires central/vendor controls and host-only cookie issu
 share only the exact redemption path, followed by an inert receipt. Default URL
 modes are unchanged; experimental mode blocks central-origin vendor content.
 The bounded jar manager is implemented separately and remains unwired, as does
-vendor content dispatch. Origin migration and live authorization/policy/jar
-integration remain mandatory gates before delivery is enabled.
+vendor content dispatch. The experimental central-origin migration boundary is
+implemented; production rollout and live authorization/policy/jar integration
+remain mandatory gates before delivery is enabled.

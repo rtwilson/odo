@@ -336,10 +336,12 @@ already authorized may finish; this proposal does not cancel in-flight streams
 or recall content already delivered. Test that boundary explicitly.
 
 Vendor jars must be tied to the authenticated parent and an explicitly enforced
-resource cookie policy before rollout. The current process-wide browser-jar
-model cannot simply be shared across vendor hosts. Supported jar scopes,
-disabled-policy behavior and cookie-domain enforcement need their own focused
-specification; legacy resource import compatibility must be preserved.
+resource cookie policy before rollout. The legacy browser-selected jar model
+cannot simply be shared across vendor hosts. The isolated manager now enforces
+resource scope, disabled/anonymous cookieless behavior, allowed domains and policy
+retirement; see [the cookie boundary](vendor-origin-cookie-boundary.md).
+Live authorization, update and retirement integration remains required; legacy
+resource import compatibility is preserved.
 
 ## Cross-host assets and acceptance gates
 
@@ -418,8 +420,13 @@ No public DNS, upstream vendor request or upstream jar is involved. See the
 [routing guide](virtual-host-routing.md#repeatable-local-test-with-fake-hostnames)
 for exact commands and current limits.
 
-The next milestone is a separate security review and design/implementation of
-bounded parent/resource upstream cookie jars, plus production origin migration
+Bounded parent/resource upstream cookie jars are now implemented as an isolated
+manager, with policy generations, cookie filtering and capacity/cleanup tests;
+they remain unwired. Experimental central-origin migration now redirects only
+validated legacy GET bookmarks to central launch and rejects HEAD/unsafe methods
+without replay; recovery and diagnostic vendor body previews remain blocked.
+The next milestone is live authorization, resource-policy publication and
+session-lifecycle integration with that manager, plus production origin rollout
 and actual-target authorization at each fetch. Do not treat this experimental
 handoff as approval to enable vendor delivery.
 

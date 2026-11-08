@@ -10,8 +10,9 @@ This is not a deployable virtual-host proxy mode.
 | --- | --- |
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers. |
 | Enabled for testing | With the flag, registered vendor hosts admit only `GET /.well-known/odo/redeem`; central launch and confirmation complete the browser handshake. |
-| Disabled | All upstream vendor content on vendor hosts; central path content and missed-rewrite recovery are also blocked while the experimental mode is on. Default path/query deployments are unchanged when off. |
-| Not yet implemented | Production vendor delivery, resource-scoped upstream jars, virtual-host rewriting, automatic cold-host access and multi-instance handoff state. |
+| Disabled | All upstream vendor content on vendor hosts; central path content, diagnostic body previews and missed-rewrite recovery are also blocked while the experimental mode is on. Validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
+| Implemented separately | Bounded resource-scoped upstream cookie jars and cookie-policy enforcement, not connected to live delivery or resource/session lifecycle hooks. |
+| Not yet implemented | Production vendor delivery, live jar integration, virtual-host rewriting, automatic cold-host access and multi-instance handoff state. |
 
 ## Trusted deployment names
 
@@ -294,8 +295,15 @@ Configuration is captured when constructing the server; restart to change it.
 The existing `APP_PROXY_URL_MODE=virtual_host` production rejection remains.
 
 The test-only flag is a handoff-only mode. Central application routes remain
-central, but central-origin `/odo` content and missed-rewrite recovery are blocked
-to keep vendor scripts away from central credentials. With the flag off, existing
+central. Valid legacy GET `/odo`, `/odo/`, `/odo/https/<host>/...` and `/p`
+bookmarks receive an empty-body 303 to the configured central `/launch`, after
+strict syntax, current resource/GET-method and DNS/SSRF validation. No fetch,
+credentials or handoff state is created by migration; launch validates again.
+HEAD and unsafe methods receive 405 without reading/replaying request bodies.
+Central-origin vendor content, diagnostic body previews and missed-rewrite
+recovery remain blocked to keep vendor scripts away from central credentials.
+See [central-origin migration](vendor-origin-cookie-boundary.md#central-origin-migration)
+for parsing and privacy details. With the flag off, existing
 path/query/dual behavior is unchanged. Vendor hosts expose only one exact path:
 
 | Request on registered vendor host | Action |
@@ -353,10 +361,11 @@ cache. No upstream jar is allocated by the handshake.
 
 | Files | Functions and responsibility |
 | --- | --- |
-| `internal/api/handoff_runtime.go` | `experimentalHandoffConfig`, `launch`, `dispatchCentral`, cookie/header helpers: flag validation, launch integration and central dispatch. |
+| `internal/api/handoff_runtime.go` | `experimentalHandoffConfig`, `launch`, `dispatchCentral`, `migrateLegacyBookmark`, cookie/header helpers: flag validation, launch integration and validated legacy migration before API authentication and mux canonicalization. Host/Origin admission stays first. |
 | `internal/api/handoff_vendor.go` | `vendorRequest`, `serveVendor`, `prepareBrowser`, `redeemBrowser`, `complete`: the single vendor endpoint, proof exchange, grant cookie and inert receipt. |
 | `internal/api/server.go`, `host_guard.go` | Server construction/`Routes`, `guardHost`, `ValidateHostGuardConfig`: process-local state and fail-closed startup/admission. |
 | `internal/api/launch_handlers.go`, `proxy_handlers.go` | `redirectLaunchTarget` and `handleUnknownPath`: opt-in handoff and central content/recovery isolation. |
+| `internal/api/resources_handlers.go`, `legacy_migration_test.go` | `proxyTestFetch` blocks diagnostic body delivery in experimental mode; regression tests cover migration, aliases, policy/SSRF failures, method/body rejection, recovery, privacy and flag-disabled delivery. |
 | `internal/api/handoff_confirmation.go` | `serveConfirmation`, `confirmationError`: shared control headers, central confirmation, capacity/error mapping. |
 | `internal/accesslog/accesslog.go` | `Metadata.SuppressBrowserHeaders` and `Logger.Log`: suppress raw browser headers on sensitive controls across log formats. |
 | `internal/api/handoff_browser_test.go`, `internal/accesslog/accesslog_test.go`, `cmd/odo/main_test.go` | Local TLS/cookie integration, privacy regression and production rejection tests. |
@@ -400,8 +409,8 @@ explicit admin registry/resource enrollment. The automatic tests above supply
 those equivalents locally; the runtime does not install them or bypass SSRF for
 fake names. Do not turn on this flag in an existing production deployment.
 
-Remaining delivery work: production origin migration, bounded parent/resource
-upstream cookie jars with cookie-policy enforcement, actual target/method grant
+Remaining delivery work: production origin rollout, live integration of the
+implemented bounded parent/resource upstream cookie jars, actual target/method grant
 checks on each fetch, validated-IP integration, virtual-host URL/rewrite behavior,
 redirect/cold-host rules, wildcard DNS/TLS deployment and real-browser/vendor
 compatibility/privacy testing. Vendor content routing is not enabled here.

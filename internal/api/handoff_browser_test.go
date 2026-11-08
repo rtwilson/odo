@@ -219,7 +219,7 @@ func TestExperimentalHandoffBrowserFlow(t *testing.T) {
 		t.Fatal("handoff allocated an upstream cookie jar")
 	}
 	// Neither authority serves a vendor body, including missed-rewrite recovery.
-	for _, target := range []string{"https://" + vendorURL.Host + "/article", "https://odo.example/odo/https/vendor.example/article", "https://odo.example/article"} {
+	for _, target := range []string{"https://" + vendorURL.Host + "/article", "https://odo.example/article"} {
 		response, body := b.request(t, "GET", target, nil)
 		if response.StatusCode < 400 || strings.Contains(body, "<script") {
 			t.Fatal("content route became available")

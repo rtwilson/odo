@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
 	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/proxy"
+	"example.org/odo/internal/resources"
 )
 
 const handoffVendorPath = "/.well-known/odo/redeem"
@@ -127,10 +129,64 @@ func (h *handoffSecurity) launch(w http.ResponseWriter, r *http.Request, target 
 
 func (h *handoffSecurity) dispatchCentral(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		legacyPath := func(value string) bool {
+			return value == "/p" || value == "/odo" || strings.HasPrefix(value, "/odo/")
+		}
+		// Intercept before ServeMux can canonicalize a legacy bookmark or apply
+		// the ordinary proxy session/login middleware. Aliases are rejected.
+		if legacyPath(r.URL.Path) || legacyPath(path.Clean(r.URL.Path)) {
+			h.migrateLegacyBookmark(w, r)
+			return
+		}
 		if r.URL.Path == handoffConfirmPath {
 			h.serveConfirmation(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Migration validates without fetching, authenticating, or creating handoff
+// state. /launch performs its own fresh validation and login/handoff workflow.
+func (h *handoffSecurity) migrateLegacyBookmark(w http.ResponseWriter, r *http.Request) {
+	handoffHeaders(w, r, "handoff_legacy_migration")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var target *url.URL
+	var err error
+	switch r.URL.EscapedPath() {
+	case "/odo", "/odo/", "/p":
+		target, err = proxy.ParseLaunchQuery(r.URL.RawQuery)
+	default:
+		if !strings.HasPrefix(r.URL.EscapedPath(), "/odo/https/") || len(r.URL.RequestURI()) > proxy.MaxLaunchQueryBytes {
+			writeError(w, http.StatusBadRequest, "legacy target URL is invalid")
+			return
+		}
+		target, _, _, err = proxy.ParseProxyRequest(r)
+		if err == nil {
+			// Apply the same strict syntax and HTTPS requirements as /launch,
+			// preserving escaped paths and opaque vendor query bytes.
+			target, err = proxy.ParseLaunchQuery(url.Values{"url": {target.String()}}.Encode())
+		}
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "legacy target URL is invalid")
+		return
+	}
+	target, result := h.server.proxyTarget(r.Context(), target.String())
+	if result.InternalError != nil {
+		h.server.internalError(w, r, result.InternalError)
+		return
+	}
+	if target == nil || !result.Allowed || !resources.MethodAllowed(result, http.MethodGet) {
+		writeError(w, http.StatusForbidden, "legacy target is not allowed")
+		return
+	}
+	location := url.URL{Scheme: "https", Host: h.config.CentralHostname(), Path: "/launch", RawQuery: url.Values{"url": {target.String()}}.Encode()}
+	// An empty redirect body avoids reflecting a patron destination into HTML.
+	w.Header().Set("Location", location.String())
+	w.WriteHeader(http.StatusSeeOther)
 }

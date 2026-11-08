@@ -174,9 +174,9 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
-	var central http.Handler = mux
+	central := s.requireAPIAuthentication(mux)
 	if s.handoff != nil {
 		central = s.handoff.dispatchCentral(central)
 	}
-	return s.logging(appSecurityHeaders(s.guardHost(s.guardCentralOrigin(s.requireAPIAuthentication(central)))))
+	return s.logging(appSecurityHeaders(s.guardHost(s.guardCentralOrigin(central))))
 }

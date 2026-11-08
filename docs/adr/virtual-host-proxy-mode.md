@@ -291,11 +291,12 @@ handoff. State is process-local: multiple replicas require a deliberate shared
 storage/affinity design before deployment. No persistent patron destination
 history or background worker is introduced.
 
-Remaining delivery gates include the reviewed HTTP/browser handshake with
-host-only nonce/grant cookies and CSRF defenses, validated-IP dialing on actual
-fetches, session activity handling, origin-isolated upstream cookie jars,
-redirect/content rewriting, wildcard DNS/TLS deployment, and end-to-end browser
-and privacy testing. The current host guard continues rejecting vendor traffic.
+The reviewed HTTP/browser handshake with host-only nonce/grant cookies and CSRF
+defenses is implemented experimentally. Remaining delivery gates include live
+integration of the isolated upstream cookie manager, validated-IP dialing on
+actual fetches, session activity handling, redirect/content rewriting, wildcard
+DNS/TLS deployment, and end-to-end browser and privacy testing. The current host
+guard admits vendor control traffic only, never vendor content.
 
 
 ## Experimental handoff integration status
@@ -305,8 +306,11 @@ return-proof preflight, explicit central confirmation POST, atomic ticket exchan
 and host-only `__Host-odo_proxy_grant` issuance. `APP_EXPERIMENTAL_HANDOFF`
 defaults false, requires the central host guard and valid HTTPS deployment names,
 and is rejected for production or unknown environments. The flag captures
-configuration at startup and blocks central-origin path content/recovery while
-active. Ordinary path/query/dual deployments retain their behavior with it off.
+configuration at startup and blocks central-origin path content/recovery and
+diagnostic body previews while active. Validated legacy GET bookmarks redirect
+to configured central launch without fetching or minting credentials; HEAD and
+unsafe methods return 405 without reading/replaying their bodies. Ordinary
+path/query/dual deployments retain their behavior with it off.
 
 Only the exact redemption path is admitted on registered vendor hosts, and only
 GET control phases are supported. Other paths remain 421, including every
@@ -322,8 +326,11 @@ No central credential is copied to vendor URLs or cookies. State bounds and
 lifetimes above are unchanged. Restart invalidates the process-local grant state;
 requests already authorized before a revocation may finish.
 
-Not implemented/enabled: production virtual-host content, upstream jar isolation,
-resource-cookie enforcement for that mode, rewriting, cold-host bootstrap and
+Bounded parent/resource upstream cookie jars and cookie-policy enforcement are
+implemented separately, with public-suffix/deployment-domain restrictions and
+policy retirement. They are not connected to delivery or live authorization,
+resource updates or session retirement. Not implemented/enabled: production
+virtual-host content, live jar integration, rewriting, cold-host bootstrap and
 multi-instance state. The old proposed separate `/prepare` vendor path is not
 admitted by this implementation. See [the routing guide](../architecture/virtual-host-routing.md)
 for the exact fake-host test commands, flag configuration and remaining gates.
