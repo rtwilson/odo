@@ -82,7 +82,12 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 		ctx, diagnostics := WithDiagnostics(r.Context())
 		r = r.WithContext(ctx)
-		session := sessions.GetOrCreate(r, w)
+		session, err := sessions.GetOrCreate(r, w)
+		if err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			httperror.Write(w, r, options.Logger, http.StatusInternalServerError, err)
+			return
+		}
 
 		parsedTarget, parsedMode, _, parseErr := ParseProxyRequest(r)
 		rawURL := ""

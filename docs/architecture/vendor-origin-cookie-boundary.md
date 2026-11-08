@@ -86,6 +86,18 @@ These legacy path/query behaviors remain unchanged. The new manager is separate;
 resource-scoped-cookie enforcement is not yet a running proxy guarantee. Do not
 reuse the legacy jar store for grants.
 
+The legacy session generator now fails closed instead of falling back to a
+timestamp. `SessionStore.GetOrCreate` returns `(SessionInfo, error)` and requires
+32 complete bytes from its cryptographic reader before allocating a jar or
+issuing `odo_proxy_sid`. Production stores use `crypto/rand.Reader`; tests supply
+empty/short readers on individual stores without changing process-wide entropy.
+`FetchHandlerWithOptions` handles failure with a generic HTTP 500 and no-store,
+without creating a session/cookie, reading the request body or fetching upstream.
+Existing stored sessions can still be reused without generating another ID.
+Normal legacy path/query/dual behavior and the separate authenticated manager
+are unchanged. `internal/proxy/session_test.go` covers these failure and reuse
+paths alongside the existing proxy cookie round-trip tests.
+
 ## Implemented isolated authenticated jar rules
 
 Resolve the request through the existing live resource/method policy first.
