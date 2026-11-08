@@ -142,6 +142,26 @@ to old state. Unchanged policy snapshots retain jars. Unsupported/invalid or
 oversized snapshots clear all jars and make the manager unavailable until a
 valid snapshot is installed. Generation overflow also fails closed.
 
+`ReplacePolicySnapshot(revision, activeResources)` now provides revision-aware
+installation on the same manager. Entering this mode and every higher database
+revision assign fresh generations to **all** active-resource policies, even if
+their normalized JSON is unchanged. All old jars and outstanding exchanges are
+retired under the manager's lock. This covers skipped intermediate changes and
+reversions without storing policy history. Reinstalling the same revision and
+equivalent normalized cookie policies retains jars and generations.
+
+Older revisions are rejected without replacing current valid state. Unversioned
+`ReplacePolicies` is permanently rejected once the revision-aware method has
+been attempted, including after an initial failure. Invalid policy data, changed
+cookie policies or a different active-resource set at an installed unchanged
+revision, invalid negative revisions, snapshot-capacity failures and generation exhaustion
+discard all jars/policies and fail closed. The highest nonnegative revision seen
+is retained even after an installation failure. Recovery from invalidated state
+must use that revision or newer and assigns fresh generations. Exhausted generation counters require a
+restart. No failed operation can recover old cookies through a legacy installer
+or a delayed lower revision. Tests in `upstream_cookie_snapshot_test.go` cover
+these boundaries and concurrent preparation/storage during revision changes.
+
 Integration must account for **every** committed resource-policy change,
 including disable/removal and intermediate changes before a reversion. Polling
 only the final JSON cannot discover a change that happened and reverted between
@@ -177,13 +197,14 @@ contain all resource statuses, so the future coordinator must select active
 resources when installing jar policies.
 
 This global configuration revision is separate from the manager's per-resource
-cookie-policy generations. The first coordinator must conservatively retire
-all old jars before access when the revision changes, even after an unrelated
-or identical resource write. Comparing only the final policy would still revive
-cookies after an unseen change/reversion. Reading a revision separately from
-the resources being authorized is also unsafe. Snapshot reads do not reserve
-authorization against later writes. Runtime snapshot/generation coordination
-and retirement remain unwired; vendor content delivery stays disabled. Revision
+cookie-policy generations. The revision-aware installer implements conservative
+retirement, including after unrelated or identical resource writes. The future
+coordinator must call it with active policies from the database snapshot before
+allowing jar access. Comparing only the final policy would still revive cookies
+after an unseen change/reversion. Reading a revision separately from the resources
+being authorized is also unsafe. Snapshot reads do not reserve authorization
+against later writes. The live database/authorization coordinator and session
+retirement hooks remain unwired; vendor content delivery stays disabled. Revision
 tracking covers the Store write methods, including API and file-import calls;
 direct SQL changes and writers from older binaries are outside this contract.
 
@@ -215,7 +236,7 @@ environment flags. The interfaces are intentionally not `http.CookieJar`, since
 automatic client cookie/redirect handling cannot perform live authorization.
 
 1. A trusted resource-update coordinator installs the complete active-resource
-   snapshot through `ReplacePolicies`. `PolicyGeneration` identifies the
+   snapshot and its revision through `ReplacePolicySnapshot`. `PolicyGeneration` identifies the
    installed policy for a resource. Publishing resource updates and authorizing
    against their generations must be coordinated; a generation read after an
    unrelated/stale resource lookup is not proof of a consistent snapshot.

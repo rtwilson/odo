@@ -83,7 +83,10 @@ type UpstreamCookieJars struct {
 	jars       map[upstreamJarKey]*upstreamResourceJar
 	generation uint64
 	ready      bool
-	now        func() time.Time
+	// Once revisioned snapshots are used, unversioned installation is disabled.
+	policyRevision    int64
+	versionedPolicies bool
+	now               func() time.Time
 }
 
 func NewUpstreamCookieJars(deployment HostRoutingConfig) (*UpstreamCookieJars, error) {
@@ -102,19 +105,58 @@ func NewUpstreamCookieJars(deployment HostRoutingConfig) (*UpstreamCookieJars, e
 // changed/removed policies retire all their jars. Request authorization must use
 // PolicyGeneration from the SAME snapshot. Invalid snapshots disable the entire
 // store and discard jars until a valid snapshot is installed.
+// Once ReplacePolicySnapshot is used, this unversioned entry point is rejected.
 func (m *UpstreamCookieJars) ReplacePolicies(active []resources.Resource) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.versionedPolicies {
+		return ErrCookiePolicy
+	}
+	return m.replacePoliciesLocked(active, false, false)
+}
+
+// ReplacePolicySnapshot installs active policies from one trusted database
+// snapshot. A higher revision renews ALL generations even for identical JSON,
+// permanently retiring jars across missed changes/reversions. Older revisions
+// cannot replace newer state. Invalid policy data clears jars and retains the
+// highest revision seen; recovery requires that revision or newer, never legacy
+// mode. Rejected stale/unversioned calls leave current valid state intact.
+// The future caller must coordinate authorization against this SAME snapshot.
+func (m *UpstreamCookieJars) ReplacePolicySnapshot(revision int64, active []resources.Resource) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	versioned := m.versionedPolicies
+	m.versionedPolicies = true
+	if revision < 0 {
+		return m.discardPoliciesLocked(ErrCookiePolicy)
+	}
+	if versioned && revision < m.policyRevision {
+		return ErrCookiePolicy
+	}
+	renew := !versioned || revision != m.policyRevision
+	unchanged := versioned && revision == m.policyRevision && m.ready
+	m.policyRevision = revision
+	return m.replacePoliciesLocked(active, renew, unchanged)
+}
+
+func (m *UpstreamCookieJars) discardPoliciesLocked(err error) error {
+	m.ready = false
+	for key := range m.jars {
+		m.dropJar(key)
+	}
+	clear(m.policies)
+	return err
+}
+
+func (m *UpstreamCookieJars) replacePoliciesLocked(active []resources.Resource, renew, unchanged bool) error {
 	failed := func(err error) error {
-		m.ready = false
-		for key := range m.jars {
-			m.dropJar(key)
-		}
-		clear(m.policies)
-		return err
+		return m.discardPoliciesLocked(err)
 	}
 	if len(active) > UpstreamMaxPolicies {
 		return failed(&CookieJarCapacityError{})
+	}
+	if unchanged && len(active) != len(m.policies) {
+		return failed(ErrCookiePolicy)
 	}
 	policies := make(map[string]upstreamCookiePolicy, len(active))
 	for _, resource := range active {
@@ -129,7 +171,11 @@ func (m *UpstreamCookieJars) ReplacePolicies(active []resources.Resource) error 
 			return failed(err)
 		}
 		old, found := m.policies[resource.ID]
-		if found && old.enabled == policy.enabled && slices.Equal(old.domains, policy.domains) {
+		same := found && old.enabled == policy.enabled && slices.Equal(old.domains, policy.domains)
+		if unchanged && !same {
+			return failed(ErrCookiePolicy)
+		}
+		if same && !renew {
 			policy.generation = old.generation
 		} else {
 			if m.generation == ^uint64(0) {
