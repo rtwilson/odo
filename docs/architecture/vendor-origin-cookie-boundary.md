@@ -146,6 +146,18 @@ Integration must publish **every** committed resource-policy change, including
 disable/removal and intermediate changes before a reversion. Polling only the
 final JSON cannot discover a change that happened and reverted between polls.
 
+The resource-write transaction foundation is now implemented:
+`db.Store.UpsertResource` and `DeleteResource` commit the resource mutation and
+its existing audit event together. An audit failure rolls back the resource
+change; a write failure creates no audit event. API writes and file imports
+already use these methods. This removes the previous case where a resource
+changed but an audit error made the write appear to have failed. Focused tests
+in `internal/db/resource_transactions_test.go` inject both failure types.
+This does not yet publish policy generations or retire jars. File imports still
+commit each resource separately, and a later import/revision error does not undo
+earlier successful writes. Future publication must follow each committed resource
+write, rather than wait for the whole import to succeed.
+
 Anonymous URL exceptions use a client without an authenticated jar even when
 the browser also has a grant. They must discard upstream cookies and retain
 existing URL/method and block-precedence checks. Cookie-dependent anonymous

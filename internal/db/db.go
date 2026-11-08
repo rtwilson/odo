@@ -218,7 +218,14 @@ func (s *Store) UpsertResource(resource resources.Resource) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	_, err = s.db.Exec(`
+	// Resource state and its audit must succeed together. Future policy
+	// publication must not miss a committed write reported as an audit failure.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`
 INSERT INTO resources (id, name, status, config_json, updated_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -231,7 +238,11 @@ ON CONFLICT(id) DO UPDATE SET
 		return err
 	}
 
-	return s.Audit("resource.upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, resource.ID, resource.Status))
+	if _, err := tx.Exec(`INSERT INTO audit_events (ts, event, detail) VALUES (?, ?, ?)`, now,
+		"resource.upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, resource.ID, resource.Status)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListResources() ([]resources.Resource, error) {
@@ -273,7 +284,12 @@ func (s *Store) GetResource(id string) (resources.Resource, bool, error) {
 }
 
 func (s *Store) DeleteResource(id string) (bool, error) {
-	result, err := s.db.Exec(`DELETE FROM resources WHERE id = ?`, id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`DELETE FROM resources WHERE id = ?`, id)
 	if err != nil {
 		return false, err
 	}
@@ -284,7 +300,11 @@ func (s *Store) DeleteResource(id string) (bool, error) {
 	if rows == 0 {
 		return false, nil
 	}
-	if err := s.Audit("resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO audit_events (ts, event, detail) VALUES (?, ?, ?)`, time.Now().UTC().Format(time.RFC3339),
+		"resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil
