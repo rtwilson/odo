@@ -14,8 +14,8 @@ import (
 
 var errHandoffDenied = errors.New("handoff authorization denied")
 
-// Internal coordinator only: deliberately not constructed by Server or exposed
-// through HTTP. The passive store must never be used as an authorization cache.
+// The experimental runtime constructs this coordinator for control routes only.
+// The passive store must never be used as an authorization cache.
 type handoffSecurity struct {
 	server *Server
 	config proxy.HostRoutingConfig
@@ -170,17 +170,46 @@ func (h *handoffSecurity) redeem(ctx context.Context, token, authority, nonce st
 }
 
 func (h *handoffSecurity) validateGrant(ctx context.Context, token, authority, target, method string, now time.Time) error {
+	_, err := h.authorizeGrant(ctx, token, authority, target, method, now)
+	return err
+}
+
+// grantAuthorization contains only the parent and winning-resource facts from
+// one live grant check. It is not cached and cannot select a jar: a future caller
+// must coordinate this resource lookup with the installed policy generation.
+type grantAuthorization struct {
+	parentSessionID   string
+	parentSessionHash string
+	parentExpires     time.Time
+	resourceID        string
+}
+
+func (h *handoffSecurity) authorizeGrant(ctx context.Context, token, authority, target, method string, now time.Time) (grantAuthorization, error) {
 	mapping, err := h.mapping(authority)
 	if err != nil {
-		return err
+		return grantAuthorization{}, err
 	}
 	grant, found := h.state.inspectGrant(token, mapping, authority, now)
 	if !found {
-		return errHandoffDenied
+		return grantAuthorization{}, errHandoffDenied
 	}
-	if _, err := h.parent(grant.binding, now); err != nil {
-		return err
+	parent, err := h.parent(grant.binding, now)
+	if err != nil {
+		return grantAuthorization{}, err
 	}
-	_, err = h.target(ctx, grant.binding, target, method, "")
-	return err
+	resourceID, err := h.target(ctx, grant.binding, target, method, "")
+	if err != nil {
+		return grantAuthorization{}, err
+	}
+	// parent has already parsed and validated both timestamps. Do not extend
+	// session activity or let a jar outlive the parent's idle/absolute deadline.
+	expires, _ := time.Parse(time.RFC3339, parent.ExpiresAt)
+	seen, _ := time.Parse(time.RFC3339, parent.LastSeenAt)
+	if idle := seen.Add(sessionIdleTimeout()); idle.Before(expires) {
+		expires = idle
+	}
+	if !now.Before(expires) {
+		return grantAuthorization{}, errHandoffDenied
+	}
+	return grantAuthorization{parentSessionID: parent.ID, parentSessionHash: parent.SessionHash, parentExpires: expires, resourceID: resourceID}, nil
 }

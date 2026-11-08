@@ -141,6 +141,21 @@ workflows are not part of the first pilot.
 
 ## Interfaces and future caller contract
 
+The first live-authorization integration step is implemented in
+`internal/api/handoff_security.go:authorizeGrant`. The existing `validateGrant`
+delegates to it. It reuses exact-host registry/grant, joined parent/account/hash/
+`auth_version`, actual target/method, resource and DNS/SSRF checks, and returns
+only the validated parent ID/hash, current winning resource ID and parent
+deadline clipped to absolute and idle expiry. `authorizeGrant` denies access at
+the exact idle deadline. It does not update session activity, cache authorization or create a
+jar; failures return an empty result. Database-backed regression tests are in
+`grant_authorization_test.go`.
+
+This internal result deliberately has no cookie-policy generation. It is not
+yet a `CookieAuthorizer`: resource snapshot/generation coordination, anonymous
+authorization and post-commit policy/session retirement remain separate work.
+No HTTP handler obtains an upstream jar from it and vendor delivery stays disabled.
+
 `NewUpstreamCookieJars(HostRoutingConfig)` requires trusted central/proxy names
 for deployment-domain exclusions. It does not read browser credentials or
 environment flags. The interfaces are intentionally not `http.CookieJar`, since
