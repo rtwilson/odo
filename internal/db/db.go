@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS resources (
 	updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS resource_state (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	revision INTEGER NOT NULL CHECK (typeof(revision) = 'integer' AND revision >= 0)
+);
+INSERT OR IGNORE INTO resource_state (id, revision) VALUES (1, 0);
+
 CREATE TABLE IF NOT EXISTS proxy_hostnames (
 	hostname TEXT PRIMARY KEY NOT NULL,
 	label TEXT UNIQUE NOT NULL
@@ -238,6 +244,9 @@ ON CONFLICT(id) DO UPDATE SET
 		return err
 	}
 
+	if err := advanceResourceRevision(tx); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`INSERT INTO audit_events (ts, event, detail) VALUES (?, ?, ?)`, now,
 		"resource.upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, resource.ID, resource.Status)); err != nil {
 		return err
@@ -250,6 +259,11 @@ func (s *Store) ListResources() ([]resources.Resource, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeResourceRows(rows)
+}
+
+// Both ordinary reads and transactional snapshots use the same validation.
+func decodeResourceRows(rows *sql.Rows) ([]resources.Resource, error) {
 	defer rows.Close()
 
 	var out []resources.Resource
@@ -299,6 +313,9 @@ func (s *Store) DeleteResource(id string) (bool, error) {
 	}
 	if rows == 0 {
 		return false, nil
+	}
+	if err := advanceResourceRevision(tx); err != nil {
+		return false, err
 	}
 	if _, err := tx.Exec(`INSERT INTO audit_events (ts, event, detail) VALUES (?, ?, ?)`, time.Now().UTC().Format(time.RFC3339),
 		"resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {

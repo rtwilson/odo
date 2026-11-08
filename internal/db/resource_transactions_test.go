@@ -30,6 +30,10 @@ func TestResourceMutationRollsBackWithAuditOrWriteFailure(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				beforeSnapshot, err := store.ResourceSnapshot()
+				if err != nil {
+					t.Fatal(err)
+				}
 				events, err := store.ListAuditEvents(10)
 				if err != nil {
 					t.Fatal(err)
@@ -62,6 +66,10 @@ func TestResourceMutationRollsBackWithAuditOrWriteFailure(t *testing.T) {
 				after, found, err := store.GetResource(item.ID)
 				if err != nil || found != existed || !reflect.DeepEqual(after, before) {
 					t.Fatal("failed resource operation changed stored policy")
+				}
+				afterSnapshot, err := store.ResourceSnapshot()
+				if err != nil || !reflect.DeepEqual(afterSnapshot, beforeSnapshot) {
+					t.Fatal("failed resource operation advanced the snapshot revision")
 				}
 				afterEvents, err := store.ListAuditEvents(10)
 				if err != nil || !reflect.DeepEqual(afterEvents, events) {

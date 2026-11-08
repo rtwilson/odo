@@ -142,9 +142,11 @@ to old state. Unchanged policy snapshots retain jars. Unsupported/invalid or
 oversized snapshots clear all jars and make the manager unavailable until a
 valid snapshot is installed. Generation overflow also fails closed.
 
-Integration must publish **every** committed resource-policy change, including
-disable/removal and intermediate changes before a reversion. Polling only the
-final JSON cannot discover a change that happened and reverted between polls.
+Integration must account for **every** committed resource-policy change,
+including disable/removal and intermediate changes before a reversion. Polling
+only the final JSON cannot discover a change that happened and reverted between
+polls. The database revision described below makes those intervening writes
+visible even when the resulting resource JSON is identical.
 
 The resource-write transaction foundation is now implemented:
 `db.Store.UpsertResource` and `DeleteResource` commit the resource mutation and
@@ -153,10 +155,37 @@ change; a write failure creates no audit event. API writes and file imports
 already use these methods. This removes the previous case where a resource
 changed but an audit error made the write appear to have failed. Focused tests
 in `internal/db/resource_transactions_test.go` inject both failure types.
-This does not yet publish policy generations or retire jars. File imports still
+These transactions do not yet publish policy generations or retire jars. File imports still
 commit each resource separately, and a later import/revision error does not undo
 earlier successful writes. Future publication must follow each committed resource
 write, rather than wait for the whole import to succeed.
+
+`db.Store.ResourceSnapshot()` now returns validated resources and their database
+`Revision` from one read transaction. The additive `resource_state` table holds
+one integer counter, not resource history, patron activity or cookies. Existing
+databases start at revision zero with their resources preserved; repeated
+migration and process restart retain the counter. This is an internal Go read
+interface; resource JSON, import/export and HTTP API shapes are unchanged.
+
+Every successful `UpsertResource` advances the counter, including identical
+writes, cookie-policy reversion and disable/re-enable. Deleting an existing
+resource advances it too; a missing deletion or rejected write does not. The
+resource mutation, counter increment and audit commit or roll back together.
+Missing/exhausted counter state rejects writes rather than wrap. Snapshot read
+or validation failures return no configuration or usable revision. Snapshots
+contain all resource statuses, so the future coordinator must select active
+resources when installing jar policies.
+
+This global configuration revision is separate from the manager's per-resource
+cookie-policy generations. The first coordinator must conservatively retire
+all old jars before access when the revision changes, even after an unrelated
+or identical resource write. Comparing only the final policy would still revive
+cookies after an unseen change/reversion. Reading a revision separately from
+the resources being authorized is also unsafe. Snapshot reads do not reserve
+authorization against later writes. Runtime snapshot/generation coordination
+and retirement remain unwired; vendor content delivery stays disabled. Revision
+tracking covers the Store write methods, including API and file-import calls;
+direct SQL changes and writers from older binaries are outside this contract.
 
 Anonymous URL exceptions use a client without an authenticated jar even when
 the browser also has a grant. They must discard upstream cookies and retain
