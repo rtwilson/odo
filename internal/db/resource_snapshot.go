@@ -16,8 +16,35 @@ type ResourceSnapshot struct {
 	Resources []resources.Resource
 }
 
+// WithResourceSnapshot reads a fresh snapshot and excludes resource upserts,
+// deletes and other guarded callbacks on this Store until use returns. A future
+// cookie coordinator must keep policy installation, resource authorization and
+// the complete PrepareRequest or StoreResponse operation inside use, not just
+// the authorization callback. A snapshot read failure never calls use.
+//
+// The read transaction ends before use; this is an in-process mutex, not a
+// database writer reservation. It does not protect against another Store,
+// another process or direct SQL writes. It does not serialize session changes.
+// The single-process caller must share one Store for all resource mutations.
+//
+// use must be short and synchronous: no DNS/network calls, resource writes or
+// nested WithResourceSnapshot calls. Ordinary Store reads are allowed. Do not
+// retain the snapshot as authorization after the callback returns. On an error,
+// the caller is responsible for invalidating any previously published policies;
+// this method has no cookie-manager state or rollback of callback side effects.
+func (s *Store) WithResourceSnapshot(use func(ResourceSnapshot) error) error {
+	s.resourceMu.Lock()
+	defer s.resourceMu.Unlock()
+	snapshot, err := s.ResourceSnapshot()
+	if err != nil {
+		return err
+	}
+	return use(snapshot)
+}
+
 // ResourceSnapshot reads the counter and resources in one SQLite transaction.
 // Callers must not combine its revision with a separate ListResources lookup.
+// Unlike WithResourceSnapshot, it does not exclude later resource commits.
 func (s *Store) ResourceSnapshot() (ResourceSnapshot, error) {
 	tx, err := s.db.Begin()
 	if err != nil {

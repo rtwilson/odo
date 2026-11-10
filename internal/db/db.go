@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"example.org/odo/internal/auth/saml"
@@ -16,6 +17,8 @@ import (
 
 type Store struct {
 	db *sql.DB
+	// Orders resource commits with WithResourceSnapshot callbacks on this Store.
+	resourceMu sync.Mutex
 }
 
 type ConfigRevision struct {
@@ -222,6 +225,8 @@ func (s *Store) UpsertResource(resource resources.Resource) error {
 	if err != nil {
 		return err
 	}
+	s.resourceMu.Lock()
+	defer s.resourceMu.Unlock()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Resource state and its audit must succeed together. Future policy
@@ -298,6 +303,8 @@ func (s *Store) GetResource(id string) (resources.Resource, bool, error) {
 }
 
 func (s *Store) DeleteResource(id string) (bool, error) {
+	s.resourceMu.Lock()
+	defer s.resourceMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err

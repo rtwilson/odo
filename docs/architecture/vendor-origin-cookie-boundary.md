@@ -208,6 +208,31 @@ retirement hooks remain unwired; vendor content delivery stays disabled. Revisio
 tracking covers the Store write methods, including API and file-import calls;
 direct SQL changes and writers from older binaries are outside this contract.
 
+The first synchronization primitive is now implemented:
+`db.Store.WithResourceSnapshot(use)` reads a fresh transactional snapshot and
+holds a Store-local mutex until `use` returns. `UpsertResource` and
+`DeleteResource` hold the same mutex through their resource/revision/audit
+transaction, including commit or rollback. Guarded callbacks are serialized too.
+This allows a future coordinator to keep snapshot publication, current resource
+authorization and the complete jar preparation or response storage operation
+inside one boundary. Locking only the `CookieAuthorizer` callback would leave a
+gap before the manager accesses a jar and is insufficient.
+
+The SQL read transaction finishes before the callback. Ordinary Store reads are
+allowed there; DNS, network requests, resource writes and recursive guarded calls
+must remain outside. Snapshot errors never invoke the callback, and all error
+paths release the mutex. Callers still need to invalidate published cookie state
+on lookup/publication failure. This primitive does not itself publish policies,
+authorize grants, retire jars or serialize account/session changes.
+
+The guard covers one shared Store instance only. Separate Store instances,
+other processes and direct SQL writes do not participate; deployment must not
+claim cross-process authorization consistency from this mutex. The future
+coordinator must use the same Store as API and import writers. Focused tests in
+`internal/db/resource_coordination_test.go` exercise writes during guarded use,
+fresh reads after commit, callback errors and failed snapshot reads. Live
+coordinator, lifecycle integration and vendor delivery remain unimplemented.
+
 Anonymous URL exceptions use a client without an authenticated jar even when
 the browser also has a grant. They must discard upstream cookies and retain
 existing URL/method and block-precedence checks. Cookie-dependent anonymous
