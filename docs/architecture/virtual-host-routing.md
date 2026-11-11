@@ -253,8 +253,8 @@ confirmation checks. Tests cover two-browser correlation and rotation during
 validation. Central confirmation handling is now implemented as described
 below and wired only by the experimental flag. Vendor content dispatch remains
 absent.
-Vendor delivery additionally needs upstream cookie isolation, session activity
-handling, validated-IP fetch integration, redirect/content rewriting, wildcard
+Vendor delivery additionally needs runtime wiring of the internal coordinator's
+upstream cookie isolation and proxied session-activity recording, validated-IP fetch integration, redirect/content rewriting, wildcard
 DNS/TLS deployment and end-to-end browser compatibility tests.
 
 

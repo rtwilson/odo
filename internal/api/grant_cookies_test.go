@@ -94,12 +94,18 @@ func TestGrantCookiesRoundTripAndLiveAuthorization(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if auth.ParentSessionID != parent.ID || auth.ParentSessionHash != parent.SessionHash || auth.ResourceID != "vendor" || auth.PolicyGeneration == 0 || auth.Anonymous || auth.ParentExpires.After(f.now.Add(handoffGrantTTL)) {
-		t.Fatal("authorization did not use the verified parent, winner and grant deadline")
+	if auth.ParentSessionID != parent.ID || auth.ParentSessionHash != parent.SessionHash || auth.ResourceID != "vendor" || auth.PolicyGeneration == 0 || auth.Anonymous {
+		t.Fatal("authorization did not use the verified parent and winner")
+	}
+	// Jars follow patron inactivity and the parent's deadlines, never the
+	// grant's fixed TTL, so a later handoff keeps an active patron's cookies.
+	deadline, err := grantParentAuthorization(parent, "vendor", f.now)
+	if err != nil || !auth.ParentExpires.Equal(deadline.parentExpires) || !auth.ParentExpires.After(f.now.Add(handoffGrantTTL)) {
+		t.Fatal("jar deadline was not the parent's idle/absolute deadline")
 	}
 	after, _, _ := f.h.server.store.GetSession(parent.ID)
 	if after.LastSeenAt != parent.LastSeenAt {
-		t.Fatal("cookie authorization touched session activity")
+		t.Fatal("authorization wrote session activity, or a recent session ignored the touch throttle")
 	}
 }
 
@@ -564,5 +570,88 @@ func TestGrantCookiesResponseFailuresStripHeaders(t *testing.T) {
 				t.Fatal("failed response retained cookie headers or reported success")
 			}
 		})
+	}
+}
+
+func TestGrantCookiesPrepareClearsServerRequestFields(t *testing.T) {
+	f := newGrantCookieFixture(t)
+	request := httptest.NewRequest("GET", f.target, nil)
+	request.Host = f.authority
+	prepared, _, err := f.c.prepareRequest(request, f.token, f.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Host != "" || prepared.RequestURI != "" {
+		t.Fatal("upstream request kept the proxy Host or server RequestURI")
+	}
+	if request.Host != f.authority || request.RequestURI == "" {
+		t.Fatal("prepare mutated the caller's request")
+	}
+}
+
+// A grant reaching its deadline during one authorization must not retire the
+// parent's jars: grant expiry is denial, not parent invalidity.
+func TestGrantCookiesReadClockOnceAndKeepParentJars(t *testing.T) {
+	f := newGrantCookieFixture(t)
+	_, exchange := f.prepare(t)
+	if err := grantCookieResponse(exchange, "vendor=private; Path=/"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	f.c.now = func() time.Time {
+		calls++
+		if calls == 1 {
+			return f.now
+		}
+		return f.now.Add(handoffGrantTTL)
+	}
+	prepared, _ := f.prepare(t)
+	if calls != 1 || prepared.Header.Get("Cookie") != "vendor=private" {
+		t.Fatalf("authorization used %d clock reads or lost the jar", calls)
+	}
+	f.c.now = func() time.Time { return f.now }
+	if prepared, _ = f.prepare(t); prepared.Header.Get("Cookie") != "vendor=private" {
+		t.Fatal("parent jar was retired by a grant deadline race")
+	}
+}
+
+func setParentLastSeen(t *testing.T, f *grantCookieFixture, seen time.Time) {
+	t.Helper()
+	if _, err := f.control.Exec(`UPDATE sessions SET last_seen_at = ?`, seen.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Proxied browsing is patron activity: it must keep the central session from
+// idling out, exactly as central requests do.
+func TestGrantCookiesProxiedActivityKeepsSessionAlive(t *testing.T) {
+	f := newGrantCookieFixture(t)
+	sessionID := local.SessionIDFromToken(f.central)
+	setParentLastSeen(t, f, time.Now().Add(-sessionIdleTimeout()+10*time.Minute))
+	f.prepare(t)
+	touched, _, _ := f.h.server.store.GetSession(sessionID)
+	seen, err := time.Parse(time.RFC3339, touched.LastSeenAt)
+	if err != nil || time.Since(seen) > time.Minute {
+		t.Fatal("proxied request did not record session activity")
+	}
+	// Without that touch, the session would be past its idle timeout here.
+	f.now = f.now.Add(20 * time.Minute)
+	f.prepare(t)
+}
+
+func TestGrantCookiesDeniedRequestsDoNotRecordActivity(t *testing.T) {
+	f := newGrantCookieFixture(t)
+	sessionID := local.SessionIDFromToken(f.central)
+	setParentLastSeen(t, f, time.Now().Add(-10*time.Minute))
+	before, _, _ := f.h.server.store.GetSession(sessionID)
+	if _, _, err := f.c.prepareRequest(httptest.NewRequest("DELETE", f.target, nil), f.token, f.authority); err == nil {
+		t.Fatal("denied method prepared")
+	}
+	if _, _, err := f.c.prepareRequest(httptest.NewRequest("GET", f.target, nil), "invalid", f.authority); err == nil {
+		t.Fatal("invalid grant prepared")
+	}
+	after, _, _ := f.h.server.store.GetSession(sessionID)
+	if after.LastSeenAt != before.LastSeenAt {
+		t.Fatal("denied proxied request recorded session activity")
 	}
 }

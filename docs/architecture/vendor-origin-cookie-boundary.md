@@ -248,7 +248,9 @@ does not construct it and no HTTP handler uses it. Its `prepareRequest` and
 `grantCookieExchange.storeResponse` methods:
 
 1. Validate the canonical upstream URL and current DNS safety outside the Store
-   guard. They perform no upstream fetch. The future transport must still dial
+   guard. They perform no upstream fetch. The prepared upstream request clears
+   the server-side `Host` and `RequestURI`, so the proxy authority is never sent
+   upstream. The future transport must still dial
    validated IPs; this preliminary check does not replace connection validation.
 2. Hold `WithResourceAccess` around the entire cookie-manager operation. The
    retained authorizer captures the grant token and exact authority, not a
@@ -260,13 +262,22 @@ does not construct it and no HTTP handler uses it. Its `prepareRequest` and
    not select a resource or retain its original launch-resource association.
 4. Reuse `grantParent` and `grantParentAuthorization` for exact registry/grant
    binding and live joined parent/account/hash/auth-version/expiry checks.
-   Authenticated jar deadlines include parent idle/absolute expiry and grant
-   expiry. Authorization does not touch session activity.
+   Authenticated jar deadlines are the parent's idle/absolute expiry plus the
+   manager's 30-minute jar inactivity timeout, not the grant TTL, so a patron's
+   later handoff keeps an active jar. An expired grant still denies use until a
+   new handoff. Each authorization reads the clock once, so grant lookup and
+   deadline checks agree. Authorization itself writes nothing; after the
+   Store guard is released, a successfully prepared request records parent
+   session activity with the central `last_seen_at` throttle, so a patron
+   actively browsing proxied content does not idle out. Denied requests and
+   response-time rechecks record nothing, and an idle, expired or revoked
+   parent is never revived.
 5. Fail closed on snapshot lookup or publication errors, including stale
    revisions. `InvalidatePolicies` clears all jars/exchanges while preserving
    the manager's revision floor and generation counter. Recovery creates fresh
    generations. Invalid parent checks retire that trusted parent's jars lazily;
-   failed database reads never count as proof of eligibility.
+   an expired grant only denies, because one grant ending does not invalidate
+   the parent. Failed database reads never count as proof of eligibility.
 
 This coordinator requires a valid grant. If the current winning rule is an
 explicit public exception, it supplies anonymous/cookieless authorization only

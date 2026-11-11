@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"example.org/odo/internal/db"
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 )
@@ -50,25 +52,58 @@ func (c *grantCookieCoordinator) prepareRequest(request *http.Request, token, au
 	target := *request.URL
 	upstream := request.Clone(request.Context())
 	upstream.URL = &target
+	// Never carry server-request fields upstream: a browser request's Host is the
+	// proxy authority, and net/http clients reject a set RequestURI.
+	upstream.Host, upstream.RequestURI = "", ""
 	if err := c.validateTarget(request.Context(), &target); err != nil {
 		return nil, nil, err
 	}
 	var prepared *http.Request
 	var exchange *proxy.UpstreamCookieExchange
+	// Capture only the prepare-time parent. The manager retains this authorizer
+	// for response checks, so later calls must not write shared state.
+	var active atomic.Pointer[db.Session]
 	err := c.handoff.server.store.WithResourceAccess(func() error {
 		var err error
 		prepared, exchange, err = c.jars.PrepareRequest(upstream, func(ctx context.Context, actual *url.URL, method string) (proxy.CookieAuthorization, error) {
 			// This callback is retained by the manager for response validation;
 			// it captures credentials/binding only, never a resource snapshot,
 			// resource decision or previously observed generation.
-			return c.authorize(ctx, token, authority, actual, method)
+			auth, parent, err := c.authorizeParent(ctx, token, authority, actual, method)
+			if err == nil {
+				active.CompareAndSwap(nil, &parent)
+			}
+			return auth, err
 		})
 		return err
 	})
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := c.recordActivity(active.Load()); err != nil {
+		return nil, nil, err
+	}
 	return prepared, &grantCookieExchange{coordinator: c, exchange: exchange, target: target}, nil
+}
+
+// recordActivity keeps an actively proxied patron's central session from idling
+// out, using the central session touch throttle. It runs after the resource
+// guard and only for a parent this request just validated, so it can never
+// revive an expired, idle or revoked session. Failure fails the request closed,
+// as a failed central touch does.
+func (c *grantCookieCoordinator) recordActivity(parent *db.Session) error {
+	if parent == nil || parent.ID == "" {
+		return proxy.ErrCookieAuthorization
+	}
+	// Match central touches and TouchSession itself, which use the wall clock.
+	seen, err := time.Parse(time.RFC3339, parent.LastSeenAt)
+	if err == nil && time.Now().UTC().Sub(seen) < sessionTouchInterval() {
+		return nil
+	}
+	if err := c.handoff.server.store.TouchSession(parent.ID); err != nil {
+		return errors.New("record proxied session activity failed")
+	}
+	return nil
 }
 
 // storeResponse must succeed before any response headers/body are forwarded.
@@ -113,17 +148,29 @@ func (c *grantCookieCoordinator) validateTarget(ctx context.Context, target *url
 }
 
 // authorize is called only by the private manager exchanges inside the Store
-// resource guard, after validateTarget. It does no DNS/network work. Parent
-// validity is read live; as in handoff validation, a concurrent revocation after
-// that read may finish the current operation, but the next operation rechecks.
+// resource guard, after validateTarget. It does no DNS/network work and no
+// database writes; prepareRequest records parent activity after the guard.
+// Parent validity is read live; as in handoff validation, a concurrent
+// revocation after that read may finish the current operation, but the next
+// operation rechecks.
 func (c *grantCookieCoordinator) authorize(ctx context.Context, token, authority string, target *url.URL, method string) (proxy.CookieAuthorization, error) {
+	auth, _, err := c.authorizeParent(ctx, token, authority, target, method)
+	return auth, err
+}
+
+// authorizeParent also returns the validated parent session (zero on failure)
+// so the caller can record patron activity outside the resource guard.
+func (c *grantCookieCoordinator) authorizeParent(ctx context.Context, token, authority string, target *url.URL, method string) (proxy.CookieAuthorization, db.Session, error) {
 	if err := ctx.Err(); err != nil {
-		return proxy.CookieAuthorization{}, err
+		return proxy.CookieAuthorization{}, db.Session{}, err
 	}
+	// One instant for the whole decision, so grant lookup and deadline checks
+	// cannot disagree about whether the grant is still live.
+	now := c.now()
 	snapshot, err := c.handoff.server.store.ResourceSnapshot()
 	if err != nil {
 		c.jars.InvalidatePolicies()
-		return proxy.CookieAuthorization{}, errors.New("cookie resource snapshot unavailable")
+		return proxy.CookieAuthorization{}, db.Session{}, errors.New("cookie resource snapshot unavailable")
 	}
 	active := make([]resources.Resource, 0, len(snapshot.Resources))
 	for _, item := range snapshot.Resources {
@@ -135,44 +182,47 @@ func (c *grantCookieCoordinator) authorize(ctx context.Context, token, authority
 		// Even a stale publication (which the manager rejects without clearing
 		// newer state) makes this coordinator unavailable until a valid read.
 		c.jars.InvalidatePolicies()
-		return proxy.CookieAuthorization{}, err
+		return proxy.CookieAuthorization{}, db.Session{}, err
 	}
-	grant, parent, err := c.handoff.grantParent(token, authority, c.now())
+	grant, parent, err := c.handoff.grantParent(token, authority, now)
 	if err != nil {
 		if grant.binding.parentSessionID != "" {
 			c.jars.RetireParent(grant.binding.parentSessionID)
 		}
-		return proxy.CookieAuthorization{}, err
+		return proxy.CookieAuthorization{}, db.Session{}, err
 	}
 	if target == nil || target.Scheme != "https" || target.Hostname() != grant.binding.hostname {
-		return proxy.CookieAuthorization{}, proxy.ErrCookieAuthorization
+		return proxy.CookieAuthorization{}, db.Session{}, proxy.ErrCookieAuthorization
 	}
 	result := resources.TestURL(target.String(), snapshot.Resources)
 	if !result.Allowed || result.Action != "proxy" || result.ResourceID == "" || !resources.MethodAllowed(result, method) {
-		return proxy.CookieAuthorization{}, proxy.ErrCookieAuthorization
+		return proxy.CookieAuthorization{}, db.Session{}, proxy.ErrCookieAuthorization
 	}
-	now := c.now()
+	if !now.Before(grant.expires) {
+		// A single grant ending is not parent invalidity: deny only, leaving the
+		// parent's jars for its other live grants and resources.
+		return proxy.CookieAuthorization{}, db.Session{}, proxy.ErrCookieAuthorization
+	}
 	validated, err := grantParentAuthorization(parent, result.ResourceID, now)
-	if err != nil || !now.Before(grant.expires) {
+	if err != nil {
 		c.jars.RetireParent(grant.binding.parentSessionID)
-		return proxy.CookieAuthorization{}, proxy.ErrCookieAuthorization
+		return proxy.CookieAuthorization{}, db.Session{}, proxy.ErrCookieAuthorization
 	}
 	generation, err := c.jars.PolicyGeneration(result.ResourceID)
 	if err != nil {
 		c.jars.InvalidatePolicies()
-		return proxy.CookieAuthorization{}, err
+		return proxy.CookieAuthorization{}, db.Session{}, err
 	}
 	if result.AnonymousRuleMatched {
 		// An explicitly public winning rule is cookieless even with a grant.
 		// This grant-bound coordinator never falls back here after grant failure.
-		return proxy.CookieAuthorization{Anonymous: true, ResourceID: result.ResourceID, PolicyGeneration: generation}, nil
+		return proxy.CookieAuthorization{Anonymous: true, ResourceID: result.ResourceID, PolicyGeneration: generation}, parent, nil
 	}
-	expires := validated.parentExpires
-	if grant.expires.Before(expires) {
-		expires = grant.expires
-	}
+	// The jar deadline is the parent's idle/absolute deadline, not the grant's
+	// fixed TTL: the manager's 30-minute inactivity timeout ends idle jars, and
+	// a patron's later handoff (new grant) keeps an active jar's cookies.
 	return proxy.CookieAuthorization{
 		ParentSessionID: validated.parentSessionID, ParentSessionHash: validated.parentSessionHash,
-		ParentExpires: expires, ResourceID: validated.resourceID, PolicyGeneration: generation,
-	}, nil
+		ParentExpires: validated.parentExpires, ResourceID: validated.resourceID, PolicyGeneration: generation,
+	}, parent, nil
 }
