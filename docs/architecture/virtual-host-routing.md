@@ -11,7 +11,7 @@ virtual-host proxy mode.
 | --- | --- |
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers, bounded upstream cookie jars and the live grant/snapshot cookie coordinator. |
 | Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized `GET`/`HEAD` vendor content without rewriting; see [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake. |
-| Unsupported | Unsafe methods, HTML/JavaScript/CSS rewriting, cross-host redirects and assets, automatic cold-host handoff, anonymous grant-free vendor access, post-commit lifecycle hooks, cookie persistence and multi-instance handoff state. |
+| Unsupported | Unsafe methods, HTML/JavaScript/CSS rewriting, cross-host redirects and assets, automatic cold-host handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
 | Production-disabled | All vendor-host delivery: startup rejects the flag outside development/test. Central path content, diagnostic body previews and missed-rewrite recovery are blocked while the experimental mode is on; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
 
 ## Trusted deployment names
@@ -520,10 +520,33 @@ Known limits: vendor HTML is not rewritten, so absolute vendor links,
 cross-host assets, frames and redirects leave the proxy host and do not work.
 After 30 minutes of inactivity, a re-handoff requires the patron to confirm
 again at central. A stolen grant cookie can be kept alive by use until the
-parent's absolute expiry unless the parent session ends. There is no post-commit retirement hook, no
-cookie persistence and no multi-instance state.
+parent's absolute expiry unless the parent session ends. There is no cookie
+persistence and no multi-instance state.
 
-Remaining delivery work: production origin rollout, post-commit retirement
-hooks, virtual-host
+## Post-commit retirement
+
+`db.CommitHooks` (`internal/db/commit_hooks.go`) notify the process that owns
+in-memory credential state as soon as a change commits. `newHandoffRuntime`
+registers one set per Store:
+
+- `ResourcesChanged` runs after every committed resource upsert or delete
+  (including each resource of a config import) while the writer still holds the
+  resource guard. It republishes the current snapshot's active policies through
+  the coordinator, so jars of changed, disabled or deleted resources are dropped
+  at commit even if no request follows. Any read/publication failure invalidates
+  all jars, as on the request path.
+- `SessionsRevoked` receives exactly the session IDs a transaction revoked
+  (`UPDATE ... RETURNING id`): logout, administrative revoke-sessions, password
+  set, disable/lock, security-relevant role changes, deletion and restoration.
+  It runs only after a successful commit, holds no Store lock, and drops those
+  parents' upstream jars and their pending handoffs, tickets and grants. Other
+  patrons are untouched.
+
+Hooks are cleanup notifications, not authorization. Every request still
+revalidates the live session, account and resource policy, so a missed hook
+(another process, direct SQL, a crash between commit and hook) only delays
+memory cleanup until the next request, jar idle expiry or grant expiry.
+
+Remaining delivery work: production origin rollout, virtual-host
 URL/rewrite behavior, cross-host redirect/cold-host rules, wildcard DNS/TLS deployment and real-browser/vendor
 compatibility/privacy testing.

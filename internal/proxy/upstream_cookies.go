@@ -379,6 +379,14 @@ func (m *UpstreamCookieJars) RetireParent(parentID string) {
 	}
 }
 
+// Len reports how many jars are allocated, for bounds and lifecycle checks.
+// It exposes no parent, resource or cookie data.
+func (m *UpstreamCookieJars) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.jars)
+}
+
 // Cleanup can be called by lifecycle maintenance; operations also sweep the
 // bounded maps. There is no background goroutine or persistent browsing state.
 func (m *UpstreamCookieJars) Cleanup() {

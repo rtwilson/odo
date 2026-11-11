@@ -20,6 +20,8 @@ type Store struct {
 	db *sql.DB
 	// Orders resource commits with WithResourceSnapshot callbacks on this Store.
 	resourceMu sync.Mutex
+	hooksMu    sync.Mutex
+	hooks      []CommitHooks
 }
 
 type ConfigRevision struct {
@@ -271,7 +273,9 @@ ON CONFLICT(id) DO UPDATE SET
 		"resource.upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, resource.ID, resource.Status)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	err = tx.Commit()
+	s.resourcesChanged()
+	return err
 }
 
 func (s *Store) ListResources() ([]resources.Resource, error) {
@@ -343,7 +347,9 @@ func (s *Store) DeleteResource(id string) (bool, error) {
 		"resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
 		return false, err
 	}
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	s.resourcesChanged()
+	if err != nil {
 		return false, err
 	}
 	return true, nil
@@ -828,8 +834,9 @@ func (s *Store) PatchUser(id string, patch UserPatch) (User, bool, error) {
 		}
 		return User{}, true, ErrUserDeleted
 	}
+	var revoked []string
 	if securityChange {
-		if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, user.ID); err != nil {
+		if revoked, err = revokeUserSessionsTx(tx, now, user.ID); err != nil {
 			return User{}, false, err
 		}
 	}
@@ -840,6 +847,7 @@ func (s *Store) PatchUser(id string, patch UserPatch) (User, bool, error) {
 	if err := tx.Commit(); err != nil {
 		return User{}, false, err
 	}
+	s.sessionsRevoked(revoked)
 	return updated, true, nil
 }
 
@@ -860,12 +868,14 @@ func (s *Store) SetUserPassword(id, hash string) (bool, error) {
 	if err != nil || rows == 0 {
 		return false, err
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+	revoked, err := revokeUserSessionsTx(tx, now, id)
+	if err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
+	s.sessionsRevoked(revoked)
 	return true, nil
 }
 
@@ -905,8 +915,9 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if err != nil || rows == 0 {
 		return User{}, false, err
 	}
+	var revoked []string
 	if status == "disabled" || status == "locked" {
-		if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+		if revoked, err = revokeUserSessionsTx(tx, now, id); err != nil {
 			return User{}, false, err
 		}
 	}
@@ -917,6 +928,7 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if err := tx.Commit(); err != nil {
 		return User{}, false, err
 	}
+	s.sessionsRevoked(revoked)
 	return user, true, nil
 }
 
@@ -965,8 +977,14 @@ func (s *Store) CountActiveSessionsSince(since time.Time, now time.Time) (int, e
 }
 
 func (s *Store) RevokeSession(id string) error {
-	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), id)
-	return err
+	result, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows > 0 {
+		s.sessionsRevoked([]string{id})
+	}
+	return nil
 }
 
 func (s *Store) RevokeUserSessions(userID string) error {
@@ -978,10 +996,15 @@ func (s *Store) RevokeUserSessions(userID string) error {
 	if _, err := tx.Exec(`UPDATE users SET auth_version = auth_version + 1 WHERE id = ?`, userID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), userID); err != nil {
+	revoked, err := revokeUserSessionsTx(tx, time.Now().UTC().Format(time.RFC3339), userID)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.sessionsRevoked(revoked)
+	return nil
 }
 
 type userScanner interface {

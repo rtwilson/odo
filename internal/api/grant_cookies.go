@@ -156,6 +156,43 @@ func (c *grantCookieCoordinator) validateTarget(ctx context.Context, target *url
 // errVendorTargetUnsafe means the target failed DNS or IP safety validation.
 var errVendorTargetUnsafe = errors.New("vendor target failed DNS or address safety validation")
 
+// publishPolicies reads one fresh resource snapshot and installs its active
+// policies, retiring jars whose policy or revision changed. The caller must
+// hold the Store resource guard: authorize runs inside WithResourceAccess, and
+// the ResourcesChanged commit hook runs inside the committing writer. Any read
+// or publication failure (including a stale revision) invalidates all jars.
+func (c *grantCookieCoordinator) publishPolicies() (db.ResourceSnapshot, error) {
+	snapshot, err := c.handoff.server.store.ResourceSnapshot()
+	if err != nil {
+		c.jars.InvalidatePolicies()
+		return db.ResourceSnapshot{}, errors.New("cookie resource snapshot unavailable")
+	}
+	active := make([]resources.Resource, 0, len(snapshot.Resources))
+	for _, item := range snapshot.Resources {
+		if item.Status == "active" {
+			active = append(active, item)
+		}
+	}
+	if err := c.jars.ReplacePolicySnapshot(snapshot.Revision, active); err != nil {
+		// Even a stale publication (which the manager rejects without clearing
+		// newer state) makes this coordinator unavailable until a valid read.
+		c.jars.InvalidatePolicies()
+		return db.ResourceSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// retireParents drops the jars and all pending handoff state (pending records,
+// tickets, grants) of parent sessions whose revocation has committed. It is
+// cleanup only: the next request still revalidates durable revocation.
+func (c *grantCookieCoordinator) retireParents(sessionIDs []string) {
+	now := time.Now().UTC()
+	for _, id := range sessionIDs {
+		c.jars.RetireParent(id)
+		c.handoff.state.removeParent(id, now)
+	}
+}
+
 // authorize is called only by the private manager exchanges inside the Store
 // resource guard, after validateTarget. It does no DNS/network work and no
 // database writes; prepareRequest records parent activity after the guard.
@@ -176,21 +213,8 @@ func (c *grantCookieCoordinator) authorizeParent(ctx context.Context, token, aut
 	// One instant for the whole decision, so grant lookup and deadline checks
 	// cannot disagree about whether the grant is still live.
 	now := c.now()
-	snapshot, err := c.handoff.server.store.ResourceSnapshot()
+	snapshot, err := c.publishPolicies()
 	if err != nil {
-		c.jars.InvalidatePolicies()
-		return proxy.CookieAuthorization{}, db.Session{}, errors.New("cookie resource snapshot unavailable")
-	}
-	active := make([]resources.Resource, 0, len(snapshot.Resources))
-	for _, item := range snapshot.Resources {
-		if item.Status == "active" {
-			active = append(active, item)
-		}
-	}
-	if err := c.jars.ReplacePolicySnapshot(snapshot.Revision, active); err != nil {
-		// Even a stale publication (which the manager rejects without clearing
-		// newer state) makes this coordinator unavailable until a valid read.
-		c.jars.InvalidatePolicies()
 		return proxy.CookieAuthorization{}, db.Session{}, err
 	}
 	grant, parent, err := c.handoff.grantParent(token, authority, now)

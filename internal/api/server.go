@@ -103,6 +103,13 @@ func newHandoffRuntime(server *Server, config proxy.HostRoutingConfig) (*handoff
 		return nil, errors.New("experimental handoff cookie coordinator could not be constructed")
 	}
 	h.cookies = cookies
+	// Post-commit retirement: clear in-memory credential state as soon as a
+	// resource change or session revocation commits, instead of at the next
+	// request. Live revalidation on every request remains the authority.
+	server.store.AddCommitHooks(db.CommitHooks{
+		ResourcesChanged: func() { _, _ = cookies.publishPolicies() },
+		SessionsRevoked:  cookies.retireParents,
+	})
 	// Dial-time validation reads the same resolver as the coordinator's target
 	// check, so the two can never be configured differently.
 	h.vendor = proxy.NewSafeHTTPClient(func(ctx context.Context, host string) ([]net.IPAddr, error) {

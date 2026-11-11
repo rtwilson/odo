@@ -957,3 +957,85 @@ func TestVendorDeliveryFailedResponsesStoreNoState(t *testing.T) {
 		t.Fatalf("failed response stored vendor cookies: %q", rec.Body.String())
 	}
 }
+
+func (d *deliveryHarness) grantCount() int {
+	d.h.state.mu.Lock()
+	defer d.h.state.mu.Unlock()
+	return len(d.h.state.grants)
+}
+
+// Post-commit retirement: a committed resource change clears idle jars at
+// commit, with no request in between.
+func TestVendorDeliveryResourceCommitRetiresIdleJars(t *testing.T) {
+	for _, kind := range []string{"cookie policy disabled", "resource disabled", "resource deleted", "identical write"} {
+		t.Run(kind, func(t *testing.T) {
+			d := newDeliveryHarness(t)
+			if rec := d.serve("GET", "/set?v=idle", d.grant, nil); rec.Code != 200 || d.h.cookies.jars.Len() != 1 {
+				t.Fatal("jar not allocated")
+			}
+			item, _, _ := d.h.server.store.GetResource("vendor")
+			var err error
+			switch kind {
+			case "cookie policy disabled":
+				item.CookiePolicy.Enabled = false
+				err = d.h.server.store.UpsertResource(item)
+			case "resource disabled":
+				item.Status = "disabled"
+				err = d.h.server.store.UpsertResource(item)
+			case "resource deleted":
+				_, err = d.h.server.store.DeleteResource("vendor")
+			case "identical write":
+				err = d.h.server.store.UpsertResource(item)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.h.cookies.jars.Len() != 0 {
+				t.Fatal("committed resource change left the idle jar allocated")
+			}
+		})
+	}
+}
+
+// Post-commit retirement: committed session revocation clears that parent's
+// jars and handoff grants at once, and leaves other patrons untouched.
+func TestVendorDeliverySessionRevocationRetiresJarsAndGrants(t *testing.T) {
+	for _, kind := range []string{"logout", "admin revoke", "password", "disabled", "locked", "deleted"} {
+		t.Run(kind, func(t *testing.T) {
+			d := newDeliveryHarness(t)
+			bob := createLocalTestUser(t, d.h.server, "bob", "correct horse battery")
+			_, bobGrant := d.grantFor(t, bob.ID)
+			for _, grant := range []string{d.grant, bobGrant} {
+				if rec := d.serve("GET", "/set?v=x", grant, nil); rec.Code != 200 {
+					t.Fatal(rec.Code)
+				}
+			}
+			if d.h.cookies.jars.Len() != 2 || d.grantCount() != 2 {
+				t.Fatal("setup did not allocate two jars and grants")
+			}
+			parent, _, _ := d.h.server.store.GetSession(local.SessionIDFromToken(d.central))
+			var err error
+			switch kind {
+			case "logout":
+				requestLogout(d.h.server, &http.Cookie{Name: "__Host-odo_session", Value: d.central})
+			case "admin revoke":
+				err = d.h.server.store.RevokeUserSessions(parent.UserID)
+			case "password":
+				_, err = d.h.server.store.SetUserPassword(parent.UserID, "new-hash")
+			case "disabled", "locked":
+				_, _, err = d.h.server.store.SetUserStatus(parent.UserID, kind)
+			case "deleted":
+				_, err = d.h.server.store.DeleteUser(parent.UserID, "")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.h.cookies.jars.Len() != 1 || d.grantCount() != 1 {
+				t.Fatalf("revocation left jars=%d grants=%d (want only bob's)", d.h.cookies.jars.Len(), d.grantCount())
+			}
+			if rec := d.serve("GET", "/echo", bobGrant, nil); rec.Code != 200 || rec.Body.String() != "cookie=who=x" {
+				t.Fatal("another patron's vendor session was retired")
+			}
+		})
+	}
+}

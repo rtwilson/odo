@@ -56,7 +56,8 @@ func (s *Store) DeleteUser(id, actorID string) (bool, error) {
 	if _, err := tx.Exec(`UPDATE users SET status = 'deleted', password_hash = '', disabled_at = ?, updated_at = ?, auth_version = auth_version + 1 WHERE id = ?`, now, now, id); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+	revoked, err := revokeUserSessionsTx(tx, now, id)
+	if err != nil {
 		return false, err
 	}
 	if err := auditUserLifecycle(tx, now, "user_deleted", id, actorID); err != nil {
@@ -65,6 +66,7 @@ func (s *Store) DeleteUser(id, actorID string) (bool, error) {
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
+	s.sessionsRevoked(revoked)
 	return true, nil
 }
 
@@ -101,7 +103,8 @@ func (s *Store) RestoreUser(id, actorID, passwordHash string) (bool, error) {
 		return false, ErrUserNotDeleted
 	}
 	// Defense in depth: revoke any session inserted while the account was deleted.
-	if _, err := tx.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+	revoked, err := revokeUserSessionsTx(tx, now, id)
+	if err != nil {
 		return false, err
 	}
 	if err := auditUserLifecycle(tx, now, "user_restored", id, actorID); err != nil {
@@ -110,6 +113,7 @@ func (s *Store) RestoreUser(id, actorID, passwordHash string) (bool, error) {
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
+	s.sessionsRevoked(revoked)
 	return true, nil
 }
 

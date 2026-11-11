@@ -348,8 +348,9 @@ resource scope, disabled/anonymous cookieless behavior, allowed domains and poli
 retirement; see [the cookie boundary](vendor-origin-cookie-boundary.md).
 The internal grant/cookie coordinator now validates live authorization and
 publishes a guarded resource snapshot on every request/response cookie operation.
-The experimental runtime owns one coordinator for vendor content delivery;
-post-commit retirement integration remains required. Legacy resource import
+The experimental runtime owns one coordinator for vendor content delivery and
+registers post-commit retirement hooks for resource and session changes. Legacy
+resource import
 compatibility is preserved.
 
 ## Cross-host assets and acceptance gates
@@ -439,8 +440,8 @@ content delivery with actual-target authorization and validated-IP dialing on
 each fetch. Experimental central-origin migration now redirects only
 validated legacy GET bookmarks to central launch and rejects HEAD/unsafe methods
 without replay; recovery and diagnostic vendor body previews remain blocked.
-The next milestones are post-commit resource/session retirement integration,
-vendor URL rewriting and cross-host rules, plus production origin rollout. Do not
+The next milestones are vendor URL rewriting and cross-host rules, plus
+production origin rollout. Do not
 treat this experimental delivery path as approval to enable production vendor
 delivery.
 

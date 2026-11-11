@@ -3,8 +3,9 @@
 Status: an isolated bounded upstream jar manager is implemented and tested in
 `internal/proxy/upstream_cookies.go` and `upstream_cookie_policy.go`. The internal
 `internal/api/grant_cookies.go` coordinator now joins live grant validation,
-database resource snapshots and jar preparation/response storage. It is not
-constructed by the runtime or connected to routes, post-commit hooks or fetches. The experimental
+database resource snapshots and jar preparation/response storage. The
+experimental runtime constructs one, uses it for GET/HEAD vendor delivery and
+registers its post-commit retirement hooks. The experimental
 handoff-only runtime implements control routes and host-only nonce/grant cookies
 in development/test. Virtual-host content delivery remains disabled and rejected
 in production. The production origin recommendations below remain rollout gates.
@@ -181,7 +182,8 @@ These transactions do not yet publish policy generations or retire jars. File im
 commit each resource separately, and a later import/revision error does not undo
 earlier successful writes. The internal coordinator observes their persisted
 revision on every cookie operation, independently of the import's final result.
-Immediate post-commit publication/retirement hooks remain a separate step.
+The runtime's `ResourcesChanged` commit hook also republishes after every
+committed write, so imports retire changed jars as each resource commits.
 
 `db.Store.ResourceSnapshot()` now returns validated resources and their database
 `Revision` from one read transaction. The additive `resource_state` table holds
@@ -207,8 +209,8 @@ allowing jar access. Comparing only the final policy would still revive cookies
 after an unseen change/reversion. Reading a revision separately from the resources
 being authorized is also unsafe. Snapshot reads do not reserve authorization
 against later writes. The coordinator uses the Store guard below. The
-experimental runtime constructs it for GET/HEAD vendor delivery; post-commit
-retirement hooks remain unwired and production delivery stays disabled. Revision
+experimental runtime constructs it for GET/HEAD vendor delivery and registers
+post-commit retirement hooks; production delivery stays disabled. Revision
 tracking covers the Store write methods, including API and file-import calls;
 direct SQL changes and writers from older binaries are outside this contract.
 
@@ -291,13 +293,16 @@ rejects a response before reaching the manager. A response from a retired
 generation cannot store cookies after a revision change, including a skipped
 change/reversion or an identical write.
 
-Resource changes are observed at the next cookie operation. No access can pass
-through this coordinator using the old revision after a participating write
-commits, but idle jars are not proactively cleared at commit yet. Session changes
-are not serialized by the resource guard: the existing rule that an operation
-authorized before a concurrent revocation may finish still applies. Later
-operations revalidate. Immediate lifecycle retirement hooks and idle
-maintenance remain follow-up work; there is no second session store.
+Resource changes are published at commit and observed again at the next
+cookie operation. No access can pass through this coordinator using the old
+revision after a participating write commits, and idle jars of changed policies
+are cleared at commit by the `ResourcesChanged` hook. Session changes are not
+serialized by the resource guard: the existing rule that an operation authorized
+before a concurrent revocation may finish still applies, its response is
+reauthorized before cookie storage, and the `SessionsRevoked` hook retires the
+parent's jars and grants as soon as the revocation commits. Idle maintenance of
+expired jars still relies on operation sweeps and `Cleanup`; there is no second
+session store. See [post-commit retirement](virtual-host-routing.md#post-commit-retirement).
 
 `internal/api/grant_cookies_test.go` covers local request/response round trips,
 wrong host/target/method, current winners, disabled/deleted/changed resources,
@@ -326,7 +331,6 @@ jar; failures return an empty result. Database-backed regression tests are in
 This internal result deliberately has no cookie-policy generation. The cookie
 coordinator reuses the shared parent validation helpers with its own guarded
 resource snapshot instead of attaching a generation to this independent lookup.
-Post-commit policy/session retirement remains separate work.
 No HTTP handler obtains an upstream jar from this result; experimental delivery
 uses the cookie coordinator instead, and production delivery stays disabled.
 
@@ -425,8 +429,9 @@ fails closed; in-flight requests already authorized may finish.
 references. Late responses cannot repopulate retired jars. It stores no revoked
 parent tombstones: subsequent requests must still pass live authorization.
 Calling retirement without implementing that authorization is not session
-revocation. Logout/account mutation integration will need to call retirement
-after durable revocation; failed transactions must not claim durable revocation.
+revocation. The runtime calls it from the Store's `SessionsRevoked` commit
+hook, only after a revocation transaction commits; failed transactions never
+claim durable revocation.
 
 Browser grant/nonce cookies remain host-only `__Host-` cookies with Secure,
 HttpOnly, Path=/ and no Domain. Central session/CSRF cookies remain central;
@@ -468,6 +473,6 @@ target on the same proxy host (or an inert receipt). Default URL
 modes are unchanged; experimental mode blocks central-origin vendor content.
 The bounded jar manager and live authorization coordinator are implemented and
 owned by the experimental runtime, which uses them for experimental GET/HEAD
-vendor content delivery. Immediate lifecycle hooks remain unwired. The
+vendor content delivery, with post-commit retirement hooks. The
 experimental central-origin migration boundary is implemented; production
 rollout remains a mandatory gate before delivery is enabled.
