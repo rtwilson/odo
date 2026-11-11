@@ -340,7 +340,9 @@ resource cookie policy before rollout. The legacy browser-selected jar model
 cannot simply be shared across vendor hosts. The isolated manager now enforces
 resource scope, disabled/anonymous cookieless behavior, allowed domains and policy
 retirement; see [the cookie boundary](vendor-origin-cookie-boundary.md).
-Live authorization, update and retirement integration remains required; legacy
+The internal grant/cookie coordinator now validates live authorization and
+publishes a guarded resource snapshot on every request/response cookie operation.
+Runtime ownership and post-commit retirement integration remain required; legacy
 resource import compatibility is preserved.
 
 ## Cross-host assets and acceptance gates
@@ -421,12 +423,14 @@ No public DNS, upstream vendor request or upstream jar is involved. See the
 for exact commands and current limits.
 
 Bounded parent/resource upstream cookie jars are now implemented as an isolated
-manager, with policy generations, cookie filtering and capacity/cleanup tests;
-they remain unwired. Experimental central-origin migration now redirects only
+manager, with policy generations, cookie filtering and capacity/cleanup tests.
+An internal coordinator now joins live grant/parent validation and guarded
+resource snapshots to request/response cookie operations; it has no routes or
+fetches and is not constructed by the runtime. Experimental central-origin migration now redirects only
 validated legacy GET bookmarks to central launch and rejects HEAD/unsafe methods
 without replay; recovery and diagnostic vendor body previews remain blocked.
-The next milestone is live authorization, resource-policy publication and
-session-lifecycle integration with that manager, plus production origin rollout
+The next milestone is runtime ownership and post-commit resource/session
+retirement integration with that manager, plus production origin rollout
 and actual-target authorization at each fetch. Do not treat this experimental
 handoff as approval to enable vendor delivery.
 

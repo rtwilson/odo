@@ -175,8 +175,9 @@ func (h *handoffSecurity) validateGrant(ctx context.Context, token, authority, t
 }
 
 // grantAuthorization contains only the parent and winning-resource facts from
-// one live grant check. It is not cached and cannot select a jar: a future caller
-// must coordinate this resource lookup with the installed policy generation.
+// one live grant check. It is not cached and cannot select a jar. The cookie
+// coordinator reuses the parent checks with its guarded resource snapshot,
+// rather than combining this independent lookup with a policy generation.
 type grantAuthorization struct {
 	parentSessionID   string
 	parentSessionHash string
@@ -185,15 +186,7 @@ type grantAuthorization struct {
 }
 
 func (h *handoffSecurity) authorizeGrant(ctx context.Context, token, authority, target, method string, now time.Time) (grantAuthorization, error) {
-	mapping, err := h.mapping(authority)
-	if err != nil {
-		return grantAuthorization{}, err
-	}
-	grant, found := h.state.inspectGrant(token, mapping, authority, now)
-	if !found {
-		return grantAuthorization{}, errHandoffDenied
-	}
-	parent, err := h.parent(grant.binding, now)
+	grant, parent, err := h.grantParent(token, authority, now)
 	if err != nil {
 		return grantAuthorization{}, err
 	}
@@ -201,6 +194,26 @@ func (h *handoffSecurity) authorizeGrant(ctx context.Context, token, authority, 
 	if err != nil {
 		return grantAuthorization{}, err
 	}
+	return grantParentAuthorization(parent, resourceID, now)
+}
+
+// grantParent is shared by handoff validation and the internal cookie
+// coordinator. A returned binding on parent failure is trusted server state,
+// suitable for discarding cached cookies, never for granting access.
+func (h *handoffSecurity) grantParent(token, authority string, now time.Time) (handoffGrant, db.Session, error) {
+	mapping, err := h.mapping(authority)
+	if err != nil {
+		return handoffGrant{}, db.Session{}, err
+	}
+	grant, found := h.state.inspectGrant(token, mapping, authority, now)
+	if !found {
+		return handoffGrant{}, db.Session{}, errHandoffDenied
+	}
+	parent, err := h.parent(grant.binding, now)
+	return grant, parent, err
+}
+
+func grantParentAuthorization(parent db.Session, resourceID string, now time.Time) (grantAuthorization, error) {
 	// parent has already parsed and validated both timestamps. Do not extend
 	// session activity or let a jar outlive the parent's idle/absolute deadline.
 	expires, _ := time.Parse(time.RFC3339, parent.ExpiresAt)

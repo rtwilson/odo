@@ -22,11 +22,13 @@ func NormalizeRegistryHostname(raw string) (string, error) {
 	if strings.ContainsAny(host, ":/\\@?#%[]") {
 		return "", errors.New("registry hostname must be a DNS name with no URL components")
 	}
-	ascii, err := registryIDNA.ToASCII(host)
+	// Strip exactly one root-label dot before IDNA: VerifyDNSLength rejects the
+	// empty root label, while "example.com.." must still fail as an empty label.
+	ascii, err := registryIDNA.ToASCII(strings.TrimSuffix(host, "."))
 	if err != nil {
 		return "", errors.New("registry hostname is invalid")
 	}
-	ascii = strings.ToLower(strings.TrimSuffix(ascii, "."))
+	ascii = strings.ToLower(ascii)
 	if ascii == "" || len(ascii) > 253 || net.ParseIP(ascii) != nil {
 		return "", errors.New("registry hostname is invalid")
 	}

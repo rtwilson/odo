@@ -17,7 +17,7 @@ type ResourceSnapshot struct {
 }
 
 // WithResourceSnapshot reads a fresh snapshot and excludes resource upserts,
-// deletes and other guarded callbacks on this Store until use returns. A future
+// deletes and other guarded callbacks on this Store until use returns. A
 // cookie coordinator must keep policy installation, resource authorization and
 // the complete PrepareRequest or StoreResponse operation inside use, not just
 // the authorization callback. A snapshot read failure never calls use.
@@ -33,13 +33,24 @@ type ResourceSnapshot struct {
 // the caller is responsible for invalidating any previously published policies;
 // this method has no cookie-manager state or rollback of callback side effects.
 func (s *Store) WithResourceSnapshot(use func(ResourceSnapshot) error) error {
+	return s.WithResourceAccess(func() error {
+		snapshot, err := s.ResourceSnapshot()
+		if err != nil {
+			return err
+		}
+		return use(snapshot)
+	})
+}
+
+// WithResourceAccess holds the same boundary as WithResourceSnapshot, but lets
+// a synchronous callback (such as a cookie manager's authorizer) read the fresh
+// snapshot itself. The same single-Store and no-network/no-write restrictions
+// apply. Hold this boundary around the entire cookie operation, not just its
+// authorizer, so a resource commit cannot intervene before jar access.
+func (s *Store) WithResourceAccess(use func() error) error {
 	s.resourceMu.Lock()
 	defer s.resourceMu.Unlock()
-	snapshot, err := s.ResourceSnapshot()
-	if err != nil {
-		return err
-	}
-	return use(snapshot)
+	return use()
 }
 
 // ResourceSnapshot reads the counter and resources in one SQLite transaction.

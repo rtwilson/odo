@@ -1,8 +1,10 @@
 # First vendor-host deployment: origin and cookie boundaries
 
 Status: an isolated bounded upstream jar manager is implemented and tested in
-`internal/proxy/upstream_cookies.go` and `upstream_cookie_policy.go`. It is not
-connected to routes, grants, resource updates, or fetches. The experimental
+`internal/proxy/upstream_cookies.go` and `upstream_cookie_policy.go`. The internal
+`internal/api/grant_cookies.go` coordinator now joins live grant validation,
+database resource snapshots and jar preparation/response storage. It is not
+constructed by the runtime or connected to routes, post-commit hooks or fetches. The experimental
 handoff-only runtime implements control routes and host-only nonce/grant cookies
 in development/test. Virtual-host content delivery remains disabled and rejected
 in production. The production origin recommendations below remain rollout gates.
@@ -177,8 +179,9 @@ changed but an audit error made the write appear to have failed. Focused tests
 in `internal/db/resource_transactions_test.go` inject both failure types.
 These transactions do not yet publish policy generations or retire jars. File imports still
 commit each resource separately, and a later import/revision error does not undo
-earlier successful writes. Future publication must follow each committed resource
-write, rather than wait for the whole import to succeed.
+earlier successful writes. The internal coordinator observes their persisted
+revision on every cookie operation, independently of the import's final result.
+Immediate post-commit publication/retirement hooks remain a separate step.
 
 `db.Store.ResourceSnapshot()` now returns validated resources and their database
 `Revision` from one read transaction. The additive `resource_state` table holds
@@ -193,18 +196,19 @@ resource advances it too; a missing deletion or rejected write does not. The
 resource mutation, counter increment and audit commit or roll back together.
 Missing/exhausted counter state rejects writes rather than wrap. Snapshot read
 or validation failures return no configuration or usable revision. Snapshots
-contain all resource statuses, so the future coordinator must select active
+contain all resource statuses, so the coordinator selects active
 resources when installing jar policies.
 
 This global configuration revision is separate from the manager's per-resource
 cookie-policy generations. The revision-aware installer implements conservative
-retirement, including after unrelated or identical resource writes. The future
-coordinator must call it with active policies from the database snapshot before
+retirement, including after unrelated or identical resource writes. The internal
+coordinator calls it with active policies from the database snapshot before
 allowing jar access. Comparing only the final policy would still revive cookies
 after an unseen change/reversion. Reading a revision separately from the resources
 being authorized is also unsafe. Snapshot reads do not reserve authorization
-against later writes. The live database/authorization coordinator and session
-retirement hooks remain unwired; vendor content delivery stays disabled. Revision
+against later writes. The internal coordinator uses the Store guard below;
+runtime construction and post-commit retirement hooks remain unwired. Vendor
+content delivery stays disabled. Revision
 tracking covers the Store write methods, including API and file-import calls;
 direct SQL changes and writers from older binaries are outside this contract.
 
@@ -213,7 +217,7 @@ The first synchronization primitive is now implemented:
 holds a Store-local mutex until `use` returns. `UpsertResource` and
 `DeleteResource` hold the same mutex through their resource/revision/audit
 transaction, including commit or rollback. Guarded callbacks are serialized too.
-This allows a future coordinator to keep snapshot publication, current resource
+The coordinator uses the same guard to keep snapshot publication, current resource
 authorization and the complete jar preparation or response storage operation
 inside one boundary. Locking only the `CookieAuthorizer` callback would leave a
 gap before the manager accesses a jar and is insufficient.
@@ -227,11 +231,67 @@ authorize grants, retire jars or serialize account/session changes.
 
 The guard covers one shared Store instance only. Separate Store instances,
 other processes and direct SQL writes do not participate; deployment must not
-claim cross-process authorization consistency from this mutex. The future
+claim cross-process authorization consistency from this mutex. The
 coordinator must use the same Store as API and import writers. Focused tests in
 `internal/db/resource_coordination_test.go` exercise writes during guarded use,
-fresh reads after commit, callback errors and failed snapshot reads. Live
-coordinator, lifecycle integration and vendor delivery remain unimplemented.
+fresh reads after commit, callback errors and failed snapshot reads.
+`WithResourceAccess(use)` exposes the same guard without performing a read first,
+so the manager's authorizer can read exactly one fresh snapshot per operation.
+The guard covers the complete manager operation, including jar access after
+authorization. It is not held while resolving DNS or waiting for vendor traffic.
+
+## Internal live grant/cookie coordinator
+
+`newGrantCookieCoordinator` constructs a private manager owned by one handoff
+security instance. It is currently exercised through local tests; the runtime
+does not construct it and no HTTP handler uses it. Its `prepareRequest` and
+`grantCookieExchange.storeResponse` methods:
+
+1. Validate the canonical upstream URL and current DNS safety outside the Store
+   guard. They perform no upstream fetch. The future transport must still dial
+   validated IPs; this preliminary check does not replace connection validation.
+2. Hold `WithResourceAccess` around the entire cookie-manager operation. The
+   retained authorizer captures the grant token and exact authority, not a
+   resource snapshot, winning-resource decision or cookie generation.
+3. Read one fresh database resource snapshot per authorizer invocation and
+   install its active policies with `ReplacePolicySnapshot`. Authorize the
+   actual target and method against that same snapshot with existing matching
+   precedence, then select that winner's installed generation. The grant does
+   not select a resource or retain its original launch-resource association.
+4. Reuse `grantParent` and `grantParentAuthorization` for exact registry/grant
+   binding and live joined parent/account/hash/auth-version/expiry checks.
+   Authenticated jar deadlines include parent idle/absolute expiry and grant
+   expiry. Authorization does not touch session activity.
+5. Fail closed on snapshot lookup or publication errors, including stale
+   revisions. `InvalidatePolicies` clears all jars/exchanges while preserving
+   the manager's revision floor and generation counter. Recovery creates fresh
+   generations. Invalid parent checks retire that trusted parent's jars lazily;
+   failed database reads never count as proof of eligibility.
+
+This coordinator requires a valid grant. If the current winning rule is an
+explicit public exception, it supplies anonymous/cookieless authorization only
+after the grant and parent pass; invalid credentials never downgrade to public
+access. Grant-free anonymous delivery remains outside this increment.
+Disabled cookie policies are also cookieless. Browser cookie headers are removed
+by the manager, and response cookie headers are removed even when the wrapper
+rejects a response before reaching the manager. A response from a retired
+generation cannot store cookies after a revision change, including a skipped
+change/reversion or an identical write.
+
+Resource changes are observed at the next cookie operation. No access can pass
+through this coordinator using the old revision after a participating write
+commits, but idle jars are not proactively cleared at commit yet. Session changes
+are not serialized by the resource guard: the existing rule that an operation
+authorized before a concurrent revocation may finish still applies. Later
+operations revalidate. Immediate lifecycle retirement hooks, idle maintenance
+and runtime ownership remain follow-up work; there is no second session store.
+
+`internal/api/grant_cookies_test.go` covers local request/response round trips,
+wrong host/target/method, current winners, disabled/deleted/changed resources,
+policy reversions, partial imports, browser cookie stripping, concurrent users
+and sessions, logout/password/account/role/hash/version changes, expirations,
+lookup/publication failures and recovery, capacity exhaustion, cookieless rules,
+response failures, and resource writes during DNS and guarded jar preparation.
 
 Anonymous URL exceptions use a client without an authenticated jar even when
 the browser also has a grant. They must discard upstream cookies and retain
@@ -250,9 +310,10 @@ the exact idle deadline. It does not update session activity, cache authorizatio
 jar; failures return an empty result. Database-backed regression tests are in
 `grant_authorization_test.go`.
 
-This internal result deliberately has no cookie-policy generation. It is not
-yet a `CookieAuthorizer`: resource snapshot/generation coordination, anonymous
-authorization and post-commit policy/session retirement remain separate work.
+This internal result deliberately has no cookie-policy generation. The cookie
+coordinator reuses the shared parent validation helpers with its own guarded
+resource snapshot instead of attaching a generation to this independent lookup.
+Post-commit policy/session retirement remains separate work.
 No HTTP handler obtains an upstream jar from it and vendor delivery stays disabled.
 
 `NewUpstreamCookieJars(HostRoutingConfig)` requires trusted central/proxy names
@@ -292,8 +353,9 @@ automatic client cookie/redirect handling cannot perform live authorization.
 
 This callback is a trusted Go integration boundary, not a new authentication
 mechanism. The manager cannot verify a fabricated callback or independently
-query the database. Production callback/update/lifecycle integration remains
-unimplemented; the tests exercise this boundary with local fake authorization.
+query the database. The internal coordinator provides database-backed callbacks;
+runtime/update/lifecycle integration remains unfinished. Manager unit tests also
+exercise the boundary separately with local fake authorization.
 
 Bounded retained cookie records are rebuilt into Go's standard `cookiejar` with
 the existing `golang.org/x/net/publicsuffix.List` dependency. Go performs
@@ -389,7 +451,8 @@ is implemented, tested and available only through the experimental flag. The
 experimental runtime now wires central/vendor controls and host-only cookie issuance behind `APP_EXPERIMENTAL_HANDOFF`. Its vendor preflight and redemption
 share only the exact redemption path, followed by an inert receipt. Default URL
 modes are unchanged; experimental mode blocks central-origin vendor content.
-The bounded jar manager is implemented separately and remains unwired, as does
-vendor content dispatch. The experimental central-origin migration boundary is
-implemented; production rollout and live authorization/policy/jar integration
-remain mandatory gates before delivery is enabled.
+The bounded jar manager and internal live authorization coordinator are
+implemented, but runtime ownership, immediate lifecycle hooks and vendor content
+dispatch remain unwired. The experimental central-origin migration boundary is
+implemented; production rollout and transport integration remain mandatory
+gates before delivery is enabled.

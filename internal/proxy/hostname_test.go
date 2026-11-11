@@ -52,3 +52,19 @@ func TestRegistryHostnameValidatesDeploymentNames(t *testing.T) {
 		}
 	}
 }
+
+// Regression: golang.org/x/net/idna with VerifyDNSLength rejects the empty
+// root label, so a fully qualified name must have one dot removed first.
+func TestNormalizeRegistryHostnameAcceptsOneRootDot(t *testing.T) {
+	for _, input := range []string{"Vendor.Example.", "vendor.example.:443", "BÜCHER.example."} {
+		host, err := NormalizeRegistryHostname(input)
+		if err != nil || strings.HasSuffix(host, ".") || host != strings.ToLower(host) {
+			t.Fatalf("%q: host=%q err=%v", input, host, err)
+		}
+	}
+	for _, input := range []string{".", "..", "vendor.example..", "vendor.example..:443", ".vendor.example"} {
+		if host, err := NormalizeRegistryHostname(input); err == nil {
+			t.Fatalf("accepted %q as %q", input, host)
+		}
+	}
+}

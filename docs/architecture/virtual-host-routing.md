@@ -11,8 +11,8 @@ This is not a deployable virtual-host proxy mode.
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers. |
 | Enabled for testing | With the flag, registered vendor hosts admit only `GET /.well-known/odo/redeem`; central launch and confirmation complete the browser handshake. |
 | Disabled | All upstream vendor content on vendor hosts; central path content, diagnostic body previews and missed-rewrite recovery are also blocked while the experimental mode is on. Validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
-| Implemented separately | Bounded resource-scoped upstream cookie jars and cookie-policy enforcement, not connected to live delivery or resource/session lifecycle hooks. |
-| Not yet implemented | Production vendor delivery, live jar integration, virtual-host rewriting, automatic cold-host access and multi-instance handoff state. |
+| Implemented separately | Bounded upstream cookie jars and an internal live grant/snapshot coordinator for request/response cookie operations. No runtime construction, delivery or post-commit lifecycle hooks. |
+| Not yet implemented | Production vendor delivery, runtime jar ownership/lifecycle hooks, virtual-host rewriting, automatic cold-host access and multi-instance handoff state. |
 
 ## Trusted deployment names
 
@@ -409,8 +409,13 @@ explicit admin registry/resource enrollment. The automatic tests above supply
 those equivalents locally; the runtime does not install them or bypass SSRF for
 fake names. Do not turn on this flag in an existing production deployment.
 
-Remaining delivery work: production origin rollout, live integration of the
-implemented bounded parent/resource upstream cookie jars, actual target/method grant
+The internal `grant_cookies.go` coordinator now connects live grant/parent checks,
+the actual winning resource and its snapshot's cookie generation, under the
+Store resource guard. It is tested with fake requests/responses and performs no
+fetch; see [the cookie boundary](vendor-origin-cookie-boundary.md#internal-live-grantcookie-coordinator).
+
+Remaining delivery work: production origin rollout, runtime ownership and
+post-commit retirement of the bounded parent/resource upstream cookie jars, actual target/method grant
 checks on each fetch, validated-IP integration, virtual-host URL/rewrite behavior,
 redirect/cold-host rules, wildcard DNS/TLS deployment and real-browser/vendor
 compatibility/privacy testing. Vendor content routing is not enabled here.

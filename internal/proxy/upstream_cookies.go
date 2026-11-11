@@ -73,8 +73,8 @@ type upstreamResourceJar struct {
 	expires, lastAccess time.Time
 }
 
-// UpstreamCookieJars is an isolated, process-memory foundation. It is not wired
-// into HTTP routes, grants, or the existing path/query proxy. Only cookie origin
+// UpstreamCookieJars is a bounded process-memory manager used by the internal
+// grant coordinator, not HTTP routes or the existing path/query proxy. Only cookie origin
 // host/path metadata is retained; request URLs and credentials are not stored.
 type UpstreamCookieJars struct {
 	mu         sync.Mutex
@@ -146,6 +146,15 @@ func (m *UpstreamCookieJars) discardPoliciesLocked(err error) error {
 	}
 	clear(m.policies)
 	return err
+}
+
+// InvalidatePolicies retires all jars and outstanding exchanges after a trusted
+// coordinator's snapshot lookup/publication failure. Keep the revision floor
+// and generation counter: recovery must never resurrect retired cookies.
+func (m *UpstreamCookieJars) InvalidatePolicies() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.discardPoliciesLocked(ErrCookiePolicy)
 }
 
 func (m *UpstreamCookieJars) replacePoliciesLocked(active []resources.Resource, renew, unchanged bool) error {
