@@ -104,8 +104,20 @@ func (v *fakeVendor) serve(w http.ResponseWriter, r *http.Request) {
 	case "/echo":
 		_, _ = io.WriteString(w, "cookie="+r.Header.Get("Cookie"))
 	case "/redirect":
+		if value := query.Get("cookie"); value != "" {
+			w.Header().Add("Set-Cookie", "who="+value+"; Path=/; Secure")
+		}
 		w.Header().Set("Location", query.Get("to"))
 		w.WriteHeader(http.StatusFound)
+	case "/switch":
+		// A hostile vendor answering a plain GET with a protocol switch.
+		conn, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n" + vendorBodyMarker)
+		_ = buffered.Flush()
+		_ = conn.Close()
 	case "/slow":
 		v.entered <- struct{}{}
 		select {
@@ -228,7 +240,7 @@ func TestVendorDeliveryBrowserGetAndHead(t *testing.T) {
 }
 
 func TestVendorDeliveryRequiresLiveGrant(t *testing.T) {
-	for _, kind := range []string{"missing", "invalid", "duplicate", "expired", "revoked", "logout", "password", "wrong host"} {
+	for _, kind := range []string{"missing", "invalid", "duplicate", "expired", "revoked", "logout", "password", "disabled account", "locked account", "wrong host"} {
 		t.Run(kind, func(t *testing.T) {
 			d := newDeliveryHarness(t)
 			// Not a document navigation: the boundary answers 401 instead of
@@ -260,6 +272,10 @@ func TestVendorDeliveryRequiresLiveGrant(t *testing.T) {
 				requestLogout(d.h.server, &http.Cookie{Name: "__Host-odo_session", Value: d.central})
 			case "password":
 				if _, err := d.h.server.store.SetUserPassword(parent.UserID, "new-hash"); err != nil {
+					t.Fatal(err)
+				}
+			case "disabled account", "locked account":
+				if _, _, err := d.h.server.store.SetUserStatus(parent.UserID, strings.Fields(kind)[0]); err != nil {
 					t.Fatal(err)
 				}
 			case "wrong host":
@@ -867,5 +883,77 @@ func TestVendorDeliveryRenewsGrantOnAuthorizedUse(t *testing.T) {
 	requestLogout(d.h.server, &http.Cookie{Name: "__Host-odo_session", Value: d.central})
 	if rec := d.serve("GET", "/private", d.grant, func(r *http.Request) { r.Header.Set("Sec-Fetch-Dest", "image") }); rec.Code != 401 || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("renewed grant outlived its parent session (%d %v)", rec.Code, rec.Result().Cookies())
+	}
+}
+
+// Session revocation while the upstream request is in flight: the response is
+// reauthorized before cookie storage, so it fails closed and stores nothing.
+func TestVendorDeliverySessionRevokedDuringUpstreamRequest(t *testing.T) {
+	for _, kind := range []string{"logout", "password", "disabled account"} {
+		t.Run(kind, func(t *testing.T) {
+			d := newDeliveryHarness(t)
+			parent, _, _ := d.h.server.store.GetSession(local.SessionIDFromToken(d.central))
+			result := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				result <- d.serve("GET", "/slow", d.grant, func(r *http.Request) { r.Header.Set("Sec-Fetch-Dest", "image") })
+			}()
+			<-d.vendor.entered
+			var err error
+			switch kind {
+			case "logout":
+				requestLogout(d.h.server, &http.Cookie{Name: "__Host-odo_session", Value: d.central})
+			case "password":
+				_, err = d.h.server.store.SetUserPassword(parent.UserID, "new-hash")
+			case "disabled account":
+				_, _, err = d.h.server.store.SetUserStatus(parent.UserID, "disabled")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			close(d.vendor.release)
+			rec := <-result
+			if rec.Code != 401 || strings.Contains(rec.Body.String(), vendorBodyMarker) || len(rec.Result().Cookies()) != 0 {
+				t.Fatalf("revoked session's response was delivered: %d", rec.Code)
+			}
+		})
+	}
+}
+
+// A cookie-policy change retires the jar, and reverting the change creates a
+// fresh generation rather than reviving the retired cookies.
+func TestVendorDeliveryPolicyReversionDoesNotReviveCookies(t *testing.T) {
+	d := newDeliveryHarness(t)
+	if rec := d.serve("GET", "/set?v=before", d.grant, nil); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	item, _, _ := d.h.server.store.GetResource("vendor")
+	for _, enabled := range []bool{false, true} {
+		item.CookiePolicy.Enabled = enabled
+		if err := d.h.server.store.UpsertResource(item); err != nil {
+			t.Fatal(err)
+		}
+		if rec := d.serve("GET", "/echo", d.grant, nil); rec.Code != 200 || rec.Body.String() != "cookie=" {
+			t.Fatalf("cookie policy enabled=%v served a retired cookie: %q", enabled, rec.Body.String())
+		}
+	}
+	if rec := d.serve("GET", "/set?v=after", d.grant, nil); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	if rec := d.serve("GET", "/echo", d.grant, nil); rec.Body.String() != "cookie=who=after" {
+		t.Fatalf("current generation lost its cookie: %q", rec.Body.String())
+	}
+}
+
+// A response Odo refuses to deliver leaves no cookie in the browser or jar.
+func TestVendorDeliveryFailedResponsesStoreNoState(t *testing.T) {
+	d := newDeliveryHarness(t)
+	if rec := d.serve("GET", "/redirect?"+url.Values{"to": {"https://evil.example/"}, "cookie": {"from-failed-redirect"}}.Encode(), d.grant, nil); rec.Code != 502 || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("unsupported redirect: %d", rec.Code)
+	}
+	if rec := d.serve("GET", "/switch", d.grant, nil); rec.Code != 502 || strings.Contains(rec.Body.String(), vendorBodyMarker) || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("protocol switch was forwarded: %d", rec.Code)
+	}
+	if rec := d.serve("GET", "/echo", d.grant, nil); rec.Code != 200 || rec.Body.String() != "cookie=" {
+		t.Fatalf("failed response stored vendor cookies: %q", rec.Body.String())
 	}
 }

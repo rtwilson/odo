@@ -206,9 +206,9 @@ coordinator calls it with active policies from the database snapshot before
 allowing jar access. Comparing only the final policy would still revive cookies
 after an unseen change/reversion. Reading a revision separately from the resources
 being authorized is also unsafe. Snapshot reads do not reserve authorization
-against later writes. The internal coordinator uses the Store guard below;
-runtime construction and post-commit retirement hooks remain unwired. Vendor
-content delivery stays disabled. Revision
+against later writes. The coordinator uses the Store guard below. The
+experimental runtime constructs it for GET/HEAD vendor delivery; post-commit
+retirement hooks remain unwired and production delivery stays disabled. Revision
 tracking covers the Store write methods, including API and file-import calls;
 direct SQL changes and writers from older binaries are outside this contract.
 
@@ -327,7 +327,8 @@ This internal result deliberately has no cookie-policy generation. The cookie
 coordinator reuses the shared parent validation helpers with its own guarded
 resource snapshot instead of attaching a generation to this independent lookup.
 Post-commit policy/session retirement remains separate work.
-No HTTP handler obtains an upstream jar from it and vendor delivery stays disabled.
+No HTTP handler obtains an upstream jar from this result; experimental delivery
+uses the cookie coordinator instead, and production delivery stays disabled.
 
 `NewUpstreamCookieJars(HostRoutingConfig)` requires trusted central/proxy names
 for deployment-domain exclusions. It does not read browser credentials or

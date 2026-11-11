@@ -465,12 +465,15 @@ Request flow on a non-central authority:
    certificates normally, validates every resolved IP at connection time
    (rebinding-safe) and uses 10 s TLS, 15 s response-header and 30 s overall
    timeouts. The browser request's context cancels the upstream request.
-7. `storeResponse` reauthorizes and stores cookies before any header or byte is
-   forwarded; failure (revoked session, expired grant, policy revision,
-   cookie rejection) fails closed and discards the body.
-8. Same-host HTTPS redirects are re-expressed on the proxy authority (fragment
-   dropped); cross-host, downgraded, userinfo or reserved-path redirects return
-   502 with no `Location`. Only `Content-Type`, `Content-Disposition`,
+7. Responses that cannot be represented are refused before any cookie is
+   stored: statuses outside 200-599 (including a `101` protocol switch) and
+   redirects other than same-host HTTPS return 502 with no `Location`, and their
+   `Set-Cookie` reaches neither the browser nor the jar.
+8. `storeResponse` reauthorizes and stores cookies before any header or byte is
+   forwarded; failure (session revoked mid-request, expired grant, policy
+   revision, cookie rejection) fails closed and discards the body. Same-host
+   HTTPS redirects are then re-expressed on the proxy authority (fragment
+   dropped). Only `Content-Type`, `Content-Disposition`,
    `Content-Language`, `Last-Modified`, `ETag`, `Content-Length`,
    `Content-Encoding`, `Accept-Ranges` and `Content-Range` are copied;
    `Set-Cookie`, CSP, CORS, HSTS, `Link`, `Refresh`, `Alt-Svc` and `Location`
@@ -480,7 +483,7 @@ Request flow on a non-central authority:
 
 Errors map to 401 (grant/parent invalid), 403 (policy or method denied), 502
 (unsafe or unresolvable destination, TLS/connection failure, unsupported
-redirect), 504 (timeout) and 503 (coordinator storage or capacity). Access logs
+redirect or status), 504 (timeout) and 503 (coordinator storage or capacity). Access logs
 record only the route `handoff_vendor_content`, status and upstream status;
 paths, queries, cookies and upstream error text (which embeds URLs) are never
 logged.

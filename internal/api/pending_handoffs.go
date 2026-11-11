@@ -80,8 +80,9 @@ type handoffGrant struct {
 }
 
 // This passive store has no routes, cookie handling, database access, DNS or
-// fetching. It is deliberately not attached to Server yet. Its records alone
-// do not authorize a target, parent session or registry entry.
+// fetching. The experimental handoff runtime (handoffSecurity.state) owns one
+// per Server. Its records alone do not authorize a target, parent session or
+// registry entry.
 type pendingHandoffs struct {
 	mu      sync.Mutex
 	entries map[string]pendingHandoff

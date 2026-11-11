@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,11 +80,25 @@ type Session struct {
 	IPHash        string `json:"ip_hash,omitempty"`
 }
 
+// sqliteConnectionParams applies to every pooled connection. SQLite allows one
+// writer at a time: without a busy timeout, a connection that meets another
+// connection's write lock fails at once with SQLITE_BUSY (concurrent session
+// touches, logins, resource or registry writes). Immediate transactions take the
+// write lock at BEGIN, so read-then-write transactions wait for it instead of
+// failing on lock upgrade, where SQLite skips the busy handler. The journal
+// mode is unchanged.
+const sqliteConnectionParams = "?_pragma=busy_timeout(5000)&_txlock=immediate"
+
 func Open(path string) (*Store, error) {
+	// The driver splits a plain DSN at its first '?', which would silently open
+	// a different file and drop the connection parameters.
+	if strings.Contains(path, "?") {
+		return nil, errors.New("database path must not contain '?'")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	conn, err := sql.Open("sqlite", path)
+	conn, err := sql.Open("sqlite", path+sqliteConnectionParams)
 	if err != nil {
 		return nil, err
 	}

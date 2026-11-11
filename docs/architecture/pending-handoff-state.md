@@ -153,9 +153,11 @@ Nothing here logs tokens, target URLs, cookies or parent references.
 ## Next boundary
 
 Pending-to-ticket confirmation and ticket-to-grant redemption are atomic. `handoff_security.go` now checks live parent/user/version,
-registry, original ticket resource/target, method policy and DNS safety. The
-coordinator does not touch session timestamps or cache positive authorization.
-Only the experimental handoff runtime attaches it to handlers.
+registry, original ticket resource/target, method policy and DNS safety. These
+checks do not touch session timestamps or cache positive authorization; only the
+cookie coordinator records throttled parent activity, and only after a delivered
+vendor request is authorized (which may also renew the grant). Only the
+experimental handoff runtime attaches this state to handlers.
 
 Vendor-return proofs are now implemented and tested internally, including the
 two-browser splice, nonce/proof replacement, exact expiry, capacity retry, parent

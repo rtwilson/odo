@@ -138,7 +138,7 @@ Environment variables:
 - `APP_ADDR`, older name for the bind address; still supported when `APP_BIND_ADDR` is unset
 - `APP_ENV`, default `development`; use `production` on servers
 - `APP_DATA_DIR`, default `./data` in development and `/var/lib/odo` in production
-- `APP_DB_PATH`, default `$APP_DATA_DIR/odo.db`; production preference is `/var/lib/odo/odo.db`
+- `APP_DB_PATH`, default `$APP_DATA_DIR/odo.db`; production preference is `/var/lib/odo/odo.db`. The path must not contain `?`. Each SQLite connection waits up to 5 seconds for another connection's write lock (`busy_timeout`) and begins transactions with `BEGIN IMMEDIATE`, so concurrent writes queue instead of failing with `SQLITE_BUSY`; the journal mode is unchanged.
 - `APP_CONFIG_DIR`, default `./config` in development and `/etc/odo` in production
 - `APP_PUBLIC_URL`, public base URL used for SAML SP metadata defaults and cookie security; an absolute HTTPS URL is required in production mode
 - `APP_SOURCE_URL`, public HTTPS URL for the corresponding source of this deployment, including local modifications; required in production unless embedded at build time

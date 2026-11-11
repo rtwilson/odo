@@ -136,6 +136,26 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	if metadata != nil {
 		metadata.UpstreamStatus = response.StatusCode
 	}
+	// Only final 2xx-5xx responses can be represented. A 101 protocol switch (or
+	// any other 1xx/out-of-range status) would hand the browser connection to
+	// raw upstream bytes. Nothing from such a response is stored or forwarded.
+	if response.StatusCode < 200 || response.StatusCode > 599 {
+		h.vendorDeliveryError(w, r, errUnsupportedVendorResponse, "response")
+		return
+	}
+	// Decide representability before cookie storage: a redirect Odo refuses to
+	// deliver must leave no vendor cookie behind, in the browser or the jar.
+	var location string
+	if isVendorRedirect(response.StatusCode) {
+		next, ok := vendorRedirectLocation(target, mapping.Hostname, authority, response.Header.Get("Location"))
+		if !ok {
+			// Cross-host, downgraded or malformed redirects cannot be represented
+			// on this proxy hostname; never follow or expose them.
+			writeError(w, http.StatusBadGateway, "upstream redirect is not supported")
+			return
+		}
+		location = next
+	}
 	// Reauthorize and store cookies before any header or byte is forwarded.
 	if err := exchange.storeResponse(r.Context(), response); err != nil {
 		h.vendorDeliveryError(w, r, err, "response")
@@ -150,14 +170,7 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 			http.SetCookie(w, handoffCookie(vendorGrantCookie, grant, expires))
 		}
 	}
-	if isVendorRedirect(response.StatusCode) {
-		location, ok := vendorRedirectLocation(target, mapping.Hostname, authority, response.Header.Get("Location"))
-		if !ok {
-			// Cross-host, downgraded or malformed redirects cannot be represented
-			// on this proxy hostname; never follow or expose them.
-			writeError(w, http.StatusBadGateway, "upstream redirect is not supported")
-			return
-		}
+	if location != "" {
 		renew()
 		w.Header().Set("Location", location)
 		w.WriteHeader(response.StatusCode)
@@ -277,6 +290,8 @@ func vendorRedirectLocation(base *url.URL, hostname, authority, raw string) (str
 	return location.String(), true
 }
 
+var errUnsupportedVendorResponse = errors.New("upstream response status is not supported")
+
 // vendorDeliveryError maps failures without logging URLs, queries, cookies or
 // upstream error text (net/http errors embed the full request URL).
 func (h *handoffSecurity) vendorDeliveryError(w http.ResponseWriter, r *http.Request, err error, stage string) {
@@ -296,6 +311,8 @@ func (h *handoffSecurity) vendorDeliveryError(w http.ResponseWriter, r *http.Req
 		status, message = http.StatusGatewayTimeout, "vendor request timed out"
 	case errors.Is(err, context.Canceled):
 		status, message = http.StatusBadGateway, "vendor request was canceled"
+	case errors.Is(err, errUnsupportedVendorResponse):
+		status, message = http.StatusBadGateway, "upstream response is not supported"
 	case stage == "authorize" || stage == "response":
 		status, message = http.StatusServiceUnavailable, "vendor delivery is temporarily unavailable"
 	}

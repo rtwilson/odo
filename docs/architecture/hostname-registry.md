@@ -1,6 +1,9 @@
 # Hostname registry foundation
 
-Virtual-host request routing remains disabled. This implements canonical
+Production virtual-host request routing remains disabled; only the
+development/test `APP_EXPERIMENTAL_HANDOFF` mode routes registered names (see
+[virtual-host routing](virtual-host-routing.md#experimental-vendor-content-delivery)).
+This implements canonical
 hostname identity, SQLite storage, and explicit resource reconciliation from
 the proposed virtual-host ADR.
 
