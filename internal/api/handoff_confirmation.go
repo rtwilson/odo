@@ -42,12 +42,9 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if r.Method == http.MethodPost {
-		origins := r.Header.Values("Origin")
-		if len(origins) != 1 || !centralOriginAllowed(origins[0], h.config) {
-			writeError(w, http.StatusForbidden, "request origin is not allowed")
-			return
-		}
+	if r.Method == http.MethodPost && !centralRequestOriginAllowed(r, h.config) {
+		writeError(w, http.StatusForbidden, "request origin is not allowed")
+		return
 	}
 	fields, status := confirmationFields(w, r)
 	if status != 0 {
@@ -80,6 +77,7 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if r.Method == http.MethodGet {
+		allowHandoffFormRedirect(r, pending.binding.proxyAuthority)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// Escape every interpolated value, as in the existing server-rendered pages.
 		_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Continue to resource</title></head><body><main><h1>Continue to %s</h1><p>Continue using your Odo access.</p><form method="post" action="/launch/handoff/confirm"><input type="hidden" name="handoff" value="%s"><input type="hidden" name="proof" value="%s"><input type="hidden" name="csrf" value="%s"><button type="submit">Continue</button></form><p><a href="/resources">Cancel</a></p></main></body></html>`, html.EscapeString(pending.binding.hostname), html.EscapeString(token), html.EscapeString(proof), html.EscapeString(csrf))
@@ -94,6 +92,19 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 	}
 	location := url.URL{Scheme: "https", Host: pending.binding.proxyAuthority, Path: handoffVendorPath, RawQuery: url.Values{"ticket": {ticket}}.Encode()}
 	http.Redirect(w, r, location.String(), http.StatusSeeOther)
+}
+
+// allowHandoffFormRedirect lets this page's confirmation form complete. The
+// POST answers with a 303 to the vendor proxy host, and browsers enforce CSP
+// form-action on every redirect of a form submission, so 'self' alone blocks
+// it. Only the exact registered proxy origin of this pending handoff is added;
+// an authority with anything but DNS characters is never interpolated.
+func allowHandoffFormRedirect(r *http.Request, proxyAuthority string) {
+	policy, ok := r.Context().Value(responsePolicyKey{}).(*appResponseWriter)
+	if !ok || proxyAuthority == "" || strings.Trim(proxyAuthority, "abcdefghijklmnopqrstuvwxyz0123456789.-") != "" {
+		return
+	}
+	policy.csp = strings.Replace(policy.csp, "form-action 'self'", "form-action 'self' https://"+proxyAuthority, 1)
 }
 
 func uniqueConfirmationCookie(r *http.Request, name string) (string, bool) {

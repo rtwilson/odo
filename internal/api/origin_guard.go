@@ -43,13 +43,34 @@ func (s *Server) guardCentralOrigin(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if len(origins) != 1 || !centralOriginAllowed(origins[0], config) {
+		if !centralRequestOriginAllowed(r, config) {
 			reject(http.StatusForbidden, "request origin is not allowed")
 			return
 		}
 		// Existing session CSRF checks still run after this boundary.
 		next.ServeHTTP(w, r)
 	})
+}
+
+// centralRequestOriginAllowed accepts a state-changing browser request only
+// from the central origin. Central pages send Referrer-Policy: no-referrer, so
+// under the Fetch standard browsers send "Origin: null" on their own
+// same-origin form POSTs (login, logout, handoff confirmation). That value is
+// accepted only with exactly one browser-set "Sec-Fetch-Site: same-origin",
+// a forbidden header page script cannot set. Every other null origin
+// (sandboxed frames, data: URLs, cross-site documents, redirects) reports a
+// different site and stays rejected. Callers must already have admitted the
+// request on the central host; CSRF token checks still run afterwards.
+func centralRequestOriginAllowed(r *http.Request, config proxy.HostRoutingConfig) bool {
+	origins := r.Header.Values("Origin")
+	if len(origins) != 1 {
+		return false
+	}
+	if centralOriginAllowed(origins[0], config) {
+		return true
+	}
+	sites := r.Header.Values("Sec-Fetch-Site")
+	return origins[0] == "null" && len(sites) == 1 && sites[0] == "same-origin"
 }
 
 func centralOriginAllowed(raw string, config proxy.HostRoutingConfig) bool {

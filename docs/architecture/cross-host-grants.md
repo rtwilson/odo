@@ -175,9 +175,11 @@ sequenceDiagram
    GET does not authorize the next state transition.
 5. Central POST confirmation requires exactly the configured central HTTPS
    Origin and a CSRF value derived from the active central session. Reject
-   absent, duplicate, null, sibling or malformed Origin. This is a browser
+   absent, duplicate, sibling or malformed Origin, and `null` unless the
+   browser also sends exactly `Sec-Fetch-Site: same-origin` (the no-referrer
+   page makes real browsers send `Origin: null` on this form POST). This is a browser
    session operation with no bearer-key exemption. The confirmation
-   handler uses `centralOriginAllowed` directly, before reading credentials, so
+   handler uses `centralRequestOriginAllowed` directly, before reading credentials, so
    this protection does not depend on global management-API middleware covering
    the path. Existing API CSRF enforcement uses a header; confirmation explicitly
    compares its hidden form field against the same session-derived value. It
@@ -252,6 +254,9 @@ Apply `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
 to every control response, including redirects and errors. The confirmation
 page needs no script; use `default-src 'none'; base-uri 'none'; object-src 'none';
 frame-ancestors 'none'; form-action 'self'` with a suitable explicit style policy.
+Because browsers apply `form-action` to the POST's 303 to the vendor host, the
+rendered confirmation page adds exactly that pending handoff's registered proxy
+origin to `form-action`; nothing else is widened.
 Never use vendor response headers or vendor/third-party assets on controls.
 Do not run preflight or redemption through the vendor content response policy.
 

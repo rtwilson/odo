@@ -113,7 +113,10 @@ func (b handoffBrowser) request(t *testing.T, method, target string, fields url.
 	}
 	if method == "POST" {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Origin", "https://odo.example")
+		// What Chromium actually sends for a form POST from a central page with
+		// Referrer-Policy: no-referrer (verified against headless Chromium).
+		req.Header.Set("Origin", "null")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 	}
 	req.Header.Set("Accept", "text/html")
 	response, err := b.client.Do(req)

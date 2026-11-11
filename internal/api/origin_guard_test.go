@@ -80,6 +80,68 @@ func TestOriginGuardPolicyAndBearerException(t *testing.T) {
 	}
 }
 
+func TestCentralRequestOriginAllowsOnlyBrowserSameOriginNull(t *testing.T) {
+	config, err := proxy.NewHostRoutingConfig("https://odo.example", "proxy.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		origins []string
+		sites   []string
+		want    bool
+	}{
+		{"central origin", []string{"https://odo.example"}, nil, true},
+		{"central origin, any fetch site", []string{"https://odo.example"}, []string{"cross-site"}, true},
+		{"browser null same-origin", []string{"null"}, []string{"same-origin"}, true},
+		{"null without fetch metadata", []string{"null"}, nil, false},
+		{"null cross-site", []string{"null"}, []string{"cross-site"}, false},
+		{"null same-site", []string{"null"}, []string{"same-site"}, false},
+		{"null none", []string{"null"}, []string{"none"}, false},
+		{"null mixed case", []string{"null"}, []string{"Same-Origin"}, false},
+		{"null duplicate fetch site", []string{"null"}, []string{"same-origin", "same-origin"}, false},
+		{"NULL spelling", []string{"NULL"}, []string{"same-origin"}, false},
+		{"other origin claiming same-origin", []string{"https://evil.example"}, []string{"same-origin"}, false},
+		{"missing origin claiming same-origin", nil, []string{"same-origin"}, false},
+		{"duplicate origin", []string{"null", "null"}, []string{"same-origin"}, false},
+	} {
+		req := httptest.NewRequest("POST", "/login", nil)
+		for _, origin := range tc.origins {
+			req.Header.Add("Origin", origin)
+		}
+		for _, site := range tc.sites {
+			req.Header.Add("Sec-Fetch-Site", site)
+		}
+		if got := centralRequestOriginAllowed(req, config); got != tc.want {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The guard admits real browser form POSTs (Origin: null under no-referrer)
+// only with same-origin Fetch Metadata, for every guarded route.
+func TestOriginGuardBrowserNullOrigin(t *testing.T) {
+	t.Setenv("APP_HOST_GUARD", "true")
+	t.Setenv("APP_PUBLIC_URL", "https://odo.example")
+	t.Setenv("APP_PROXY_BASE_DOMAIN", "proxy.example")
+	for _, path := range []string{"/login", "/logout", "/api/v1/resources"} {
+		for site, want := range map[string]int{"same-origin": 204, "same-site": 403, "cross-site": 403, "none": 403, "": 403} {
+			called := false
+			handler := (&Server{}).guardCentralOrigin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called = true; w.WriteHeader(204) }))
+			req := httptest.NewRequest("POST", path, nil)
+			req.Header.Set("Origin", "null")
+			if site != "" {
+				req.Header.Set("Sec-Fetch-Site", site)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != want || called != (want == 204) {
+				t.Fatalf("%s with Sec-Fetch-Site %q: got %d want %d", path, site, rec.Code, want)
+			}
+		}
+	}
+}
+
 func TestOriginGuardRejectsBeforeAuthentication(t *testing.T) {
 	t.Setenv("APP_HOST_GUARD", "true")
 	t.Setenv("APP_PUBLIC_URL", "https://odo.example")

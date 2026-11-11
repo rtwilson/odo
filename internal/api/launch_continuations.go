@@ -78,6 +78,19 @@ func (s *launchContinuations) consume(token, nonce string, now time.Time) (strin
 	return pending.target, true
 }
 
+// peek returns a live continuation's target for the browser holding its nonce,
+// without consuming it. It is for rendering decisions only (the login page's
+// CSP); consume still performs the authoritative one-time check.
+func (s *launchContinuations) peek(token, nonce string, now time.Time) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, found := s.entries[local.HashToken(token)]
+	if !found || !now.Before(pending.expires) || pending.nonceHash != local.HashToken(nonce) {
+		return "", false
+	}
+	return pending.target, true
+}
+
 func validLaunchToken(token string) bool {
 	if len(token) != 43 {
 		return false

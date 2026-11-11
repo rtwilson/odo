@@ -134,8 +134,18 @@ With the host guard enabled, unsafe requests (POST, PUT, PATCH, DELETE) to
 header matching the configured central HTTPS origin. Comparison uses the same
 normalized hostname and default-443 authority rules as host admission. Origin
 must contain only scheme and authority: paths (even `/`), credentials, queries,
-fragments, `null`, duplicate values, and sibling/vendor origins are rejected.
+fragments, duplicate values, and sibling/vendor origins are rejected.
 Referer and Sec-Fetch-Site do not substitute for a missing Origin.
+
+`Origin: null` is the one exception. Central pages send `Referrer-Policy:
+no-referrer`, and under the Fetch standard browsers then send `Origin: null` on
+their own same-origin form POSTs (verified with headless Chromium for login and
+handoff confirmation). `centralRequestOriginAllowed` therefore accepts `null`
+only together with exactly one `Sec-Fetch-Site: same-origin`, a header page
+script cannot set. `null` with `same-site`, `cross-site`, `none`, a missing or
+duplicated `Sec-Fetch-Site`, and any other origin claiming `same-origin` stay
+rejected. CSRF token checks still follow. Before this, real browsers could not
+sign in or confirm a handoff whenever the host guard was on.
 
 Host admission runs first, then Origin checking, then authentication and normal
 application processing. Origin failures return generic 403 with no-store, no
@@ -572,6 +582,25 @@ Same-host rewriting rules (`proxy.RewriteSameHostHTML`, applied in
   for eligible HTML omits `Content-Length`, `ETag` and `Accept-Ranges`,
   because it cannot know whether `GET` would rewrite. Range responses are
   never rewritten.
+
+Real-browser verification: headless Chromium 156 was driven over the DevTools
+protocol through Odo's real TLS listener and this fake vendor (browser-side
+host mapping and certificate bypass for the local listener only; Odo's upstream
+TLS and IP validation unchanged). It found three central-flow failures the Go
+client tests could not see, now fixed: login and confirmation POSTs carried
+`Origin: null` (see [guarded central Origin checks](#guarded-central-origin-checks)),
+and CSP `form-action 'self'` blocked the confirmation POST's 303 to the vendor
+host and the login-continuation chain's redirect to it, because browsers apply
+`form-action` to every redirect of a form submission. The confirmation page,
+and a login page serving this browser's live launch continuation, now allow
+exactly that one registered proxy origin (`form-action 'self'
+https://<label>.<proxy base>`); every other page keeps `'self'`. After the
+fixes Chromium completed logged-out entry → login → confirmation → vendor
+index, applied the CSS, ran the script, decoded the image, followed relative,
+`../`, absolute, `http`, scheme-relative and `<base>`-relative links, the
+same-host redirect and escaped URLs, fetched the PDF (200) and a range (206),
+opened it in the PDF viewer, and held only Odo's `__Host-` cookies. The
+external CDN image did not load through Odo, as expected.
 
 Vendor HTML is served without the central application's CSP, frame or
 permissions headers (it is not an Odo page), with `no-store`, `no-referrer`

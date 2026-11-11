@@ -28,8 +28,40 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	next, _ := safeNextPath(r.URL.Query().Get("next"))
 	if strings.HasPrefix(next, launchContinuePath+"?") {
 		w.Header().Set("Cache-Control", "no-store")
+		s.allowLaunchContinuationFormRedirect(r, strings.TrimPrefix(next, launchContinuePath+"?"))
 	}
 	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}footer{margin-top:2rem}footer a{color:#8cc7ff}</style></head><body><main><h1>odo login</h1><p>Sign in to continue</p><form method="post" action="/login"><input type="hidden" name="next" value="%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form><footer><small><a href="/about">Source &amp; license</a></small></footer></main></body></html>`, html.EscapeString(next))
+}
+
+// allowLaunchContinuationFormRedirect: in experimental handoff mode, a login
+// that continues a launch redirects (within the same form submission) to the
+// target's vendor proxy host, which CSP form-action 'self' would block. For a
+// live continuation held by this browser, allow only that registered proxy
+// origin. Nothing is consumed; /launch/continue revalidates everything.
+func (s *Server) allowLaunchContinuationFormRedirect(r *http.Request, rawQuery string) {
+	if s.handoff == nil {
+		return
+	}
+	token, ok := launchContinuationToken(rawQuery)
+	if !ok {
+		return
+	}
+	cookie, err := r.Cookie(launchBrowserCookieName(r))
+	if err != nil || !validLaunchToken(cookie.Value) {
+		return
+	}
+	target, ok := s.launchContinuations.peek(token, cookie.Value, time.Now())
+	if !ok {
+		return
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return
+	}
+	config := s.handoff.config
+	if _, label, err := proxy.RegistryHostname(parsed.Hostname(), config.CentralHostname(), config.ProxyBaseDomain()); err == nil {
+		allowHandoffFormRedirect(r, label+"."+config.ProxyBaseDomain())
+	}
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {

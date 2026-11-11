@@ -127,6 +127,27 @@ func TestHandoffConfirmationGETThenPOST(t *testing.T) {
 	}
 }
 
+// Real browsers send "Origin: null" for this form POST because the central
+// page uses Referrer-Policy: no-referrer. With browser-set same-origin Fetch
+// Metadata it is accepted, but the CSRF token is still required.
+func TestHandoffConfirmationAcceptsBrowserNullOriginFromSameOrigin(t *testing.T) {
+	f := newConfirmationFixture(t)
+	req := f.request("POST")
+	req.Header.Set("Origin", "null")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if rec := f.respond(req); rec.Code != 303 || len(f.h.state.tickets) != 1 {
+		t.Fatalf("same-origin browser confirmation rejected: %d", rec.Code)
+	}
+	g := newConfirmationFixture(t)
+	req = g.request("POST")
+	req.Header.Set("Origin", "null")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Body = io.NopCloser(strings.NewReader(url.Values{"handoff": {g.token}, "proof": {g.proof}, "csrf": {"wrong-csrf"}}.Encode()))
+	if rec := g.respond(req); rec.Code != 403 || len(g.h.state.tickets) != 0 {
+		t.Fatalf("null origin bypassed CSRF: %d", rec.Code)
+	}
+}
+
 func TestHandoffConfirmationRejectsOriginAndCSRF(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -135,6 +156,17 @@ func TestHandoffConfirmationRejectsOriginAndCSRF(t *testing.T) {
 		{"missing origin", func(r *http.Request) { r.Header.Del("Origin") }},
 		{"sibling origin", func(r *http.Request) { r.Header.Set("Origin", "https://sibling.proxy.example") }},
 		{"null origin", func(r *http.Request) { r.Header.Set("Origin", "null") }},
+		{"null origin cross-site", func(r *http.Request) { r.Header.Set("Origin", "null"); r.Header.Set("Sec-Fetch-Site", "cross-site") }},
+		{"null origin same-site sibling", func(r *http.Request) { r.Header.Set("Origin", "null"); r.Header.Set("Sec-Fetch-Site", "same-site") }},
+		{"null origin user navigation", func(r *http.Request) { r.Header.Set("Origin", "null"); r.Header.Set("Sec-Fetch-Site", "none") }},
+		{"null origin duplicate fetch site", func(r *http.Request) {
+			r.Header.Set("Origin", "null")
+			r.Header["Sec-Fetch-Site"] = []string{"same-origin", "same-origin"}
+		}},
+		{"sibling origin claiming same-origin", func(r *http.Request) {
+			r.Header.Set("Origin", "https://sibling.proxy.example")
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+		}},
 		{"duplicate origin", func(r *http.Request) { r.Header.Add("Origin", "https://odo.example") }},
 		{"missing origin with bearer", func(r *http.Request) { r.Header.Del("Origin"); r.Header.Set("Authorization", "Bearer secret") }},
 		{"missing csrf", nil},
