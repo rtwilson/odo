@@ -157,7 +157,11 @@ func (b handoffBrowser) ticket(t *testing.T) string {
 	}
 	callback, _ := url.Parse(prepared.Header.Get("Location"))
 	page, html := b.request(t, "GET", callback.String(), nil)
-	if page.StatusCode != 200 || !strings.Contains(html, "Continue to vendor.example") {
+	target, err := url.Parse(b.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.StatusCode != 200 || !strings.Contains(html, "Continue to "+target.Hostname()) {
 		t.Fatal("confirmation page missing")
 	}
 	// Read the actual session-derived CSRF value rendered in the form.

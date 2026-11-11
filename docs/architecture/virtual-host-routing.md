@@ -616,6 +616,26 @@ sent upstream), and documents over 2 MiB or compressed upstream. Cross-host
 support needs registered-host rewriting with per-host grants and automatic
 cold-host handoff, which remain unimplemented.
 
+### Two-host compatibility fixture
+
+`TestVendorExternalAssetRequiresIndependentHandoff` in
+`internal/api/handoff_external_asset_test.go` now exercises a separate fake
+HTTPS CDN with its own registered hostname, resource and certificate. The
+vendor page still contains the unchanged external image URL. Explicit requests
+to the CDN's proxy authority return 401 without redirects or upstream traffic
+when the grant is missing or copied from the first host. An independent central
+launch, confirmation and redemption in the same browser enables image delivery
+with the CDN's own grant. Tests verify exact image bytes, isolated upstream
+cookie round-trips, browser credential stripping, resource disablement and
+parent-session revocation on both hosts.
+
+This is an HTTP integration fixture, not automatic browser asset loading.
+External URL rewriting remains unsupported. The next design decision is how a
+patron explicitly obtains a separate grant for a cold subresource host before
+the browser requests its assets; a subresource cannot complete an interactive
+confirmation flow. No automatic cross-host grants or new cookie-sharing rules
+are introduced by this test.
+
 ## Post-commit retirement
 
 `db.CommitHooks` (`internal/db/commit_hooks.go`) notify the process that owns
