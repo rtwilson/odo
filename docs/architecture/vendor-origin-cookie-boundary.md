@@ -243,15 +243,17 @@ authorization. It is not held while resolving DNS or waiting for vendor traffic.
 ## Internal live grant/cookie coordinator
 
 `newGrantCookieCoordinator` constructs a private manager owned by one handoff
-security instance. It is currently exercised through local tests; the runtime
-does not construct it and no HTTP handler uses it. Its `prepareRequest` and
+security instance. The runtime constructs exactly one per experimental handoff runtime, and experimental
+vendor content delivery (`handoff_delivery.go`) uses it for every request and
+response. Its `prepareRequest` and
 `grantCookieExchange.storeResponse` methods:
 
 1. Validate the canonical upstream URL and current DNS safety outside the Store
-   guard. They perform no upstream fetch. The prepared upstream request clears
-   the server-side `Host` and `RequestURI`, so the proxy authority is never sent
-   upstream. The future transport must still dial
-   validated IPs; this preliminary check does not replace connection validation.
+   guard. They perform no upstream fetch themselves. The prepared upstream
+   request clears the server-side `Host` and `RequestURI`, so the proxy
+   authority is never sent upstream. This preliminary check does not replace
+   connection validation: the delivery handler's safe client dials only
+   validated IPs.
 2. Hold `WithResourceAccess` around the entire cookie-manager operation. The
    retained authorizer captures the grant token and exact authority, not a
    resource snapshot, winning-resource decision or cookie generation.
@@ -294,8 +296,8 @@ through this coordinator using the old revision after a participating write
 commits, but idle jars are not proactively cleared at commit yet. Session changes
 are not serialized by the resource guard: the existing rule that an operation
 authorized before a concurrent revocation may finish still applies. Later
-operations revalidate. Immediate lifecycle retirement hooks, idle maintenance
-and runtime ownership remain follow-up work; there is no second session store.
+operations revalidate. Immediate lifecycle retirement hooks and idle
+maintenance remain follow-up work; there is no second session store.
 
 `internal/api/grant_cookies_test.go` covers local request/response round trips,
 wrong host/target/method, current winners, disabled/deleted/changed resources,
@@ -460,10 +462,11 @@ The central confirmation boundary specified in the revised
 [HTTP/browser protocol review](cross-host-grants.md#httpbrowser-protocol-review-checkpoint)
 is implemented, tested and available only through the experimental flag. The
 experimental runtime now wires central/vendor controls and host-only cookie issuance behind `APP_EXPERIMENTAL_HANDOFF`. Its vendor preflight and redemption
-share only the exact redemption path, followed by an inert receipt. Default URL
+share only the exact redemption path, which then continues to the stored
+target on the same proxy host (or an inert receipt). Default URL
 modes are unchanged; experimental mode blocks central-origin vendor content.
-The bounded jar manager and internal live authorization coordinator are
-implemented, but runtime ownership, immediate lifecycle hooks and vendor content
-dispatch remain unwired. The experimental central-origin migration boundary is
-implemented; production rollout and transport integration remain mandatory
-gates before delivery is enabled.
+The bounded jar manager and live authorization coordinator are implemented and
+owned by the experimental runtime, which uses them for experimental GET/HEAD
+vendor content delivery. Immediate lifecycle hooks remain unwired. The
+experimental central-origin migration boundary is implemented; production
+rollout remains a mandatory gate before delivery is enabled.

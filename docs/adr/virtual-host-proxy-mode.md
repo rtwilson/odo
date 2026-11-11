@@ -232,8 +232,9 @@ operation is unchanged.
 
 Pending browser handoffs last at most five minutes. Confirmation replaces a
 prepared handoff with a cryptographically random, single-use 60-second ticket;
-redemption atomically replaces that ticket with a host-specific grant lasting
-at most 30 minutes. All lifetimes are capped by the original central session's
+redemption atomically replaces that ticket with a host-specific grant that
+expires after 30 minutes without authorized use (update: experimental delivery
+renews it on use). All lifetimes are capped by the original central session's
 absolute expiration. Records include creation/expiration times, parent user and
 session references, the captured account `auth_version`, and exact registry
 hostname/label and proxy authority. Tokens and browser nonces are stored only as
@@ -256,7 +257,10 @@ The experimental flag connects it and launch to the vendor control handler.
 To admit only the redemption endpoint, preflight uses the same
 `/.well-known/odo/redeem` path with an opaque `handoff` field; ticket exchange uses
 a `ticket` field. The clean endpoint validates the grant and shows only an inert
-receipt. No upstream destination enters those redirects.
+receipt. No upstream destination enters the preflight or ticket redirects.
+Update: redemption now continues to the ticket's server-side target on the same
+proxy host, and grant-less document navigations restart the handoff at central
+`/launch`; see the virtual-host routing architecture document.
 
 The coordinator verifies the complete central token before beginning or
 confirming a handoff. Vendor operations require their own browser nonce and
@@ -295,8 +299,11 @@ The reviewed HTTP/browser handshake with host-only nonce/grant cookies and CSRF
 defenses is implemented experimentally. Remaining delivery gates include live
 integration of the isolated upstream cookie manager, validated-IP dialing on
 actual fetches, session activity handling, redirect/content rewriting, wildcard
-DNS/TLS deployment, and end-to-end browser and privacy testing. The current host
-guard admits vendor control traffic only, never vendor content.
+DNS/TLS deployment, and end-to-end browser and privacy testing. Update: with the
+experimental flag, the host guard now also admits grant-authorized GET/HEAD
+vendor content without rewriting, through the live cookie coordinator and
+validated-IP dialing; production delivery remains disabled. See
+[virtual-host routing](../architecture/virtual-host-routing.md#experimental-vendor-content-delivery).
 
 
 ## Experimental handoff integration status

@@ -214,9 +214,12 @@ func TestExperimentalLegacyMigrationPreservesCentralApplicationRoutes(t *testing
 			handler.ServeHTTP(rec, req)
 			want := 200
 			if host == b.authority {
-				want = 421
+				// Vendor hosts never reach central routes. Without a grant, the
+				// experimental content boundary restarts the handoff at central
+				// /launch (a navigation) before any upstream fetch.
+				want = 303
 			}
-			if rec.Code != want {
+			if rec.Code != want || (host == b.authority && strings.Contains(rec.Body.String(), "<html")) {
 				t.Fatalf("%s%s: got %d, want %d", host, path, rec.Code, want)
 			}
 		}

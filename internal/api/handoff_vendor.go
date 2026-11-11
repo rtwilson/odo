@@ -15,20 +15,28 @@ const (
 	vendorGrantCookie = "__Host-odo_proxy_grant"
 )
 
-// Only this exact control path may bypass central-only host admission. Matching
+// Only this exact control path is a handoff control route. Matching
 // absolute-form and Host authorities is mandatory; forwarding headers are ignored.
 func (h *handoffSecurity) vendorRequest(r *http.Request) bool {
+	return h.vendorContentAuthority(r) != "" && r.URL.Path == handoffVendorPath && r.URL.EscapedPath() == handoffVendorPath
+}
+
+// vendorContentAuthority returns the canonical proxy authority for a request
+// syntactically addressed to one proxy hostname, or "". It does not consult the
+// registry. Host is the only authority source; an absolute-form request URI
+// must name the same label over HTTPS, and userinfo/opaque forms are rejected.
+func (h *handoffSecurity) vendorContentAuthority(r *http.Request) string {
 	central, label, err := h.config.ClassifyAuthority(r.Host)
-	if err != nil || central || label == "" || r.URL == nil || r.URL.User != nil || r.URL.Opaque != "" || r.URL.Path != handoffVendorPath || r.URL.EscapedPath() != handoffVendorPath {
-		return false
+	if err != nil || central || label == "" || r.URL == nil || r.URL.User != nil || r.URL.Opaque != "" {
+		return ""
 	}
 	if r.URL.Host != "" || r.URL.Scheme != "" {
 		absoluteCentral, absoluteLabel, err := h.config.ClassifyAuthority(r.URL.Host)
 		if err != nil || absoluteCentral || absoluteLabel != label || r.URL.Scheme != "https" {
-			return false
+			return ""
 		}
 	}
-	return true
+	return label + "." + h.config.ProxyBaseDomain()
 }
 
 func (h *handoffSecurity) serveVendor(w http.ResponseWriter, r *http.Request) {
@@ -138,10 +146,19 @@ func (h *handoffSecurity) redeemBrowser(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	http.SetCookie(w, handoffCookie(vendorGrantCookie, grantToken, grant.expires))
-	// Clean the one-use token from the address bar. The clean endpoint displays
-	// only an inert receipt after live grant validation, never the stored target.
-	location := url.URL{Scheme: "https", Host: authority, Path: handoffVendorPath}
-	http.Redirect(w, r, location.String(), 303)
+	// Clean the one-use token from the address bar by continuing to the ticket's
+	// validated target on this same proxy host, where experimental delivery
+	// authorizes it again. Anything not representable on this host falls back
+	// to the inert receipt, which never displays the stored target.
+	receipt := url.URL{Scheme: "https", Host: authority, Path: handoffVendorPath}
+	location := receipt.String()
+	if base, err := url.Parse(ticket.target); err == nil {
+		if next, ok := vendorRedirectLocation(base, mapping.Hostname, authority, ticket.target); ok {
+			location = next
+		}
+	}
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 func (h *handoffSecurity) complete(w http.ResponseWriter, r *http.Request, mapping db.ProxyHostname, authority string) {
@@ -172,5 +189,5 @@ func (h *handoffSecurity) complete(w http.ResponseWriter, r *http.Request, mappi
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Odo handoff complete</title></head><body><main><h1>Authentication handoff complete</h1><p>Vendor content delivery is disabled.</p></main></body></html>`))
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Odo handoff complete</title></head><body><main><h1>Authentication handoff complete</h1><p>Experimental vendor content delivery is enabled on this host for testing only.</p></main></body></html>`))
 }

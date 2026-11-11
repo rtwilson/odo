@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -84,9 +86,29 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 	enabled, config, err := experimentalHandoffConfig()
 	server.handoffErr = err
 	if enabled && err == nil {
-		server.handoff = &handoffSecurity{server: server, config: config, state: newPendingHandoffs()}
+		server.handoff, server.handoffErr = newHandoffRuntime(server, config)
 	}
 	return server
+}
+
+// newHandoffRuntime owns one cookie coordinator (sharing this Server's Store
+// with every resource writer) and one dedicated upstream client. Vendor delivery
+// never uses the injectable legacy proxy client or the odo_proxy_sid store. A
+// construction failure disables the experiment: guardHost then rejects all
+// requests rather than falling back to another mode.
+func newHandoffRuntime(server *Server, config proxy.HostRoutingConfig) (*handoffSecurity, error) {
+	h := &handoffSecurity{server: server, config: config, state: newPendingHandoffs()}
+	cookies, err := newGrantCookieCoordinator(h)
+	if err != nil {
+		return nil, errors.New("experimental handoff cookie coordinator could not be constructed")
+	}
+	h.cookies = cookies
+	// Dial-time validation reads the same resolver as the coordinator's target
+	// check, so the two can never be configured differently.
+	h.vendor = proxy.NewSafeHTTPClient(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return server.ipLookup(ctx, host)
+	}, nil, nil)
+	return h, nil
 }
 
 func (s *Server) Routes() http.Handler {

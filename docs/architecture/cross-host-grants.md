@@ -3,7 +3,9 @@
 Status: implemented for isolated development/test handoff behind
 `APP_EXPERIMENTAL_HANDOFF`, off by default and rejected in production. Bounded
 hashed state, return proofs, tickets, grants, central confirmation and vendor
-control HTTP integration are implemented. Vendor content remains disabled.
+control HTTP integration are implemented. Experimental grant-authorized
+GET/HEAD vendor content is available only behind the same flag; production
+vendor delivery remains disabled.
 The original endpoint proposal below is narrowed to one vendor redemption path;
 preflight uses its `handoff` query phase, not a separate prepare endpoint. See
 [runtime flags and fake-host tests](virtual-host-routing.md#experimental-runtime-and-trust-boundary).
@@ -119,10 +121,13 @@ Before any cookie/credential processing, validate request Host and any
 absolute-form URL authority together against trusted deployment configuration.
 Ignore untrusted Forwarded/X-Forwarded-Host. Only the exact registered vendor
 mapping may enter vendor controls. Do not register hosts from requests. A
-experimental dispatcher admits only `/.well-known/odo/redeem`, after exact
-registry lookup and authority validation. All other vendor paths are rejected,
-including the old separate `/prepare` proposal. With the flag off, the existing
-guard rejects all vendor requests.
+experimental dispatcher serves `/.well-known/odo/redeem` after exact registry
+lookup and authority validation. Other vendor paths go only to experimental
+grant-authorized GET/HEAD content delivery (see
+[virtual-host routing](virtual-host-routing.md#experimental-vendor-content-delivery));
+Odo's reserved `/.well-known/odo/` namespace, including the old separate
+`/prepare` proposal, is rejected. With the flag off, the existing guard rejects
+all vendor requests.
 
 ### Browser sequence and proof lifecycle
 
@@ -193,13 +198,14 @@ sequenceDiagram
    live ticket usable for retry. A consumed ticket cannot be replayed to recover
    its raw grant. Loss of the response requires a fresh central launch.
 8. Current successful redemption sets the exact-host grant cookie and 303
-   redirects to the same vendor redemption path without query parameters. That
+   redirects to the ticket's stored target path/query on the same proxy host,
+   where experimental delivery authorizes it again; if that cannot be
+   represented there, it falls back to the redemption path without query. That
    clean endpoint validates the live grant/parent and current domain policy, then
    displays only an inert completion receipt. No target is shown or fetched.
-   Future delivery may redirect to the validated target's stored path/query. Never accept a redemption return
-   URL or concatenate an unchecked path into Location: a path beginning `//`
-   must remain on the current vendor authority, using a URL built from that
-   trusted authority and parsed upstream path/query. Preserve legitimate vendor
+   Never accept a redemption return URL or concatenate an unchecked path into
+   Location: a path beginning `//` must remain on the current vendor authority,
+   using a URL built from that trusted authority and parsed upstream path/query. Preserve legitimate vendor
    parameters named `ticket` or `url`. Reject the reserved control prefix,
    including equivalent escaped/normalized forms, to avoid handler loops.
 
@@ -277,7 +283,7 @@ and trusted bindings in server-side records, alongside the short-lived target.
 | Pending authenticated handoffs | Five minutes; 256 globally |
 | Vendor-return proof (implemented internally) | At most 60 seconds, capped by pending/parent expiry; one hash per pending record |
 | Redemption tickets | 60 seconds; 256 globally |
-| Vendor grants | 30 minutes, capped by parent absolute expiry; 4,096 globally and 64 per parent session |
+| Vendor grants | 30 minutes of inactivity (renewed by authorized use), capped by parent absolute expiry; 4,096 globally and 64 per parent session |
 
 The existing pre-login continuation retains its separate five-minute/256 bounds.
 Expired records must lose access immediately; cleanup must erase expired target
@@ -342,8 +348,9 @@ resource scope, disabled/anonymous cookieless behavior, allowed domains and poli
 retirement; see [the cookie boundary](vendor-origin-cookie-boundary.md).
 The internal grant/cookie coordinator now validates live authorization and
 publishes a guarded resource snapshot on every request/response cookie operation.
-Runtime ownership and post-commit retirement integration remain required; legacy
-resource import compatibility is preserved.
+The experimental runtime owns one coordinator for vendor content delivery;
+post-commit retirement integration remains required. Legacy resource import
+compatibility is preserved.
 
 ## Cross-host assets and acceptance gates
 
@@ -409,7 +416,8 @@ when constructed independently of the running mux.
 
 The vendor HTTP control is now implemented and registered only in experimental
 mode. Preflight and ticket exchange share `/.well-known/odo/redeem`; a clean GET
-there validates the live grant and renders the inert receipt. No separate vendor
+there validates the live grant and renders the inert receipt; redemption itself
+continues to the stored target on the same proxy host. No separate vendor
 prepare endpoint is admitted. Cookie issuance is host-only, Secure, HttpOnly,
 SameSite=Lax and Path=/; no central credentials are copied. All other vendor
 paths, including management routes, are blocked before central authentication.
@@ -425,14 +433,16 @@ for exact commands and current limits.
 Bounded parent/resource upstream cookie jars are now implemented as an isolated
 manager, with policy generations, cookie filtering and capacity/cleanup tests.
 An internal coordinator now joins live grant/parent validation and guarded
-resource snapshots to request/response cookie operations; it has no routes or
-fetches and is not constructed by the runtime. Experimental central-origin migration now redirects only
+resource snapshots to request/response cookie operations. The experimental
+runtime owns one coordinator and uses it for grant-authorized GET/HEAD vendor
+content delivery with actual-target authorization and validated-IP dialing on
+each fetch. Experimental central-origin migration now redirects only
 validated legacy GET bookmarks to central launch and rejects HEAD/unsafe methods
 without replay; recovery and diagnostic vendor body previews remain blocked.
-The next milestone is runtime ownership and post-commit resource/session
-retirement integration with that manager, plus production origin rollout
-and actual-target authorization at each fetch. Do not treat this experimental
-handoff as approval to enable vendor delivery.
+The next milestones are post-commit resource/session retirement integration,
+vendor URL rewriting and cross-host rules, plus production origin rollout. Do not
+treat this experimental delivery path as approval to enable production vendor
+delivery.
 
 Origin separation, authenticated upstream jar isolation, validated-IP fetches,
 rewriting, cold-host behavior and DNS/TLS remain separate delivery gates. Do not

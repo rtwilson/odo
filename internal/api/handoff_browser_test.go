@@ -58,6 +58,13 @@ func newHandoffBrowser(t *testing.T, enabled, authenticated bool) handoffBrowser
 		t.Error("handoff fetched upstream content")
 		return nil, io.ErrUnexpectedEOF
 	})}
+	if enabled {
+		// Never touch the network: delivery tests install a fake-vendor client.
+		server.handoff.vendor = proxy.NewSafeHTTPClient(server.ipLookup, func(context.Context, string, string) (net.Conn, error) {
+			t.Error("handoff dialed an upstream vendor")
+			return nil, io.ErrUnexpectedEOF
+		}, nil)
+	}
 	listener := httptest.NewTLSServer(server.Routes())
 	t.Cleanup(listener.Close)
 	localURL, _ := url.Parse(listener.URL)
@@ -184,13 +191,17 @@ func (b handoffBrowser) finish(t *testing.T, ticket string) string {
 	if grant == nil || !grant.Secure || !grant.HttpOnly || grant.Domain != "" || grant.Path != "/" || grant.SameSite != http.SameSiteLaxMode || grant.MaxAge > int(handoffGrantTTL.Seconds()) {
 		t.Fatal("incorrect grant cookie attributes")
 	}
-	clean := response.Header.Get("Location")
-	u, _ := url.Parse(clean)
-	if u.RawQuery != "" || u.Path != handoffVendorPath {
-		t.Fatal("redemption did not clean ticket URL")
+	// Redemption removes the one-use ticket and continues to the stored target
+	// on this same proxy host; it never names another host.
+	destination, _ := url.Parse(b.target)
+	destination.Host = b.authority
+	ticketURL, _ := url.Parse(ticket)
+	if location := response.Header.Get("Location"); location != destination.String() || strings.Contains(location, ticketURL.Query().Get("ticket")) {
+		t.Fatal("redemption did not clean the ticket URL and continue to its target")
 	}
+	clean := "https://" + b.authority + handoffVendorPath
 	receipt, body := b.request(t, "GET", clean, nil)
-	if receipt.StatusCode != 200 || !strings.Contains(body, "Vendor content delivery is disabled") || strings.Contains(body, b.target) || strings.Contains(body, "private-search") {
+	if receipt.StatusCode != 200 || !strings.Contains(body, "Experimental vendor content delivery is enabled") || strings.Contains(body, b.target) || strings.Contains(body, "private-search") {
 		t.Fatal("missing inert completion page")
 	}
 	return clean
@@ -218,8 +229,9 @@ func TestExperimentalHandoffBrowserFlow(t *testing.T) {
 	if b.h.server.sessions.Count() != 0 {
 		t.Fatal("handoff allocated an upstream cookie jar")
 	}
-	// Neither authority serves a vendor body, including missed-rewrite recovery.
-	for _, target := range []string{"https://" + vendorURL.Host + "/article", "https://odo.example/article"} {
+	// The central origin never serves a vendor body, including missed-rewrite
+	// recovery. Vendor-host delivery is covered by handoff_delivery_test.go.
+	for _, target := range []string{"https://odo.example/article"} {
 		response, body := b.request(t, "GET", target, nil)
 		if response.StatusCode < 400 || strings.Contains(body, "<script") {
 			t.Fatal("content route became available")
@@ -259,10 +271,17 @@ func TestExperimentalHandoffAdmissionAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := mapping.Label + ".proxy.example"
-	for _, path := range []string{"/admin", "/login", "/logout", "/api/v1", "/resources", "/launch", "/.well-known/odo/prepare", "/.well-known/odo/%72edeem"} {
-		response, _ := b.request(t, "GET", "https://"+b.authority+path, nil)
-		if response.StatusCode != 421 || len(response.Cookies()) != 0 {
-			t.Fatal("vendor reached central application or another endpoint")
+	// Central routes are never dispatched on a vendor host. Without a grant a
+	// document navigation restarts the handoff at central /launch for the
+	// vendor's own path; Odo's reserved control namespace is 400.
+	for path, want := range map[string]int{
+		"/admin": 303, "/login": 303, "/logout": 303, "/api/v1": 303, "/resources": 303, "/launch": 303,
+		"/.well-known/odo/prepare": 400, "/.well-known/odo/%72edeem": 400,
+	} {
+		response, body := b.request(t, "GET", "https://"+b.authority+path, nil)
+		relaunch := "https://odo.example/launch?" + url.Values{"url": {"https://vendor.example" + path}}.Encode()
+		if response.StatusCode != want || len(response.Cookies()) != 0 || strings.Contains(body, "<html") || (want == 303 && response.Header.Get("Location") != relaunch) {
+			t.Fatalf("%s: vendor host reached central application or another endpoint (%d)", path, response.StatusCode)
 		}
 	}
 	response, _ := b.request(t, "GET", "https://unknown.proxy.example"+handoffVendorPath+"?ticket="+b.vendor, nil)

@@ -18,6 +18,7 @@ const (
 	handoffTicketTTL            = time.Minute
 	maxHandoffTickets           = 256
 	handoffGrantTTL             = 30 * time.Minute
+	handoffGrantRenewInterval   = time.Minute
 	maxHandoffGrants            = 4096
 	maxHandoffGrantsPerParent   = 64
 	maxHandoffSessionFieldBytes = 128
@@ -68,11 +69,14 @@ type handoffTicket struct {
 	parentExpires    time.Time
 }
 
-// A grant retains no target, browser nonce or browsing history.
+// A grant retains no target, browser nonce or browsing history. expires is an
+// inactivity deadline that authorized use may slide; limit is the parent's
+// absolute session expiry, which no renewal can exceed.
 type handoffGrant struct {
 	binding handoffBinding
 	created time.Time
 	expires time.Time
+	limit   time.Time
 }
 
 // This passive store has no routes, cookie handling, database access, DNS or
@@ -302,9 +306,38 @@ func (s *pendingHandoffs) redeem(token string, binding handoffBinding, vendorNon
 	if ticket.parentExpires.Before(expires) {
 		expires = ticket.parentExpires
 	}
-	s.grants[grantKey] = handoffGrant{binding: ticket.binding, created: now, expires: expires}
+	s.grants[grantKey] = handoffGrant{binding: ticket.binding, created: now, expires: expires, limit: ticket.parentExpires}
 	delete(s.tickets, key)
 	return grantToken, ticket.target, nil
+}
+
+// renewGrant slides a live grant's inactivity deadline to now+handoffGrantTTL,
+// capped at the parent's absolute expiry. Call it only after a use was fully
+// authorized: it checks the exact host binding but is not authorization. It is
+// throttled to handoffGrantRenewInterval so routine assets do not rewrite the
+// grant cookie, and it never revives an expired or removed grant.
+func (s *pendingHandoffs) renewGrant(token string, mapping db.ProxyHostname, authority string, now time.Time) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(now)
+	if !validLaunchToken(token) {
+		return time.Time{}, false
+	}
+	key := local.HashToken(token)
+	grant, found := s.grants[key]
+	if !found || grant.binding.hostname != mapping.Hostname || grant.binding.label != mapping.Label || grant.binding.proxyAuthority != authority {
+		return time.Time{}, false
+	}
+	next := now.Add(handoffGrantTTL)
+	if grant.limit.Before(next) {
+		next = grant.limit
+	}
+	if next.Sub(grant.expires) < handoffGrantRenewInterval {
+		return grant.expires, false
+	}
+	grant.expires = next
+	s.grants[key] = grant
+	return next, true
 }
 
 // inspectGrant locates state for the exact admitted vendor origin. It does not

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"net/http"
 	"time"
 
 	"example.org/odo/internal/auth/local"
@@ -14,12 +15,17 @@ import (
 
 var errHandoffDenied = errors.New("handoff authorization denied")
 
-// The experimental runtime constructs this coordinator for control routes only.
+// The experimental runtime constructs this coordinator for control routes and
+// experimental vendor content delivery.
 // The passive store must never be used as an authorization cache.
 type handoffSecurity struct {
 	server *Server
 	config proxy.HostRoutingConfig
 	state  *pendingHandoffs
+	// Runtime-owned experimental vendor delivery. Both are constructed once with
+	// the handoff runtime; never per request and never the legacy proxy store.
+	cookies *grantCookieCoordinator
+	vendor  *http.Client
 }
 
 func (h *handoffSecurity) mapping(authority string) (db.ProxyHostname, error) {

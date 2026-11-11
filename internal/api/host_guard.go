@@ -29,8 +29,15 @@ func ValidateHostGuardConfig() error {
 	if err != nil {
 		return err
 	}
-	_, _, err = experimentalHandoffConfig()
-	return err
+	enabled, config, err := experimentalHandoffConfig()
+	if err != nil || !enabled {
+		return err
+	}
+	// Fail startup if the runtime's cookie manager could not be constructed.
+	if _, err := proxy.NewUpstreamCookieJars(config); err != nil {
+		return errors.New("experimental handoff cookie coordinator configuration is invalid")
+	}
+	return nil
 }
 
 func (s *Server) guardHost(next http.Handler) http.Handler {
@@ -59,6 +66,13 @@ func (s *Server) guardHost(next http.Handler) http.Handler {
 		if !requestOnCentralHost(r, config) {
 			if s.handoff != nil && s.handoff.vendorRequest(r) {
 				s.handoff.serveVendor(w, r)
+				return
+			}
+			// Everything else on a proxy hostname is experimental vendor content.
+			// The central mux (admin, login, API, resources, session routes) is
+			// never reachable here; unregistered names are rejected inside.
+			if s.handoff != nil && s.handoff.vendorContentAuthority(r) != "" {
+				s.handoff.serveVendorContent(w, r)
 				return
 			}
 			reject(http.StatusMisdirectedRequest, "request authority is not admitted")

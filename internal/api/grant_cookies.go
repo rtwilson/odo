@@ -15,7 +15,8 @@ import (
 )
 
 // grantCookieCoordinator owns one jar manager and shares the handoff's Store.
-// It has no routes or transport. Every operation validates DNS outside the
+// The experimental handoff runtime constructs exactly one and uses it for vendor
+// content delivery (handoff_delivery.go); it has no transport itself. Every operation validates DNS outside the
 // resource guard, then keeps fresh snapshot publication, grant authorization
 // and jar access inside that guard. No authorization decision is cached.
 // All resource writers must use this same Store instance.
@@ -139,13 +140,21 @@ func (c *grantCookieCoordinator) validateTarget(ctx context.Context, target *url
 		return proxy.ErrCookieAuthorization
 	}
 	validated, err := proxy.ValidateTargetURL(ctx, target.String(), c.handoff.server.ipLookup)
+	if err != nil {
+		// DNS failure or an unsafe address: never authorized, but reported as an
+		// upstream problem rather than a policy denial. No address is retained.
+		return errVendorTargetUnsafe
+	}
 	// The caller must construct a canonical upstream URL. Never validate one
 	// normalized target and then prepare a different request URL.
-	if err != nil || validated == nil || *validated != *target {
+	if validated == nil || *validated != *target {
 		return proxy.ErrCookieAuthorization
 	}
 	return nil
 }
+
+// errVendorTargetUnsafe means the target failed DNS or IP safety validation.
+var errVendorTargetUnsafe = errors.New("vendor target failed DNS or address safety validation")
 
 // authorize is called only by the private manager exchanges inside the Store
 // resource guard, after validateTarget. It does no DNS/network work and no

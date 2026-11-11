@@ -3,16 +3,16 @@
 Virtual-host request routing is disabled. Production startup rejects
 `APP_PROXY_URL_MODE=virtual_host`; development retains its warning and path-mode
 fallback. `APP_EXPERIMENTAL_HANDOFF=true` now enables an isolated authentication
-handoff in development/test only. It defaults off and is rejected in production.
-This is not a deployable virtual-host proxy mode.
+handoff and a first experimental vendor content path in development/test only.
+It defaults off and is rejected in production. This is not a deployable
+virtual-host proxy mode.
 
 | State | Current behavior |
 | --- | --- |
-| Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers. |
-| Enabled for testing | With the flag, registered vendor hosts admit only `GET /.well-known/odo/redeem`; central launch and confirmation complete the browser handshake. |
-| Disabled | All upstream vendor content on vendor hosts; central path content, diagnostic body previews and missed-rewrite recovery are also blocked while the experimental mode is on. Validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
-| Implemented separately | Bounded upstream cookie jars and an internal live grant/snapshot coordinator for request/response cookie operations. No runtime construction, delivery or post-commit lifecycle hooks. |
-| Not yet implemented | Production vendor delivery, runtime jar ownership/lifecycle hooks, virtual-host rewriting, automatic cold-host access and multi-instance handoff state. |
+| Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers, bounded upstream cookie jars and the live grant/snapshot cookie coordinator. |
+| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized `GET`/`HEAD` vendor content without rewriting; see [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake. |
+| Unsupported | Unsafe methods, HTML/JavaScript/CSS rewriting, cross-host redirects and assets, automatic cold-host handoff, anonymous grant-free vendor access, post-commit lifecycle hooks, cookie persistence and multi-instance handoff state. |
+| Production-disabled | All vendor-host delivery: startup rejects the flag outside development/test. Central path content, diagnostic body previews and missed-rewrite recovery are blocked while the experimental mode is on; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
 
 ## Trusted deployment names
 
@@ -125,7 +125,7 @@ parent Domain attribute in conforming browsers. They do not isolate vendor
 scripts served on the same central origin through path mode. The Origin checks
 below address sibling origins. Internal grants now depend on live central-session
 validity. HTTP-level handoff and host-only vendor cookies are available only
-with the experimental handoff-only flag; production vendor delivery is disabled.
+with the experimental flag; production vendor delivery is disabled.
 
 ## Guarded central Origin checks
 
@@ -163,7 +163,7 @@ separating those origins before vendor-host routing is enabled.
 
 ## Required request boundary before enabling traffic
 
-Future vendor content dispatch must preserve the guard's ordering before cookie/session
+Vendor content dispatch must preserve the guard's ordering before cookie/session
 processing, API-key authentication, and application routing. It must continue
 rejecting authority disagreement and ignoring untrusted forwarded host values.
 The edge must preserve validated Host, overwrite
@@ -178,9 +178,9 @@ processing, target fetches, or registry enrollment. A vendor's own `/about`,
 
 The opt-in central host, cookie, and Origin boundaries are implemented.
 Host admission is active when the guard is enabled. By default only the central
-host reaches the application. The experimental flag adds only the exact vendor
-redemption control path, never vendor content or central application routes on
-vendor hosts. The ticket/grant foundation and test-only HTTP integration below
+host reaches the application. The experimental flag adds the exact vendor
+redemption control path and experimental grant-authorized GET/HEAD content on
+registered vendor hosts, never central application routes on vendor hosts. The ticket/grant foundation and test-only HTTP integration below
 are implemented. Production origin migration, deployment validation and vendor
 compatibility remain delivery gates. The existing local login continuation is
 not itself a cross-host grant; it feeds the authenticated launch flow.
@@ -211,7 +211,8 @@ policy removes authorization. There is no new hostname-revocation API.
    and current policy. The original approved resource ID must still be selected
    for the stored target; a different resource cannot replace it silently.
    Redemption atomically consumes the ticket and creates a host-specific grant.
-5. Grants last at most 30 minutes. Every use checks the live parent session,
+5. Grants expire after 30 minutes without authorized use and never outlive the
+   parent's absolute session expiry. Every use checks the live parent session,
    account eligibility and captured `auth_version`, registry mapping, and current
    policy/safety for the actual target and method. Grants are host authorization,
    not independent vendor identities or permission to bypass resource checks.
@@ -251,11 +252,10 @@ now implemented internally: one hashed proof per pending record, a 60-second
 maximum capped by pending/parent expiry, same-nonce rotation and mandatory atomic
 confirmation checks. Tests cover two-browser correlation and rotation during
 validation. Central confirmation handling is now implemented as described
-below and wired only by the experimental flag. Vendor content dispatch remains
-absent.
-Vendor delivery additionally needs runtime wiring of the internal coordinator's
-upstream cookie isolation and proxied session-activity recording, validated-IP fetch integration, redirect/content rewriting, wildcard
-DNS/TLS deployment and end-to-end browser compatibility tests.
+below and wired only by the experimental flag. Experimental GET/HEAD vendor
+content dispatch is described below. Production delivery additionally needs
+redirect/content rewriting, cross-host asset handling, wildcard DNS/TLS
+deployment and end-to-end browser compatibility tests.
 
 
 ## Central confirmation HTTP handler
@@ -291,6 +291,8 @@ guard and defaults to false. True requires `APP_HOST_GUARD=true`, valid configur
 HTTPS central/proxy names, and `APP_ENV` empty/development/test. Production and
 unknown environment names reject this flag. Startup validation fails; directly
 constructed invalid configurations return 503 without credentials or data access.
+Startup also validates the runtime's cookie-jar configuration; if the runtime's
+coordinator cannot be constructed, the server returns 503 for every request.
 Configuration is captured when constructing the server; restart to change it.
 The existing `APP_PROXY_URL_MODE=virtual_host` production rejection remains.
 
@@ -309,10 +311,11 @@ path/query/dual behavior is unchanged. Vendor hosts expose only one exact path:
 | Request on registered vendor host | Action |
 | --- | --- |
 | `GET /.well-known/odo/redeem?handoff=<opaque-id>` | Check pending parent/resource/target, bind host-only browser nonce, issue return proof; 303 to configured central confirmation. |
-| `GET /.well-known/odo/redeem?ticket=<opaque-ticket>` | Check exact host/nonce, live parent/version, original resource and target safety; atomically exchange ticket for grant; set host-only grant cookie; 303 to the same endpoint without query. |
+| `GET /.well-known/odo/redeem?ticket=<opaque-ticket>` | Check exact host/nonce, live parent/version, original resource and target safety; atomically exchange ticket for grant; set host-only grant cookie; 303 to the ticket's stored target path/query on this same proxy host (the receipt if it cannot be represented there). |
 | `GET /.well-known/odo/redeem` | Validate live grant/parent/registry and active domain policy; show an inert completion receipt. No resource target or content is shown. |
 | HEAD or other methods | 405, no state/cookie changes. |
-| Every other vendor path, including `/admin`, `/login`, `/logout`, `/api/v1`, `/resources`, `/launch` and the old proposed `/prepare` | 421 before central authentication or cookie handling. |
+| Other `/.well-known/odo/` paths, including the old proposed `/prepare` | 400; Odo's reserved namespace is never proxied. |
+| Every other vendor path, including a vendor's own `/admin`, `/login`, `/api/v1` | Experimental GET/HEAD [vendor content delivery](#experimental-vendor-content-delivery); never the central application. |
 
 The preflight phase shares the redemption path; a separate vendor prepare
 endpoint is not admitted. Unknown/unregistered hosts and disagreement between
@@ -322,23 +325,26 @@ API keys from central are neither needed nor processed by the vendor handler.
 
 The complete flow is authenticated `/launch` → vendor preflight → central GET
 confirmation → explicit central Origin/CSRF-protected POST → one-use ticket →
-vendor redemption → clean inert receipt. Ordinary login continuation is used
-first when needed. Neither new vendor-facing control URL contains the upstream
-destination, central session token or CSRF value. All redirects use configured
-central or stored registered-vendor authority. There is no caller-supplied return
-URL, and final redemption never redirects to the upstream target.
+vendor redemption → the stored target on the proxy host. Ordinary login
+continuation is used first when needed. Neither new vendor-facing control URL
+contains the upstream destination, central session token or CSRF value. All
+redirects use configured central or stored registered-vendor authority. There is
+no caller-supplied return URL: final redemption continues only to the ticket's
+server-side target, re-expressed on the same proxy host after the same-host,
+HTTPS and path checks used for upstream redirects, and never to another host.
 
 Cookie names are `__Host-odo_handoff_nonce` on central, and
 `__Host-odo_grant_nonce`/`__Host-odo_proxy_grant` on the exact vendor host. All
 are Secure, HttpOnly, SameSite=Lax, Path=/, without Domain. Nonces last at most
-five minutes; ticket and return-proof TTLs are at most 60 seconds; grants last
-at most 30 minutes and never beyond parent absolute expiry. Session revocation,
+five minutes; ticket and return-proof TTLs are at most 60 seconds; grants expire
+after 30 minutes without authorized use and never beyond parent absolute expiry. Session revocation,
 password/status/role changes and deletion deny subsequent grant/receipt use;
 `auth_version` mismatch alone suffices. Cookies on another vendor host cannot
 supply that host's grant; even a manually copied value fails server binding.
-The inert receipt also checks active domain policy. Actual future content use
-must separately authorize its real URL/method through `validateGrant` and use
-validated-IP dialing; the receipt does not authorize an upstream fetch.
+The inert receipt also checks active domain policy. Content use separately
+authorizes its real URL/method through the cookie coordinator and uses
+validated-IP dialing; neither the receipt nor the redemption redirect authorizes
+an upstream fetch.
 
 Each control response uses no-store, no-referrer, restrictive CSP and frame
 denial. Fixed route labels and suppression of Referer/User-Agent in experimental
@@ -409,13 +415,112 @@ explicit admin registry/resource enrollment. The automatic tests above supply
 those equivalents locally; the runtime does not install them or bypass SSRF for
 fake names. Do not turn on this flag in an existing production deployment.
 
-The internal `grant_cookies.go` coordinator now connects live grant/parent checks,
-the actual winning resource and its snapshot's cookie generation, under the
-Store resource guard. It is tested with fake requests/responses and performs no
-fetch; see [the cookie boundary](vendor-origin-cookie-boundary.md#internal-live-grantcookie-coordinator).
+The `grant_cookies.go` coordinator connects live grant/parent checks, the actual
+winning resource and its snapshot's cookie generation, under the Store resource
+guard; see [the cookie boundary](vendor-origin-cookie-boundary.md#internal-live-grantcookie-coordinator).
+The experimental runtime now owns one coordinator and uses it for every vendor
+content request and response.
 
-Remaining delivery work: production origin rollout, runtime ownership and
-post-commit retirement of the bounded parent/resource upstream cookie jars, actual target/method grant
-checks on each fetch, validated-IP integration, virtual-host URL/rewrite behavior,
-redirect/cold-host rules, wildcard DNS/TLS deployment and real-browser/vendor
-compatibility/privacy testing. Vendor content routing is not enabled here.
+## Experimental vendor content delivery
+
+`internal/api/handoff_delivery.go` serves the first vendor content path. It
+exists only when `APP_EXPERIMENTAL_HANDOFF=true` (development/test, host guard
+on); production startup rejects that flag, and a runtime construction failure
+makes the guard answer 503 for every request rather than fall back.
+
+Runtime ownership: `newHandoffRuntime` constructs one `grantCookieCoordinator`
+(one bounded jar manager, sharing the Server's `db.Store` with all resource
+writers) and one dedicated client from `proxy.NewSafeHTTPClient`. Vendor
+delivery never uses the injectable legacy proxy client or the `odo_proxy_sid`
+session store. `ValidateHostGuardConfig` also checks the jar configuration at
+startup.
+
+Request flow on a non-central authority:
+
+1. `guardHost` classifies `Host` only (forwarded headers are ignored). The exact
+   `/.well-known/odo/redeem` control path keeps its existing handler. Every
+   other path goes to vendor content; the central mux (admin, login, logout,
+   `/api/v1`, resources, about/source, session routes) is never reachable on a
+   vendor host. A vendor's own `/login` or `/api` path is proxied to the vendor
+   like any other vendor path, without Odo credentials.
+2. Admission requires `GET` or `HEAD` (others 405), no request body or
+   `Transfer-Encoding`, an absolute-form URI (if any) naming the same HTTPS
+   proxy label with no userinfo, a request target of at most 8 KiB, and a path
+   without dot segments (including `%2e` forms), backslashes, control
+   characters or Odo's reserved `/.well-known/odo/` namespace. The host must be
+   an exact registry mapping (else 421) and the request must carry exactly one
+   host-only `__Host-odo_proxy_grant` cookie (else 401).
+3. The upstream URL is `https://` + the registry mapping's hostname + the
+   request's escaped path and opaque query, and must survive canonical parsing
+   unchanged. Clients cannot supply upstream URLs, resource IDs or hosts.
+4. Only `Accept`, `Accept-Language`, `User-Agent`, `Range` and `If-Range` are
+   copied upstream, plus `Accept-Encoding: identity`. Cookies, `Authorization`,
+   `Proxy-Authorization`, `Forwarded`/`X-Forwarded-*`, CSRF and hop-by-hop
+   headers never are.
+5. `grantCookieCoordinator.prepareRequest` validates DNS safety, then under the
+   resource guard checks the live grant, parent session, current resource
+   policy for the exact target and method, and selects the winning resource's
+   jar. Proxied activity refreshes the parent session (throttled).
+6. The safe client has no cookie jar, never follows redirects, verifies TLS
+   certificates normally, validates every resolved IP at connection time
+   (rebinding-safe) and uses 10 s TLS, 15 s response-header and 30 s overall
+   timeouts. The browser request's context cancels the upstream request.
+7. `storeResponse` reauthorizes and stores cookies before any header or byte is
+   forwarded; failure (revoked session, expired grant, policy revision,
+   cookie rejection) fails closed and discards the body.
+8. Same-host HTTPS redirects are re-expressed on the proxy authority (fragment
+   dropped); cross-host, downgraded, userinfo or reserved-path redirects return
+   502 with no `Location`. Only `Content-Type`, `Content-Disposition`,
+   `Content-Language`, `Last-Modified`, `ETag`, `Content-Length`,
+   `Content-Encoding`, `Accept-Ranges` and `Content-Range` are copied;
+   `Set-Cookie`, CSP, CORS, HSTS, `Link`, `Refresh`, `Alt-Svc` and `Location`
+   are dropped. Responses get `Cache-Control: no-store`,
+   `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. HEAD
+   responses carry no body. Bodies are streamed unmodified.
+
+Errors map to 401 (grant/parent invalid), 403 (policy or method denied), 502
+(unsafe or unresolvable destination, TLS/connection failure, unsupported
+redirect), 504 (timeout) and 503 (coordinator storage or capacity). Access logs
+record only the route `handoff_vendor_content`, status and upstream status;
+paths, queries, cookies and upstream error text (which embeds URLs) are never
+logged.
+
+`internal/api/handoff_delivery_test.go` covers these paths against fake HTTPS
+vendors with locally issued certificates. The real safe client is used: the
+test resolver returns a public test IP and only the test dialer maps that
+already-validated IP to the loopback listener.
+
+Re-handoff: a top-level `GET` document navigation (`Sec-Fetch-Dest`/`Mode`
+document/navigate or absent, `Accept` HTML or absent) that has no grant cookie,
+or whose grant the coordinator rejects as unknown, expired or bound to an
+invalid parent session, receives a body-less 303 to central
+`/launch?url=<trusted upstream target>`. The target is built from the registry
+hostname, so this is never an open redirect. The patron repeats the normal
+login (if needed) and explicit central confirmation, and redemption returns
+them to the same path and query. The vendor jar survives because jar lifetime
+follows patron inactivity, not the grant. Subresource, `fetch`/XHR, `HEAD`,
+duplicate-grant-cookie and policy-denied requests are never redirected; they keep
+401 or 403.
+
+Grant renewal: after a request is fully authorized and `storeResponse`
+succeeds, the grant's deadline slides to 30 minutes from now, capped at the
+parent session's absolute expiry, and the response refreshes the host-only
+`__Host-odo_proxy_grant` cookie (same value, new `Max-Age`). Renewal is
+throttled to once a minute so routine assets do not churn cookies. Denials,
+upstream failures and redirects that fail closed never renew; renewal never
+revives an expired grant. Every request still checks the live parent session,
+so logout, revocation or account changes end a renewed grant immediately. An
+active patron therefore re-confirms only after 30 minutes of inactivity or when
+the central session itself ends.
+
+Known limits: vendor HTML is not rewritten, so absolute vendor links,
+cross-host assets, frames and redirects leave the proxy host and do not work.
+After 30 minutes of inactivity, a re-handoff requires the patron to confirm
+again at central. A stolen grant cookie can be kept alive by use until the
+parent's absolute expiry unless the parent session ends. There is no post-commit retirement hook, no
+cookie persistence and no multi-instance state.
+
+Remaining delivery work: production origin rollout, post-commit retirement
+hooks, virtual-host
+URL/rewrite behavior, cross-host redirect/cold-host rules, wildcard DNS/TLS deployment and real-browser/vendor
+compatibility/privacy testing.

@@ -115,8 +115,11 @@ capacity, randomness and collision failure preserve the live ticket for retry
 without evicting another grant. Slot checks, creation and consumption share the
 state lock, including when different tickets race for the final slot.
 
-Grant lifetime is the earlier of 30 minutes after redemption and the original
-parent absolute expiry, retained through ticket creation. It is not capped by
+Grant lifetime is an inactivity deadline: initially the earlier of 30 minutes
+after redemption and the original parent absolute expiry, retained through
+ticket creation as the grant's fixed limit. `renewGrant` slides the deadline to
+30 minutes after each fully authorized experimental delivery use (at most once
+per minute) and never beyond that limit; it cannot revive an expired grant. It is not capped by
 the consumed ticket's 60-second deadline. Each grant retains only its trusted
 parent/host binding and expiry: no target, path/query, browser nonce, raw token,
 resource ID or browsing history. Token keys remain hashes.
