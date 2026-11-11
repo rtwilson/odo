@@ -301,7 +301,8 @@ integration of the isolated upstream cookie manager, validated-IP dialing on
 actual fetches, session activity handling, redirect/content rewriting, wildcard
 DNS/TLS deployment, and end-to-end browser and privacy testing. Update: with the
 experimental flag, the host guard now also admits grant-authorized GET/HEAD
-vendor content without rewriting, through the live cookie coordinator and
+vendor content (rewriting only same-host absolute URLs in HTML attributes),
+through the live cookie coordinator and
 validated-IP dialing; production delivery remains disabled. See
 [virtual-host routing](../architecture/virtual-host-routing.md#experimental-vendor-content-delivery).
 

@@ -48,6 +48,13 @@ type fakeVendor struct {
 
 func newFakeVendor(t *testing.T, names ...string) *fakeVendor {
 	t.Helper()
+	return newFakeVendorSite(t, nil, names...)
+}
+
+// newFakeVendorSite serves site (when non-nil) instead of the default routes,
+// still recording hits and the last request.
+func newFakeVendorSite(t *testing.T, site http.Handler, names ...string) *fakeVendor {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +72,17 @@ func newFakeVendor(t *testing.T, names ...string) *fakeVendor {
 	leaf, _ := x509.ParseCertificate(der)
 	v := &fakeVendor{roots: x509.NewCertPool(), entered: make(chan struct{}, 4), release: make(chan struct{}), done: make(chan struct{}, 4)}
 	v.roots.AddCert(leaf)
-	v.server = httptest.NewUnstartedServer(http.HandlerFunc(v.serve))
+	handler := http.Handler(http.HandlerFunc(v.serve))
+	if site != nil {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			v.hits.Add(1)
+			v.mu.Lock()
+			v.last = r.Clone(context.Background())
+			v.mu.Unlock()
+			site.ServeHTTP(w, r)
+		})
+	}
+	v.server = httptest.NewUnstartedServer(handler)
 	v.server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}}, MinVersion: tls.VersionTLS12}
 	v.server.StartTLS()
 	t.Cleanup(func() {
@@ -152,8 +169,13 @@ func publicVendorLookup(context.Context, string) ([]net.IPAddr, error) {
 
 func newDeliveryHarness(t *testing.T) *deliveryHarness {
 	t.Helper()
+	return newDeliveryHarnessWithSite(t, nil)
+}
+
+func newDeliveryHarnessWithSite(t *testing.T, site http.Handler) *deliveryHarness {
+	t.Helper()
 	b := newHandoffBrowser(t, true, true)
-	d := &deliveryHarness{handoffBrowser: b, vendor: newFakeVendor(t, "vendor.example")}
+	d := &deliveryHarness{handoffBrowser: b, vendor: newFakeVendorSite(t, site, "vendor.example")}
 	item, _, err := b.h.server.store.GetResource("vendor")
 	if err != nil {
 		t.Fatal(err)

@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -176,6 +179,13 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(response.StatusCode)
 		return
 	}
+	// Read and possibly rewrite before any header is written, so a body read
+	// failure can still fail closed.
+	body, rewritten, mayRewrite, err := sameHostHTMLBody(r, response, mapping.Hostname, authority)
+	if err != nil {
+		h.vendorDeliveryError(w, r, err, "fetch")
+		return
+	}
 	if policy, ok := r.Context().Value(responsePolicyKey{}).(*appResponseWriter); ok {
 		// Vendor bytes are not Odo pages: do not apply the central app CSP.
 		policy.proxy = true
@@ -186,13 +196,68 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 			headers.Add(name, value)
 		}
 	}
+	if rewritten != nil || (mayRewrite && r.Method == http.MethodHead) {
+		// The validators and range support describe the upstream bytes, not a
+		// modified representation. HEAD cannot know whether GET would rewrite
+		// the document, so it never advertises them (or a length) either.
+		headers.Del("ETag")
+		headers.Del("Accept-Ranges")
+		headers.Del("Content-Length")
+	}
+	if rewritten != nil {
+		headers.Set("Content-Length", strconv.Itoa(len(rewritten)))
+		body = bytes.NewReader(rewritten)
+	}
 	headers.Set("Cache-Control", "no-store")
 	headers.Set("X-Content-Type-Options", "nosniff")
 	renew()
 	w.WriteHeader(response.StatusCode)
 	if r.Method == http.MethodGet {
-		_, _ = io.Copy(w, response.Body)
+		_, _ = io.Copy(w, body)
 	}
+}
+
+// rewritableHTMLResponse reports whether a response is a complete,
+// uncompressed HTML document eligible for same-host link rewriting.
+func rewritableHTMLResponse(response *http.Response) bool {
+	switch response.StatusCode {
+	case http.StatusPartialContent, http.StatusNoContent, http.StatusNotModified:
+		return false
+	}
+	if encoding := strings.TrimSpace(response.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	return err == nil && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
+}
+
+// vendorHTMLRewriteMaxBytes bounds the HTML held in memory for same-host link
+// rewriting. Larger documents stream through unmodified.
+const vendorHTMLRewriteMaxBytes = 2 << 20
+
+// sameHostHTMLBody returns the response body to forward and whether the
+// response is eligible HTML. For an eligible GET it applies
+// proxy.RewriteSameHostHTML and, if that changed anything, returns the
+// rewritten bytes. Everything else (ranges, compressed, binary, oversized or
+// unchanged documents) is forwarded byte-for-byte with its original headers.
+func sameHostHTMLBody(r *http.Request, response *http.Response, upstreamHost, authority string) (io.Reader, []byte, bool, error) {
+	if !rewritableHTMLResponse(response) {
+		return response.Body, nil, false, nil
+	}
+	if r.Method != http.MethodGet {
+		return response.Body, nil, true, nil
+	}
+	buffered, err := io.ReadAll(io.LimitReader(response.Body, vendorHTMLRewriteMaxBytes+1))
+	if err != nil {
+		return nil, nil, true, err
+	}
+	if len(buffered) > vendorHTMLRewriteMaxBytes {
+		return io.MultiReader(bytes.NewReader(buffered), response.Body), nil, true, nil
+	}
+	if out, changed := proxy.RewriteSameHostHTML(buffered, upstreamHost, authority); changed {
+		return nil, out, true, nil
+	}
+	return bytes.NewReader(buffered), nil, true, nil
 }
 
 // restartHandoff sends a top-level GET navigation that lacks a live grant to

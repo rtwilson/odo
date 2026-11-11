@@ -10,8 +10,8 @@ virtual-host proxy mode.
 | State | Current behavior |
 | --- | --- |
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers, bounded upstream cookie jars and the live grant/snapshot cookie coordinator. |
-| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized `GET`/`HEAD` vendor content without rewriting; see [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake. |
-| Unsupported | Unsafe methods, HTML/JavaScript/CSS rewriting, cross-host redirects and assets, automatic cold-host handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
+| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized `GET`/`HEAD` vendor content, rewriting only same-host absolute URLs in HTML attributes ([browser compatibility](#browser-compatibility)); see [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake. |
+| Unsupported | Unsafe methods, JavaScript/CSS rewriting, cross-host HTML rewriting, cross-host redirects and assets, automatic cold-host handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
 | Production-disabled | All vendor-host delivery: startup rejects the flag outside development/test. Central path content, diagnostic body previews and missed-rewrite recovery are blocked while the experimental mode is on; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
 
 ## Trusted deployment names
@@ -479,7 +479,9 @@ Request flow on a non-central authority:
    `Set-Cookie`, CSP, CORS, HSTS, `Link`, `Refresh`, `Alt-Svc` and `Location`
    are dropped. Responses get `Cache-Control: no-store`,
    `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. HEAD
-   responses carry no body. Bodies are streamed unmodified.
+   responses carry no body. Bodies are streamed unmodified, except the
+   narrow same-host HTML link rewriting described under
+   [browser compatibility](#browser-compatibility).
 
 Errors map to 401 (grant/parent invalid), 403 (policy or method denied), 502
 (unsafe or unresolvable destination, TLS/connection failure, unsupported
@@ -516,12 +518,74 @@ so logout, revocation or account changes end a renewed grant immediately. An
 active patron therefore re-confirms only after 30 minutes of inactivity or when
 the central session itself ends.
 
-Known limits: vendor HTML is not rewritten, so absolute vendor links,
-cross-host assets, frames and redirects leave the proxy host and do not work.
+Known limits: only same-host absolute URLs in HTML attributes are rewritten
+(see [browser compatibility](#browser-compatibility)); cross-host links, assets,
+frames and redirects, and URLs built by JavaScript or CSS, leave the proxy host
+and do not work.
 After 30 minutes of inactivity, a re-handoff requires the patron to confirm
 again at central. A stolen grant cookie can be kept alive by use until the
 parent's absolute expiry unless the parent session ends. There is no cookie
 persistence and no multi-instance state.
+
+## Browser compatibility
+
+`internal/api/handoff_browser_compat_test.go` drives the complete browser path
+against a fake multi-page HTTPS vendor (locally issued certificate, fake DNS):
+central session → `/launch` → confirmation → grant → vendor index → assets →
+second page → same-host redirect → vendor session cookie, plus a PDF.
+
+Baseline before any rewriting (recorded on the unchanged branch): root-relative
+CSS/JS/images, relative and parent-relative navigation, query strings, escaped
+paths (`%2F`, `%20`, UTF-8), same-host redirects, the vendor's own session
+cookie (kept in the upstream jar, never in the browser), PDF full/`Range`/
+`If-Range`/`HEAD` responses and fragments all worked through native browser
+URL resolution. The only same-host failure was a URL-rewriting problem:
+absolute (`https://vendor.example/...`, `http://...`) and scheme-relative
+(`//vendor.example/...`) same-host links, and a `<base href>` naming the vendor
+host, sent the browser to the real vendor outside Odo.
+
+Same-host rewriting rules (`proxy.RewriteSameHostHTML`, applied in
+`handoff_delivery.go`):
+
+- Only complete `GET` responses with `text/html` or `application/xhtml+xml`,
+  no `Content-Encoding` (other than identity), not 206/204/304, and at most
+  2 MiB are examined. Larger documents stream unchanged. PDFs, images, scripts,
+  stylesheets and every other type are never modified.
+- Only the attributes `href`, `src`, `srcset` (each candidate), `poster`,
+  `action`, `formaction` and `data` are examined, on any element (including
+  `<base>`). `data-*`, `style`, inline scripts and styles, comments, text and
+  `<meta http-equiv=refresh>` are never changed.
+- A value is rewritten only when it is an absolute `https`/`http` or
+  scheme-relative URL whose host equals the resource's registered upstream host
+  (case-insensitive, default port, no userinfo or percent-encoded authority).
+  The scheme and authority become `https://<this proxy host>`; every following
+  byte (escaped path, query, fragment) is kept. Relative URLs, other hosts and
+  unregistered destinations are never rewritten, so no new host is reached and
+  authorization is unchanged.
+- Unchanged tokens are copied byte-for-byte. Only a changed tag is
+  re-serialized: its name and attribute keys lower-cased, values double-quoted,
+  decoded non-ASCII characters written as numeric character references (valid
+  in any document encoding) and non-UTF-8 bytes kept as supplied. A document
+  with nothing to rewrite is forwarded unchanged with its original headers.
+- When a document changes, `Content-Length` is recomputed and `ETag` and
+  `Accept-Ranges` are removed, since they describe the upstream bytes. `HEAD`
+  for eligible HTML omits `Content-Length`, `ETag` and `Accept-Ranges`,
+  because it cannot know whether `GET` would rewrite. Range responses are
+  never rewritten.
+
+Vendor HTML is served without the central application's CSP, frame or
+permissions headers (it is not an Odo page), with `no-store`, `no-referrer`
+and `nosniff`. Access logs record only the route and statuses.
+
+Confirmed limitations (deferred, not failures of this milestone): forms that
+`POST` (only `GET`/`HEAD` exist), cross-host links and assets such as a CDN
+image (they load directly from the third party, outside Odo and its privacy
+controls), URLs constructed by JavaScript, URLs inside CSS (`url(...)`,
+`@import`), `<meta http-equiv=refresh>` and `Link`/`Refresh` headers, cookies
+set by vendor JavaScript (`document.cookie` stays in the browser and is never
+sent upstream), and documents over 2 MiB or compressed upstream. Cross-host
+support needs registered-host rewriting with per-host grants and automatic
+cold-host handoff, which remain unimplemented.
 
 ## Post-commit retirement
 
