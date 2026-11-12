@@ -18,6 +18,17 @@ var ErrInvalidHostnameReconciliation = errors.New("invalid hostname reconciliati
 // hosts through DNS, HTTP, entry URLs, or vendor content. Old identities remain
 // reserved even if no current resource references them.
 func (s *Store) ReconcileProxyHostnames(centralHost, proxyBase string, approvedHosts []string) ([]ProxyHostname, error) {
+	return s.reconcileProxyHostnames(centralHost, proxyBase, approvedHosts, false)
+}
+
+// MigrateProxyHostnames explicitly replaces legacy labels for this reconciliation's
+// policy-approved candidates. Old names are permanently retired. The entire batch
+// rolls back on any conflict; resource saves never invoke this operation.
+func (s *Store) MigrateProxyHostnames(centralHost, proxyBase string, approvedHosts []string) ([]ProxyHostname, error) {
+	return s.reconcileProxyHostnames(centralHost, proxyBase, approvedHosts, true)
+}
+
+func (s *Store) reconcileProxyHostnames(centralHost, proxyBase string, approvedHosts []string, migrate bool) ([]ProxyHostname, error) {
 	// Validate deployment names even if there are no candidates.
 	if _, err := proxy.NormalizeRegistryHostname(centralHost); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidHostnameReconciliation, err)
@@ -98,17 +109,28 @@ func (s *Store) ReconcileProxyHostnames(centralHost, proxyBase string, approvedH
 		out = append(out, record)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
-	for _, record := range out {
-		if _, err := tx.Exec(`INSERT INTO proxy_hostnames (hostname, label) VALUES (?, ?)
-ON CONFLICT(hostname) DO NOTHING`, record.Hostname, record.Label); err != nil {
+	for i, record := range out {
+		if _, err := tx.Exec(`INSERT INTO proxy_hostnames (hostname, label) SELECT ?, ?
+WHERE NOT EXISTS (SELECT 1 FROM proxy_hostnames WHERE hostname = ?)
+ON CONFLICT(hostname) DO NOTHING`, record.Hostname, record.Label, record.Hostname); err != nil {
 			return nil, err
 		}
 		var stored string
 		if err := tx.QueryRow(`SELECT label FROM proxy_hostnames WHERE hostname = ?`, record.Hostname).Scan(&stored); err != nil {
 			return nil, err
 		}
-		if stored != record.Label {
-			return nil, errors.New("registry hostname has a conflicting identity")
+		if err := proxy.ValidateRegistryMapping(record.Hostname, stored, centralHost, proxyBase); err != nil {
+			return nil, err
+		}
+		if migrate && stored != record.Label {
+			if _, err := tx.Exec(`UPDATE proxy_hostnames SET label = ? WHERE hostname = ?`, record.Label, record.Hostname); err != nil {
+				return nil, err
+			}
+			if _, err := tx.Exec(`INSERT INTO proxy_hostname_retired_labels (label, hostname) VALUES (?, ?)`, stored, record.Hostname); err != nil {
+				return nil, err
+			}
+		} else {
+			out[i].Label = stored
 		}
 	}
 	if err := tx.Commit(); err != nil {

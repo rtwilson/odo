@@ -132,6 +132,20 @@ CREATE TABLE IF NOT EXISTS proxy_hostnames (
 	label TEXT UNIQUE NOT NULL
 );
 
+-- Retired names are permanent tombstones, never routable aliases.
+CREATE TABLE IF NOT EXISTS proxy_hostname_retired_labels (
+ label TEXT PRIMARY KEY NOT NULL,
+ hostname TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS proxy_hostname_no_retired_insert
+BEFORE INSERT ON proxy_hostnames
+WHEN EXISTS (SELECT 1 FROM proxy_hostname_retired_labels WHERE label = NEW.label)
+BEGIN SELECT RAISE(ABORT, 'proxy hostname label is retired'); END;
+CREATE TRIGGER IF NOT EXISTS proxy_hostname_no_retired_update
+BEFORE UPDATE OF label ON proxy_hostnames
+WHEN EXISTS (SELECT 1 FROM proxy_hostname_retired_labels WHERE label = NEW.label)
+BEGIN SELECT RAISE(ABORT, 'proxy hostname label is retired'); END;
+
 CREATE TABLE IF NOT EXISTS audit_events (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	ts TEXT NOT NULL,

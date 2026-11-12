@@ -62,15 +62,15 @@ func (h *handoffSecurity) resourceHosts(resourceID, self string) ([]siblingHost,
 		if record.Hostname == self || len(hosts) >= maxSiblingHosts {
 			continue
 		}
-		host, label, err := proxy.RegistryHostname(record.Hostname, h.config.CentralHostname(), h.config.ProxyBaseDomain())
-		if err != nil || host != record.Hostname || label != record.Label {
+		err := proxy.ValidateRegistryMapping(record.Hostname, record.Label, h.config.CentralHostname(), h.config.ProxyBaseDomain())
+		if err != nil {
 			continue
 		}
-		result := resources.TestURL((&url.URL{Scheme: "https", Host: host, Path: "/"}).String(), items)
+		result := resources.TestURL((&url.URL{Scheme: "https", Host: record.Hostname, Path: "/"}).String(), items)
 		if !result.Allowed || result.Action != "proxy" || result.ResourceID != resourceID {
 			continue
 		}
-		hosts = append(hosts, siblingHost{mapping: record, authority: label + "." + h.config.ProxyBaseDomain()})
+		hosts = append(hosts, siblingHost{mapping: record, authority: record.Label + "." + h.config.ProxyBaseDomain()})
 	}
 	return hosts, nil
 }

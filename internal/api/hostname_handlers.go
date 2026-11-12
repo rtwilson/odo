@@ -60,7 +60,8 @@ func (s *Server) reconcileProxyHostnames(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req *struct {
-		ApprovedHosts []string `json:"approved_hosts"`
+		ApprovedHosts   []string `json:"approved_hosts"`
+		MigrateReadable bool     `json:"migrate_readable"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -72,7 +73,12 @@ func (s *Server) reconcileProxyHostnames(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid hostname reconciliation body")
 		return
 	}
-	records, err := s.store.ReconcileProxyHostnames(routing.CentralHostname(), routing.ProxyBaseDomain(), req.ApprovedHosts)
+	var records []db.ProxyHostname
+	if req.MigrateReadable {
+		records, err = s.store.MigrateProxyHostnames(routing.CentralHostname(), routing.ProxyBaseDomain(), req.ApprovedHosts)
+	} else {
+		records, err = s.store.ReconcileProxyHostnames(routing.CentralHostname(), routing.ProxyBaseDomain(), req.ApprovedHosts)
+	}
 	if errors.Is(err, db.ErrInvalidHostnameReconciliation) {
 		writeError(w, http.StatusBadRequest, "hostname reconciliation rejected by hostname or resource policy")
 		return

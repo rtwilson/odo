@@ -9,7 +9,7 @@ func TestRegistryHostnameCanonicalIdentity(t *testing.T) {
 	var canonical string
 	for _, input := range []string{"BÜCHER.example", "xn--bcher-kva.example.", "xn--bcher-kva.example:443"} {
 		host, label, err := RegistryHostname(input, "odo.access.example", "proxy.access.example")
-		if err != nil || host != "xn--bcher-kva.example" || len(label) != 54 || !strings.HasPrefix(label, "h-") {
+		if err != nil || host != "xn--bcher-kva.example" || label != legacyRegistryLabel("xn--bcher-kva.example") {
 			t.Fatalf("%q: host=%q label=%q err=%v", input, host, label, err)
 		}
 		if canonical != "" && canonical != label {
@@ -45,7 +45,7 @@ func TestRegistryHostnameRejectsUnsafeNames(t *testing.T) {
 func TestRegistryHostnameValidatesDeploymentNames(t *testing.T) {
 	for _, tc := range []struct{ central, base string }{
 		{"", "proxy.example"}, {"odo.example", ""}, {"https://odo.example", "proxy.example"},
-		{"odo.example", strings.Repeat(strings.Repeat("a", 60)+".", 3) + strings.Repeat("b", 30)},
+		{"odo.example", strings.Repeat(strings.Repeat("a", 60)+".", 3) + strings.Repeat("b", 60)},
 	} {
 		if _, _, err := RegistryHostname("vendor.example", tc.central, tc.base); err == nil {
 			t.Fatalf("accepted central=%q base=%q", tc.central, tc.base)
@@ -65,6 +65,44 @@ func TestNormalizeRegistryHostnameAcceptsOneRootDot(t *testing.T) {
 	for _, input := range []string{".", "..", "vendor.example..", "vendor.example..:443", ".vendor.example"} {
 		if host, err := NormalizeRegistryHostname(input); err == nil {
 			t.Fatalf("accepted %q as %q", input, host)
+		}
+	}
+}
+
+func TestReadableRegistryLabels(t *testing.T) {
+	for _, tc := range []struct{ host, label string }{
+		{"www.jstor.org", "www-jstor-org"},
+		{"infoweb.newsbank.com", "infoweb-newsbank-com"},
+		{"WWW.JSTOR.ORG.:443", "www-jstor-org"},
+		{"my-vendor.example", "my-vendor-example"},
+		{"a-b.example", "a-b-example"}, {"a.b-example", "a-b-example"},
+		{strings.Repeat("a", 59) + ".org", strings.Repeat("a", 59) + "-org"},
+	} {
+		_, label, err := RegistryHostname(tc.host, "odo.example", "proxy.example")
+		if err != nil || label != tc.label {
+			t.Fatalf("%q: %q %v", tc.host, label, err)
+		}
+	}
+	host := strings.Repeat("a", 60) + ".org"
+	_, label, err := RegistryHostname(host, "odo.example", "proxy.example")
+	if err != nil || len(label) != 54 || label != legacyRegistryLabel(host) {
+		t.Fatalf("long name fallback: %q %v", label, err)
+	}
+	if _, _, err := RegistryHostname("www.jstor.org", "www-jstor-org.proxy.example", "proxy.example"); err == nil {
+		t.Fatal("accepted central application name")
+	}
+}
+
+func TestRegistryLegacyMappingValidation(t *testing.T) {
+	host := "www.jstor.org"
+	for _, label := range []string{"www-jstor-org", legacyRegistryLabel(host)} {
+		if err := ValidateRegistryMapping(host, label, "odo.example", "proxy.example"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, label := range []string{"jstor", "www-economist-com", legacyRegistryLabel("other.example"), "bad.label"} {
+		if err := ValidateRegistryMapping(host, label, "odo.example", "proxy.example"); err == nil {
+			t.Fatalf("accepted %q", label)
 		}
 	}
 }

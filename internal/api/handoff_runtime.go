@@ -104,12 +104,12 @@ func (h *handoffSecurity) launch(w http.ResponseWriter, r *http.Request, target 
 		writeError(w, 401, "login required")
 		return
 	}
-	_, label, err := proxy.RegistryHostname(target.Hostname(), h.config.CentralHostname(), h.config.ProxyBaseDomain())
+	mapping, err := h.upstreamMapping(target.Hostname())
 	if err != nil {
 		writeError(w, 403, "launch target is not allowed")
 		return
 	}
-	authority := label + "." + h.config.ProxyBaseDomain()
+	authority := mapping.Label + "." + h.config.ProxyBaseDomain()
 	nonce, fresh, err := browserHandoffNonce(r, handoffNonceCookie)
 	if err != nil {
 		h.confirmationError(w, r, err)

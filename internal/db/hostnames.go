@@ -24,8 +24,9 @@ func (s *Store) RegisterProxyHostname(raw, centralHost, proxyBase string) (Proxy
 	}
 	// SQLite enforces both uniqueness constraints in a single statement. Never
 	// overwrite an existing label or ignore a conflict belonging to another host.
-	_, err = s.db.Exec(`INSERT INTO proxy_hostnames (hostname, label) VALUES (?, ?)
-ON CONFLICT(hostname) DO NOTHING`, host, label)
+	_, err = s.db.Exec(`INSERT INTO proxy_hostnames (hostname, label) SELECT ?, ?
+WHERE NOT EXISTS (SELECT 1 FROM proxy_hostnames WHERE hostname = ?)
+ON CONFLICT(hostname) DO NOTHING`, host, label, host)
 	if err != nil {
 		return ProxyHostname{}, err
 	}
@@ -33,10 +34,10 @@ ON CONFLICT(hostname) DO NOTHING`, host, label)
 	if err := s.db.QueryRow(`SELECT label FROM proxy_hostnames WHERE hostname = ?`, host).Scan(&stored); err != nil {
 		return ProxyHostname{}, err
 	}
-	if stored != label {
-		return ProxyHostname{}, errors.New("registry hostname has a conflicting identity")
+	if err := proxy.ValidateRegistryMapping(host, stored, centralHost, proxyBase); err != nil {
+		return ProxyHostname{}, err
 	}
-	return ProxyHostname{Hostname: host, Label: label}, nil
+	return ProxyHostname{Hostname: host, Label: stored}, nil
 }
 
 // LookupProxyHostname resolves an exact stored label without decoding a host or
@@ -67,4 +68,15 @@ func (s *Store) ListProxyHostnames() ([]ProxyHostname, error) {
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+// LookupProxyHostnameByUpstream finds the actual enrolled identity, including
+// legacy labels. The caller supplies a canonical upstream; no host is enrolled.
+func (s *Store) LookupProxyHostnameByUpstream(host string) (ProxyHostname, bool, error) {
+	var record ProxyHostname
+	err := s.db.QueryRow(`SELECT hostname, label FROM proxy_hostnames WHERE hostname = ?`, host).Scan(&record.Hostname, &record.Label)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProxyHostname{}, false, nil
+	}
+	return record, err == nil, err
 }

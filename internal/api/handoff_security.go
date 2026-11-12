@@ -40,8 +40,8 @@ func (h *handoffSecurity) mapping(authority string) (db.ProxyHostname, error) {
 	if !found {
 		return db.ProxyHostname{}, errHandoffDenied
 	}
-	host, expected, err := proxy.RegistryHostname(mapping.Hostname, h.config.CentralHostname(), h.config.ProxyBaseDomain())
-	if err != nil || host != mapping.Hostname || expected != mapping.Label || authority != mapping.Label+"."+h.config.ProxyBaseDomain() {
+	err = proxy.ValidateRegistryMapping(mapping.Hostname, mapping.Label, h.config.CentralHostname(), h.config.ProxyBaseDomain())
+	if err != nil || authority != mapping.Label+"."+h.config.ProxyBaseDomain() {
 		return db.ProxyHostname{}, errHandoffDenied
 	}
 	return mapping, nil
@@ -231,4 +231,17 @@ func grantParentAuthorization(parent db.Session, resourceID string, now time.Tim
 		return grantAuthorization{}, errHandoffDenied
 	}
 	return grantAuthorization{parentSessionID: parent.ID, parentSessionHash: parent.SessionHash, parentExpires: expires, resourceID: resourceID}, nil
+}
+
+// upstreamMapping resolves the enrolled label rather than guessing a name from
+// a URL. Admission repeats the exact registry and deployment checks.
+func (h *handoffSecurity) upstreamMapping(host string) (db.ProxyHostname, error) {
+	record, found, err := h.server.store.LookupProxyHostnameByUpstream(host)
+	if err != nil {
+		return db.ProxyHostname{}, err
+	}
+	if !found {
+		return db.ProxyHostname{}, errHandoffDenied
+	}
+	return h.mapping(record.Label + "." + h.config.ProxyBaseDomain())
 }

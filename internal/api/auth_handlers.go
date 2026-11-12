@@ -59,8 +59,8 @@ func (s *Server) allowLaunchContinuationFormRedirect(r *http.Request, rawQuery s
 		return
 	}
 	config := s.handoff.config
-	if _, label, err := proxy.RegistryHostname(parsed.Hostname(), config.CentralHostname(), config.ProxyBaseDomain()); err == nil {
-		allowHandoffFormRedirect(r, label+"."+config.ProxyBaseDomain())
+	if mapping, err := s.handoff.upstreamMapping(parsed.Hostname()); err == nil {
+		allowHandoffFormRedirect(r, mapping.Label+"."+config.ProxyBaseDomain())
 	}
 }
 

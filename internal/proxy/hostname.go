@@ -70,10 +70,43 @@ func RegistryHostname(raw, centralHost, proxyBase string) (host, label string, e
 	if host == central || host == base || strings.HasSuffix(host, "."+base) {
 		return "", "", errors.New("registry hostname would create a proxy loop")
 	}
-	sum := sha256.Sum256([]byte(host))
-	label = "h-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))
+	label = strings.ReplaceAll(host, ".", "-")
+	// Flattening a leading IDN A-label would change its punycode meaning.
+	if len(label) > 63 || strings.HasPrefix(label, "xn--") {
+		label = legacyRegistryLabel(host)
+	}
+	if label+"."+base == central {
+		return "", "", errors.New("registry label is reserved for the central application")
+	}
 	if len(label)+1+len(base) > 253 {
 		return "", "", errors.New("registry proxy hostname exceeds DNS length limit")
 	}
 	return host, label, nil
+}
+
+// legacyRegistryLabel is also the deterministic fallback for names that cannot
+// fit in a single readable DNS label. It is never decoded into an upstream.
+func legacyRegistryLabel(host string) string {
+	sum := sha256.Sum256([]byte(host))
+	return "h-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))
+}
+
+// ValidateRegistryMapping accepts current defaults and existing legacy hashes.
+// This validates identity syntax only: callers must also find the exact mapping
+// in the trusted registry and apply live authorization. Arbitrary aliases are
+// deliberately unsupported.
+func ValidateRegistryMapping(host, label, centralHost, proxyBase string) error {
+	canonical, current, err := RegistryHostname(host, centralHost, proxyBase)
+	if err != nil {
+		return err
+	}
+	if canonical != host || (label != current && label != legacyRegistryLabel(host)) {
+		return errors.New("registry hostname has a conflicting identity")
+	}
+	central, _ := NormalizeRegistryHostname(centralHost)
+	base, _ := NormalizeRegistryHostname(proxyBase)
+	if label+"."+base == central || len(label)+1+len(base) > 253 {
+		return errors.New("registry proxy hostname is reserved or too long")
+	}
+	return nil
 }
