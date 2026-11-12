@@ -71,8 +71,11 @@ func RegistryHostname(raw, centralHost, proxyBase string) (host, label string, e
 		return "", "", errors.New("registry hostname would create a proxy loop")
 	}
 	label = strings.ReplaceAll(host, ".", "-")
-	// Flattening a leading IDN A-label would change its punycode meaning.
-	if len(label) > 63 || strings.HasPrefix(label, "xn--") {
+	// Flattening a leading IDN A-label would change its punycode meaning. A
+	// readable label that does not fit one DNS label, or whose proxy FQDN would
+	// exceed 253 characters under this suffix, uses the fixed-length fallback
+	// (deployment validation guarantees the fallback always fits).
+	if len(label) > 63 || strings.HasPrefix(label, "xn--") || len(label)+1+len(base) > 253 {
 		label = legacyRegistryLabel(host)
 	}
 	if label+"."+base == central {
@@ -84,8 +87,13 @@ func RegistryHostname(raw, centralHost, proxyBase string) (host, label string, e
 	return host, label, nil
 }
 
-// legacyRegistryLabel is also the deterministic fallback for names that cannot
-// fit in a single readable DNS label. It is never decoded into an upstream.
+// FallbackRegistryLabel is the hashed label for a canonical host. It is used
+// for names that cannot be a readable DNS label (too long, or a leading IDN
+// A-label), and for a host whose readable label is already held or retired by
+// another host. It is never decoded into an upstream.
+func FallbackRegistryLabel(host string) string { return legacyRegistryLabel(host) }
+
+// legacyRegistryLabel is the format of the original hashed labels.
 func legacyRegistryLabel(host string) string {
 	sum := sha256.Sum256([]byte(host))
 	return "h-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))

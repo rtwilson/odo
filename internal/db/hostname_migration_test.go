@@ -63,7 +63,7 @@ func TestReadableMigrationPreservesUntilExplicitAndRetiresOldNames(t *testing.T)
 	}
 	// A single-label upstream can otherwise generate this exact old label. The
 	// tombstone must reject it even after schema migration/restart.
-	if _, err := s.RegisterProxyHostname(old, "odo.example", "proxy.example"); err == nil {
+	if reused, err := s.RegisterProxyHostname(old, "odo.example", "proxy.example"); err == nil && reused.Label == old {
 		t.Fatal("retired label reused by another upstream")
 	}
 	if _, err := s.db.Exec(`UPDATE proxy_hostnames SET label=? WHERE hostname=?`, old, "www.jstor.org"); err == nil {
@@ -75,12 +75,51 @@ func TestReadableMigrationPreservesUntilExplicitAndRetiresOldNames(t *testing.T)
 	}
 }
 
-func TestReadableCollisionsFailClosedAndMigrationRollsBack(t *testing.T) {
+// Ambiguous readable names never share a label: the first host (in hostname
+// order) takes it and the other keeps or gets its hashed fallback label.
+func TestReadableCollisionsUseFallbackLabel(t *testing.T) {
 	s := hostnameMigrationStore(t, "a.example", "a-b.example", "a.b-example")
-	if _, err := s.MigrateProxyHostnames("odo.example", "proxy.example", nil); err == nil {
-		t.Fatal("ambiguous names migrated")
+	records, err := s.MigrateProxyHostnames("odo.example", "proxy.example", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, host := range []string{"a.example", "a-b.example", "a.b-example"} {
+	want := map[string]string{"a-b.example": "a-b-example", "a.b-example": legacyLabelForTest("a.b-example"), "a.example": "a-example"}
+	if len(records) != len(want) {
+		t.Fatalf("records: %+v", records)
+	}
+	for _, record := range records {
+		if want[record.Hostname] != record.Label {
+			t.Fatalf("%s: got %q want %q", record.Hostname, record.Label, want[record.Hostname])
+		}
+		got, found, err := s.LookupProxyHostnameByUpstream(record.Hostname)
+		if err != nil || !found || got.Label != record.Label {
+			t.Fatalf("stored mapping differs: %+v %v", got, err)
+		}
+	}
+	first, err := s.RegisterProxyHostname("x-y.example", "odo.example", "proxy.example")
+	if err != nil || first.Label != "x-y-example" {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	second, err := s.RegisterProxyHostname("X.Y-EXAMPLE.", "odo.example", "proxy.example")
+	if err != nil || second.Hostname != "x.y-example" || second.Label != legacyLabelForTest("x.y-example") {
+		t.Fatalf("colliding host did not get its fallback label: %+v %v", second, err)
+	}
+	got, found, err := s.LookupProxyHostname("x-y-example")
+	if err != nil || !found || got != first {
+		t.Fatalf("collision repointed name: %+v %v", got, err)
+	}
+}
+
+// Any failure rolls the whole migration back: no relabel and no tombstone.
+func TestReadableMigrationRollsBackWholeBatch(t *testing.T) {
+	s := hostnameMigrationStore(t, "a.example", "z.example")
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_z_retire BEFORE INSERT ON proxy_hostname_retired_labels WHEN NEW.hostname = 'z.example' BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MigrateProxyHostnames("odo.example", "proxy.example", nil); err == nil {
+		t.Fatal("injected failure did not fail migration")
+	}
+	for _, host := range []string{"a.example", "z.example"} {
 		got, found, err := s.LookupProxyHostnameByUpstream(host)
 		if err != nil || !found || got.Label != legacyLabelForTest(host) {
 			t.Fatalf("partial migration: %+v %v", got, err)
@@ -89,16 +128,5 @@ func TestReadableCollisionsFailClosedAndMigrationRollsBack(t *testing.T) {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM proxy_hostname_retired_labels`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("partial tombstones: %d %v", count, err)
-	}
-	first, err := s.RegisterProxyHostname("x-y.example", "odo.example", "proxy.example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RegisterProxyHostname("x.y-example", "odo.example", "proxy.example"); err == nil {
-		t.Fatal("readable collision enrolled")
-	}
-	got, found, err := s.LookupProxyHostname(first.Label)
-	if err != nil || !found || got != first {
-		t.Fatalf("collision repointed name: %+v %v", got, err)
 	}
 }

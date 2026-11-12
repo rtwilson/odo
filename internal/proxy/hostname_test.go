@@ -106,3 +106,31 @@ func TestRegistryLegacyMappingValidation(t *testing.T) {
 		}
 	}
 }
+
+// IDNs are canonicalized to ASCII first. A non-leading A-label stays readable
+// inside the hyphenated label; a leading one would read as a different
+// punycode label, so it uses the hashed fallback.
+func TestReadableRegistryLabelsIDN(t *testing.T) {
+	host, label, err := RegistryHostname("www.Bücher.example", "odo.example", "proxy.example")
+	if err != nil || host != "www.xn--bcher-kva.example" || label != "www-xn--bcher-kva-example" {
+		t.Fatalf("non-leading IDN: %q %q %v", host, label, err)
+	}
+	host, label, err = RegistryHostname("bücher.example", "odo.example", "proxy.example")
+	if err != nil || host != "xn--bcher-kva.example" || label != FallbackRegistryLabel(host) {
+		t.Fatalf("leading IDN: %q %q %v", host, label, err)
+	}
+}
+
+// A readable label that would make the proxy FQDN too long under a long
+// suffix falls back to the fixed-length label instead of failing.
+func TestReadableRegistryLabelFitsProxySuffix(t *testing.T) {
+	base := strings.Repeat(strings.Repeat("p", 60)+".", 3) + strings.Repeat("q", 13) // 196 chars
+	host := strings.Repeat("v", 58) + ".org"                                         // readable label: 62 chars
+	_, label, err := RegistryHostname(host, "odo.example", base)
+	if err != nil || label != FallbackRegistryLabel(host) || len(label)+1+len(base) > 253 {
+		t.Fatalf("long suffix: %q %v", label, err)
+	}
+	if _, label, err := RegistryHostname(host, "odo.example", "proxy.example"); err != nil || label != strings.Repeat("v", 58)+"-org" {
+		t.Fatalf("short suffix: %q %v", label, err)
+	}
+}

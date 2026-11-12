@@ -110,28 +110,34 @@ func (s *Store) reconcileProxyHostnames(centralHost, proxyBase string, approvedH
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	for i, record := range out {
-		if _, err := tx.Exec(`INSERT INTO proxy_hostnames (hostname, label) SELECT ?, ?
-WHERE NOT EXISTS (SELECT 1 FROM proxy_hostnames WHERE hostname = ?)
-ON CONFLICT(hostname) DO NOTHING`, record.Hostname, record.Label, record.Hostname); err != nil {
-			return nil, err
-		}
-		var stored string
-		if err := tx.QueryRow(`SELECT label FROM proxy_hostnames WHERE hostname = ?`, record.Hostname).Scan(&stored); err != nil {
+		stored, err := enrollProxyHostnameTx(tx, record.Hostname, record.Label)
+		if err != nil {
 			return nil, err
 		}
 		if err := proxy.ValidateRegistryMapping(record.Hostname, stored, centralHost, proxyBase); err != nil {
 			return nil, err
 		}
-		if migrate && stored != record.Label {
-			if _, err := tx.Exec(`UPDATE proxy_hostnames SET label = ? WHERE hostname = ?`, record.Label, record.Hostname); err != nil {
-				return nil, err
-			}
-			if _, err := tx.Exec(`INSERT INTO proxy_hostname_retired_labels (label, hostname) VALUES (?, ?)`, stored, record.Hostname); err != nil {
-				return nil, err
-			}
-		} else {
-			out[i].Label = stored
+		out[i].Label = stored
+		if !migrate || stored == record.Label {
+			continue
 		}
+		// Migration moves a host to its readable label only when that label is
+		// free. A host whose readable label belongs to another host keeps its
+		// current (hashed) label rather than failing or sharing a name.
+		next, err := availableProxyLabelTx(tx, record.Hostname, record.Label)
+		if err != nil {
+			return nil, err
+		}
+		if next != record.Label {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE proxy_hostnames SET label = ? WHERE hostname = ?`, next, record.Hostname); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`INSERT INTO proxy_hostname_retired_labels (label, hostname) VALUES (?, ?)`, stored, record.Hostname); err != nil {
+			return nil, err
+		}
+		out[i].Label = next
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

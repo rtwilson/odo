@@ -235,7 +235,13 @@ func grantParentAuthorization(parent db.Session, resourceID string, now time.Tim
 
 // upstreamMapping resolves the enrolled label rather than guessing a name from
 // a URL. Admission repeats the exact registry and deployment checks.
-func (h *handoffSecurity) upstreamMapping(host string) (db.ProxyHostname, error) {
+func (h *handoffSecurity) upstreamMapping(raw string) (db.ProxyHostname, error) {
+	// Canonicalize (case, trailing dot, IDN) exactly as enrollment does; the
+	// registry stores only canonical ASCII hostnames.
+	host, err := proxy.NormalizeRegistryHostname(raw)
+	if err != nil {
+		return db.ProxyHostname{}, errHandoffDenied
+	}
 	record, found, err := h.server.store.LookupProxyHostnameByUpstream(host)
 	if err != nil {
 		return db.ProxyHostname{}, err

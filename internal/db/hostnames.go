@@ -22,22 +22,61 @@ func (s *Store) RegisterProxyHostname(raw, centralHost, proxyBase string) (Proxy
 	if err != nil {
 		return ProxyHostname{}, err
 	}
-	// SQLite enforces both uniqueness constraints in a single statement. Never
-	// overwrite an existing label or ignore a conflict belonging to another host.
-	_, err = s.db.Exec(`INSERT INTO proxy_hostnames (hostname, label) SELECT ?, ?
-WHERE NOT EXISTS (SELECT 1 FROM proxy_hostnames WHERE hostname = ?)
-ON CONFLICT(hostname) DO NOTHING`, host, label, host)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return ProxyHostname{}, err
 	}
-	var stored string
-	if err := s.db.QueryRow(`SELECT label FROM proxy_hostnames WHERE hostname = ?`, host).Scan(&stored); err != nil {
+	defer tx.Rollback()
+	stored, err := enrollProxyHostnameTx(tx, host, label)
+	if err != nil {
 		return ProxyHostname{}, err
 	}
 	if err := proxy.ValidateRegistryMapping(host, stored, centralHost, proxyBase); err != nil {
 		return ProxyHostname{}, err
 	}
+	if err := tx.Commit(); err != nil {
+		return ProxyHostname{}, err
+	}
 	return ProxyHostname{Hostname: host, Label: stored}, nil
+}
+
+// enrollProxyHostnameTx returns host's existing label, or enrolls it under its
+// readable label. If another host already holds that label, or it is a retired
+// label, the host gets its hashed fallback label instead: a readable name is
+// never shared, reused or repointed. An unavailable fallback fails closed.
+func enrollProxyHostnameTx(tx *sql.Tx, host, readable string) (string, error) {
+	var stored string
+	err := tx.QueryRow(`SELECT label FROM proxy_hostnames WHERE hostname = ?`, host).Scan(&stored)
+	if err == nil {
+		return stored, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	label, err := availableProxyLabelTx(tx, host, readable)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(`INSERT INTO proxy_hostnames (hostname, label) VALUES (?, ?)`, host, label); err != nil {
+		return "", err
+	}
+	return label, nil
+}
+
+// availableProxyLabelTx picks readable when no other host holds it and it was
+// never retired, otherwise the host's hashed fallback under the same rule.
+func availableProxyLabelTx(tx *sql.Tx, host, readable string) (string, error) {
+	for _, label := range []string{readable, proxy.FallbackRegistryLabel(host)} {
+		var taken bool
+		if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM proxy_hostnames WHERE label = ? AND hostname != ?)
+OR EXISTS (SELECT 1 FROM proxy_hostname_retired_labels WHERE label = ?)`, label, host, label).Scan(&taken); err != nil {
+			return "", err
+		}
+		if !taken {
+			return label, nil
+		}
+	}
+	return "", errors.New("registry hostname has a conflicting identity")
 }
 
 // LookupProxyHostname resolves an exact stored label without decoding a host or

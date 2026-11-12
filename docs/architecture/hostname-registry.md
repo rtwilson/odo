@@ -14,9 +14,64 @@ URL components, other ports, IP literals, local names, the central hostname,
 and names in the proxy suffix are rejected. The proxy suffix and central
 hostname are explicit trusted inputs, not values taken from request headers.
 
-The canonical label is `h-` followed by lowercase, unpadded base32 of the
-normalized hostname's SHA-256 digest. It is a fixed 54-character lookup key,
-not a reversible encoding. The resulting proxy FQDN must fit DNS length limits.
+## Readable proxy names
+
+New registrations use EZproxy-style readable labels: the canonical hostname
+with each `.` replaced by `-`, so `www.jstor.org` is served at
+`www-jstor-org.<proxy base>` and `infoweb.newsbank.com` at
+`infoweb-newsbank-com.<proxy base>`. Canonicalization happens first
+(lowercase, one trailing dot removed, optional `:443` removed, IDNs converted
+to ASCII), and existing hyphens are kept: `my-vendor.example` becomes
+`my-vendor-example`.
+
+The label is a lookup key, never decoded. Odo does not turn hyphens back into
+dots: `a-b-example` can name `a-b.example` or `a.b-example`, so the upstream
+always comes from the stored registry row. An unregistered readable name is
+rejected like any unknown label (421).
+
+A host uses the hashed fallback label instead (`h-` followed by lowercase,
+unpadded base32 of the hostname's SHA-256 digest, 54 characters) when:
+
+- its readable label would exceed 63 characters, or make the proxy FQDN exceed
+  253 characters under the configured suffix;
+- its first label is an IDN A-label (`xn--…`), which would read as a different
+  punycode label once flattened (a later IDN label stays readable:
+  `www.bücher.example` becomes `www-xn--bcher-kva-example`);
+- its readable label is already held by another host, or was retired.
+
+Collisions therefore never share or repoint a name. The first host enrolled
+under a readable label keeps it permanently; a later host that would produce
+the same label gets its own fallback label. Within one reconciliation batch
+hosts are processed in hostname order. If the fallback label is unavailable
+too, enrollment fails closed. Labels whose proxy FQDN would equal the central
+hostname are rejected. Arbitrary aliases are not supported; the fallback label
+is the documented form for exceptional hosts.
+
+Admission accepts a stored mapping only if its label is either the host's
+current readable label or its fallback label, and the request authority is
+exactly `<label>.<proxy base>`. Handoff tickets and grants bind the hostname,
+label and full proxy authority, so a grant can never be presented on another
+name.
+
+### Migrating hashed names
+
+Deployments that enrolled hosts before readable names keep their hashed
+labels: registration, resource saves and plain reconciliation never change an
+existing mapping. To move to readable names, an administrator calls the
+reconcile API with `{"migrate_readable":true}` (optionally with
+`approved_hosts`). In one transaction, each candidate whose readable label is
+free is relabeled and its old label is written to
+`proxy_hostname_retired_labels`; database triggers then refuse that label for
+any insert or update, so an old name can never be routed or reassigned. A host
+whose readable label is taken keeps its current label. Any error rolls back the
+whole batch, including tombstones. Repeating the migration is a no-op.
+
+Deployment impact: after migration, old `h-…` proxy URLs return 421, and
+outstanding pending handoffs, tickets and grants bound to the old authority are
+rejected (a page navigation restarts the handoff at central and lands on the
+readable name; subresources get 401). Patrons re-launch once; vendor cookie
+jars are unaffected. DNS and TLS must cover the proxy suffix with a wildcard
+already, so no DNS change is needed. Migrate during a quiet period.
 
 `db.RegisterProxyHostname` explicitly enrolls one hostname. No HTTP handler
 calls it, and no request or vendor response automatically enrolls a host.
@@ -44,7 +99,8 @@ Resource rules must match the canonical ASCII hostname under existing resource
 matching semantics; reconciliation does not change that policy engine.
 
 Each reconciliation reads resources and inserts mappings within one transaction.
-A conflict rolls back all new mappings from that batch. The returned list contains
+A readable-name collision is resolved by the fallback label described above; any
+other conflict rolls back all new mappings from that batch. The returned list contains
 that batch's candidates, not every previously enrolled identity. Removed or
 disabled resources never remove stored identities.
 
@@ -82,12 +138,14 @@ An empty object enrolls only configured exact proxy domains. Successful response
 are `Cache-Control: no-store` and use this shape:
 
 ```json
-{"hostnames":[{"hostname":"cdn.vendor.example","label":"h-<base32-digest>"}]}
+{"hostnames":[{"hostname":"cdn.vendor.example","label":"cdn-vendor-example"}]}
 ```
 
-The label shown is illustrative; actual labels contain the full digest. Results
-include this reconciliation's candidates, not all retained identities. A storage
-failure or identity conflict returns 500 with the batch rolled back. Reconciliation
+Each result shows the host's stored label, which may be a legacy or fallback
+`h-…` label. Results include this reconciliation's candidates, not all retained
+identities. Add `"migrate_readable":true` to relabel legacy names (see
+[migrating hashed names](#migrating-hashed-names)). A storage failure or
+unresolvable identity conflict returns 500 with the batch rolled back. Reconciliation
 performs no DNS lookup or HTTP fetch. Existing authentication audit events record
 the API operation, not the submitted body.
 
@@ -102,7 +160,7 @@ current deployment settings, so retained identities remain inspectable.
 A successful response is `Cache-Control: no-store` and has this shape:
 
 ```json
-{"hostname":"cdn.vendor.example","label":"h-<base32-digest>","resource_ids":["vendor"]}
+{"hostname":"cdn.vendor.example","label":"cdn-vendor-example","resource_ids":["vendor"]}
 ```
 
 `resource_ids` contains current domain-policy associations in resource-ID order.
@@ -111,7 +169,8 @@ remain associated. The stored identity still returns 200. These associations
 are inspection metadata, not permission to route requests. There is no `allowed`
 or production-readiness claim in this response.
 
-Aliases, registry listing, and routing integration are pending.
+Arbitrary aliases are not supported; use the fallback label for exceptional
+hosts.
 SQLite contention may return an error;
 there is no retry policy in this foundation. Before a future rollback, stop Odo
 and back up the database. The previous binary ignores the additional table;

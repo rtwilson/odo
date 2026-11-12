@@ -207,3 +207,39 @@ func TestResourceSaveWithoutVirtualHostSettingsSkipsEnrollment(t *testing.T) {
 		t.Fatal("path-only deployment enrolled a proxy hostname")
 	}
 }
+
+// Plain reconciliation never relabels a legacy hashed name; migrate_readable
+// is the explicit step that moves it to the readable name.
+func TestHostnameReconciliationAPIMigrateReadable(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "https://odo.example")
+	t.Setenv("APP_PROXY_BASE_DOMAIN", "proxy.example")
+	server, control, _, _ := newLogoutTestServer(t, false)
+	if err := server.store.UpsertResource(resources.Resource{ID: "vendor", Name: "Vendor", Domains: []resources.DomainRule{{Host: "www.jstor.org"}}}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := proxy.FallbackRegistryLabel("www.jstor.org")
+	// A deployment that enrolled before readable names existed.
+	if _, err := control.Exec(`INSERT INTO proxy_hostnames (hostname, label) VALUES (?, ?)`, "www.jstor.org", legacy); err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Routes()
+	call := func(body string) string {
+		req := httptest.NewRequest("POST", "/api/v1/proxy-hostnames/reconcile", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", body, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	if body := call(`{}`); !strings.Contains(body, `"label":"`+legacy+`"`) {
+		t.Fatalf("plain reconcile relabeled a legacy name: %s", body)
+	}
+	if body := call(`{"migrate_readable":true}`); !strings.Contains(body, `"label":"www-jstor-org"`) {
+		t.Fatalf("migration result: %s", body)
+	}
+	if _, found, err := server.store.LookupProxyHostname(legacy); err != nil || found {
+		t.Fatalf("legacy name still admitted after migration: %v %v", found, err)
+	}
+}

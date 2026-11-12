@@ -25,8 +25,9 @@ The central URL must have no credentials, query (including an empty `?`),
 fragment (including an empty `#`), or path other than the optional literal `/`.
 Names use the existing registry IDNA normalization. Only implicit HTTPS port or
 explicit 443 is accepted; IP literals and local names are rejected. The proxy
-suffix must leave room for a 54-character generated label and separating dot
-within the 253-character DNS name limit. Validation performs no DNS or HTTP
+suffix must leave room for a 54-character fallback label and separating dot
+within the 253-character DNS name limit (readable labels that would not fit use
+the fallback; see [readable proxy names](hostname-registry.md#readable-proxy-names)). Validation performs no DNS or HTTP
 requests. Reconciliation returns 503 for invalid deployment settings.
 
 The central hostname can be outside, at, or beneath the proxy suffix. When it

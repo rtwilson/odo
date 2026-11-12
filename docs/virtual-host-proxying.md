@@ -51,10 +51,10 @@ The simple readable format could be:
 www-jstor-org.access.example.edu
 ```
 
-That form is convenient, but it may not represent every valid vendor host safely or reversibly. A future safer encoding may use a prefix and base32 payload:
+This readable form is now the registry default (see [readable proxy names](architecture/hostname-registry.md#readable-proxy-names)). It is not reversible, so Odo never decodes it: the stored registry row supplies the upstream. Hosts that cannot use it safely get a hashed fallback label:
 
 ```text
-h--base32payload.access.example.edu
+h-<base32 of SHA-256 of the hostname>.access.example.edu
 ```
 
 The reserved config placeholders are:

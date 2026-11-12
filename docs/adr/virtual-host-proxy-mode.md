@@ -59,6 +59,13 @@ label without truncating long upstream names. It is a lookup key, never decoded
 into authority. Enforce uniqueness and fail closed on a hash/alias collision;
 do not claim that a finite hash is mathematically collision-free.
 
+Update 2026-11-11: the default is now a readable EZproxy-style label
+(`www.jstor.org` → `www-jstor-org`), still never decoded. The hashed label
+above remains the fallback for long names, leading IDN labels and readable-name
+collisions, and existing hashed mappings are kept until an explicit migration
+retires them permanently. See
+[readable proxy names](../architecture/hostname-registry.md#readable-proxy-names).
+
 Allow explicit readable aliases such as `jstor`, reserved transactionally in the
 same label namespace. Reserve application/internal labels and the entire `h-`
 namespace against friendly aliases. Keep the generated canonical address working
