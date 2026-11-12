@@ -202,8 +202,11 @@ contain all resource statuses, so the coordinator selects active
 resources when installing jar policies.
 
 This global configuration revision is separate from the manager's per-resource
-cookie-policy generations. The revision-aware installer implements conservative
-retirement, including after unrelated or identical resource writes. The internal
+cookie-policy generations. The revision-aware installer retires conservatively:
+the next consecutive revision keeps the jars of resources whose cookie policy
+and domain rules are unchanged (so renaming one resource no longer signs every
+patron out of every vendor), while a revision that skips ahead (a write the
+commit hook did not observe) retires every jar, even for identical JSON. The internal
 coordinator calls it with active policies from the database snapshot before
 allowing jar access. Comparing only the final policy would still revive cookies
 after an unseen change/reversion. Reading a revision separately from the resources

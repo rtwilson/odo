@@ -28,6 +28,13 @@ var sameHostURLAttributes = map[string]bool{
 // so the document's character encoding is preserved. It reports whether
 // anything changed; on malformed input it returns body unchanged.
 func RewriteSameHostHTML(body []byte, upstreamHost, proxyAuthority string) ([]byte, bool) {
+	return RewriteHostsHTML(body, map[string]string{strings.ToLower(upstreamHost): proxyAuthority})
+}
+
+// RewriteHostsHTML applies the same rules as RewriteSameHostHTML for several
+// upstream hosts at once. hosts maps a lower-case registered upstream hostname
+// to its proxy authority; URLs for any other host are left unchanged.
+func RewriteHostsHTML(body []byte, hosts map[string]string) ([]byte, bool) {
 	tokenizer := html.NewTokenizer(bytes.NewReader(body))
 	var out bytes.Buffer
 	out.Grow(len(body))
@@ -59,9 +66,9 @@ func RewriteSameHostHTML(body []byte, upstreamHost, proxyAuthority string) ([]by
 			var next string
 			var ok bool
 			if attr.Key == "srcset" {
-				next, ok = rewriteSameHostSrcset(attr.Val, upstreamHost, proxyAuthority)
+				next, ok = rewriteHostsSrcset(attr.Val, hosts)
 			} else {
-				next, ok = rewriteSameHostURL(attr.Val, upstreamHost, proxyAuthority)
+				next, ok = RewriteHostsURL(attr.Val, hosts)
 			}
 			if ok {
 				attr.Val = next
@@ -73,6 +80,7 @@ func RewriteSameHostHTML(body []byte, upstreamHost, proxyAuthority string) ([]by
 			continue
 		}
 		changed = true
+		restoreOriginalNameCase(&token, raw)
 		writeTag(&out, token, kind == html.SelfClosingTagToken)
 	}
 	if !changed {
@@ -85,6 +93,12 @@ func RewriteSameHostHTML(body []byte, upstreamHost, proxyAuthority string) ([]by
 // scheme-relative URL for upstreamHost. Browsers strip surrounding ASCII
 // whitespace from URL attributes, so the comparison ignores it too.
 func rewriteSameHostURL(raw, upstreamHost, proxyAuthority string) (string, bool) {
+	return RewriteHostsURL(raw, map[string]string{strings.ToLower(upstreamHost): proxyAuthority})
+}
+
+// RewriteHostsURL returns the proxy form of raw when raw is an absolute or
+// scheme-relative URL for one of the registered hosts.
+func RewriteHostsURL(raw string, hosts map[string]string) (string, bool) {
 	value := strings.Trim(raw, " \t\n\f\r")
 	rest, defaultPort, ok := "", "", false
 	lower := strings.ToLower(value)
@@ -115,7 +129,8 @@ func rewriteSameHostURL(raw, upstreamHost, proxyAuthority string) (string, bool)
 			return raw, false
 		}
 	}
-	if !strings.EqualFold(host, upstreamHost) {
+	proxyAuthority, found := hosts[strings.ToLower(host)]
+	if !found {
 		return raw, false
 	}
 	return "https://" + proxyAuthority + suffix, true
@@ -124,6 +139,10 @@ func rewriteSameHostURL(raw, upstreamHost, proxyAuthority string) (string, bool)
 // rewriteSameHostSrcset rewrites the URL of each comma-separated candidate,
 // keeping its descriptors and spacing.
 func rewriteSameHostSrcset(value, upstreamHost, proxyAuthority string) (string, bool) {
+	return rewriteHostsSrcset(value, map[string]string{strings.ToLower(upstreamHost): proxyAuthority})
+}
+
+func rewriteHostsSrcset(value string, hosts map[string]string) (string, bool) {
 	candidates := strings.Split(value, ",")
 	changed := false
 	for i, candidate := range candidates {
@@ -133,12 +152,86 @@ func rewriteSameHostSrcset(value, upstreamHost, proxyAuthority string) (string, 
 		if end < 0 {
 			end = len(trimmed)
 		}
-		if next, ok := rewriteSameHostURL(trimmed[:end], upstreamHost, proxyAuthority); ok {
+		if next, ok := RewriteHostsURL(trimmed[:end], hosts); ok {
 			candidates[i] = leading + next + trimmed[end:]
 			changed = true
 		}
 	}
 	return strings.Join(candidates, ","), changed
+}
+
+// restoreOriginalNameCase puts back the tag and attribute name spelling from
+// the source bytes. The tokenizer lower-cases names, which breaks
+// case-sensitive SVG/MathML names such as viewBox or preserveAspectRatio when a
+// rewritten tag is re-serialized. If the scan disagrees with the tokenizer in
+// any way, the tokenizer's names are kept unchanged.
+func restoreOriginalNameCase(token *html.Token, raw []byte) {
+	tag, attrs, ok := scanTagNames(raw)
+	if !ok || !strings.EqualFold(tag, token.Data) || len(attrs) != len(token.Attr) {
+		return
+	}
+	for i, name := range attrs {
+		if token.Attr[i].Namespace != "" || !strings.EqualFold(name, token.Attr[i].Key) {
+			return
+		}
+	}
+	token.Data = tag
+	for i, name := range attrs {
+		token.Attr[i].Key = name
+	}
+}
+
+// scanTagNames reads the tag name and attribute names, in order, from one raw
+// start tag, following the HTML tokenizer's name and value boundaries.
+func scanTagNames(raw []byte) (string, []string, bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r' }
+	if len(raw) < 2 || raw[0] != '<' {
+		return "", nil, false
+	}
+	i := 1
+	start := i
+	for i < len(raw) && !isSpace(raw[i]) && raw[i] != '/' && raw[i] != '>' {
+		i++
+	}
+	tag := string(raw[start:i])
+	var attrs []string
+	for i < len(raw) {
+		for i < len(raw) && (isSpace(raw[i]) || raw[i] == '/') {
+			i++
+		}
+		if i >= len(raw) || raw[i] == '>' {
+			break
+		}
+		start = i
+		i++ // A leading '=' belongs to the name.
+		for i < len(raw) && !isSpace(raw[i]) && raw[i] != '/' && raw[i] != '>' && raw[i] != '=' {
+			i++
+		}
+		attrs = append(attrs, string(raw[start:i]))
+		for i < len(raw) && isSpace(raw[i]) {
+			i++
+		}
+		if i >= len(raw) || raw[i] != '=' {
+			continue
+		}
+		i++
+		for i < len(raw) && isSpace(raw[i]) {
+			i++
+		}
+		if i < len(raw) && (raw[i] == '"' || raw[i] == '\'') {
+			quote := raw[i]
+			end := bytes.IndexByte(raw[i+1:], quote)
+			if end < 0 {
+				return "", nil, false
+			}
+			i += end + 2
+			continue
+		}
+		for i < len(raw) && !isSpace(raw[i]) && raw[i] != '>' {
+			i++
+		}
+	}
+	return tag, attrs, true
 }
 
 func writeTag(out *bytes.Buffer, token html.Token, selfClosing bool) {

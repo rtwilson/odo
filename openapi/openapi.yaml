@@ -643,7 +643,7 @@ paths:
   /api/v1/users/{id}:
     delete:
       summary: Soft-delete a local user and revoke sessions
-      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Self-deletion is forbidden; deleting the last active administrator is a conflict. Account deletion, session revocation and the audit record commit atomically. Repeated deletion succeeds without a second lifecycle audit event. Username remains reserved; this is not personal-data erasure.
+      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Deleting an account with any non-default role requires admin, as changing or restoring those roles does. Self-deletion is forbidden; deleting the last active administrator is a conflict. Account deletion, session revocation and the audit record commit atomically. Repeated deletion succeeds without a second lifecycle audit event. Username remains reserved; this is not personal-data erasure.
       operationId: deleteUser
       security:
         - bearerAuth: []

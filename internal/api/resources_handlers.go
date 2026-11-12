@@ -38,6 +38,7 @@ func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	s.enrollConfiguredProxyHostnames()
 	writeJSON(w, http.StatusOK, resource)
 }
 
@@ -87,6 +88,7 @@ func (s *Server) putResource(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	s.enrollConfiguredProxyHostnames()
 	writeJSON(w, http.StatusOK, resource)
 }
 

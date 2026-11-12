@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 
@@ -57,7 +58,9 @@ func (s *Store) WithResourceAccess(use func() error) error {
 // Callers must not combine its revision with a separate ListResources lookup.
 // Unlike WithResourceSnapshot, it does not exclude later resource commits.
 func (s *Store) ResourceSnapshot() (ResourceSnapshot, error) {
-	tx, err := s.db.Begin()
+	// Read-only transactions use a deferred BEGIN, so this frequent read does
+	// not take the single SQLite write lock that _txlock=immediate gives writers.
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return ResourceSnapshot{}, err
 	}
@@ -81,6 +84,20 @@ func (s *Store) ResourceSnapshot() (ResourceSnapshot, error) {
 		return ResourceSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// ResourceRevision reads only the committed resource revision. Every resource
+// write advances it in the same transaction, so an unchanged revision means an
+// unchanged resource set (writes that bypass Store are not supported).
+func (s *Store) ResourceRevision() (int64, error) {
+	var revision int64
+	if err := s.db.QueryRow(`SELECT revision FROM resource_state WHERE id = 1`).Scan(&revision); err != nil {
+		return 0, err
+	}
+	if revision < 0 {
+		return 0, errors.New("resource revision is invalid")
+	}
+	return revision, nil
 }
 
 func advanceResourceRevision(tx *sql.Tx) error {

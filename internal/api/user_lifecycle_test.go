@@ -86,7 +86,7 @@ func TestUserLifecycleAPI(t *testing.T) {
 	}
 	request("GET", "/api/v1/users?deleted=invalid", "", 400)
 	request("PATCH", path, `{"status":"active"}`, 409)
-	request("POST", path+"/enable", "", 404)
+	request("POST", path+"/enable", "", 409)
 	request("POST", path+"/restore", `{"password":"new patron password"}`, 200)
 	login("new patron password", 401) // Restoration deliberately leaves it disabled.
 	request("POST", path+"/restore", `{"password":"new patron password"}`, 409)
@@ -161,6 +161,9 @@ func TestUserLifecycleAPIPermissionsAndCSRF(t *testing.T) {
 	}{
 		{"DELETE", "/api/v1/users/" + admin.ID, "", adminCookie, csrf, 403},
 		{"DELETE", "/api/v1/users/" + security.ID, "", securityCookie, securityCSRF, 403},
+		// A users:write key cannot delete what it cannot demote.
+		{"DELETE", "/api/v1/users/" + admin.ID, writer, nil, "", 403},
+		{"DELETE", "/api/v1/users/" + security.ID, writer, nil, "", 403},
 		{"DELETE", "/api/v1/users/" + admin.ID, "secret", nil, "", 409},
 		{"DELETE", "/api/v1/users/missing", "secret", nil, "", 404},
 		{"POST", "/api/v1/users/missing/restore", "secret", nil, "", 404},
@@ -295,5 +298,24 @@ func TestUserLifecycleAPIRollsBackDatabaseFailures(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Status changes on a deleted account answer like PATCH does: the account
+// exists (GET still returns it) and must be restored first.
+func TestUserStatusChangeOnDeletedUserConflicts(t *testing.T) {
+	server := newTestServer(t, "secret")
+	patron := createLocalTestUser(t, server, "patron", "correct horse battery")
+	if rec := userLifecycleRequest(server, "DELETE", "/api/v1/users/"+patron.ID, "", "secret", nil, ""); rec.Code != 200 {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, action := range []string{"enable", "disable", "lock", "unlock"} {
+		rec := userLifecycleRequest(server, "POST", "/api/v1/users/"+patron.ID+"/"+action, "", "secret", nil, "")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s on deleted user: %d %s", action, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := userLifecycleRequest(server, "POST", "/api/v1/users/missing/disable", "", "secret", nil, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing user: %d", rec.Code)
 	}
 }

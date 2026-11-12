@@ -55,7 +55,7 @@ func newLogoutTestServer(t *testing.T, guarded bool) (*Server, *sql.DB, *http.Co
 	if err := store.CreateSession(session); err != nil {
 		t.Fatal(err)
 	}
-	return server, control, sessionCookie(req, token, session.ExpiresAt), logs
+	return server, control, server.sessionCookie(req, token, session.ExpiresAt), logs
 }
 
 func requestLogout(server *Server, cookie *http.Cookie) *httptest.ResponseRecorder {

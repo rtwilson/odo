@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -201,7 +202,7 @@ func TestGrantCookiesRejectInvalidLiveState(t *testing.T) {
 }
 
 func TestGrantCookiesRevisionChangesRetireExchanges(t *testing.T) {
-	for _, kind := range []string{"identical", "policy reversion", "disable enable", "delete recreate", "winning resource"} {
+	for _, kind := range []string{"domain reversion", "policy reversion", "disable enable", "delete recreate", "winning resource"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newGrantCookieFixture(t)
 			_, old := f.prepare(t)
@@ -211,8 +212,10 @@ func TestGrantCookiesRevisionChangesRetireExchanges(t *testing.T) {
 			generation, _ := f.c.jars.PolicyGeneration(f.item.ID)
 			changed := f.item
 			switch kind {
-			case "policy reversion", "disable enable":
-				if kind == "policy reversion" {
+			case "domain reversion", "policy reversion", "disable enable":
+				if kind == "domain reversion" {
+					changed.Domains = append(slices.Clone(changed.Domains), resources.DomainRule{Host: "added.example", Behavior: "proxy"})
+				} else if kind == "policy reversion" {
 					changed.CookiePolicy.Enabled = false
 				} else {
 					changed.Status = "disabled"
@@ -272,7 +275,12 @@ func TestGrantCookiesSnapshotFailuresRetireState(t *testing.T) {
 				changed.CookiePolicy.JarScope = "parent"
 				err = f.h.server.store.UpsertResource(changed)
 			case "invalid resource":
+				// Out-of-band SQL skips the revision; it is noticed once the
+				// snapshot cache window has passed.
 				_, err = f.control.Exec(`UPDATE resources SET config_json = '{}'`)
+				f.c.cacheMu.Lock()
+				f.c.cachedAt = f.c.cachedAt.Add(-snapshotCacheTTL)
+				f.c.cacheMu.Unlock()
 			case "missing revision":
 				_, err = f.control.Exec(`DELETE FROM resource_state`)
 			case "stale revision":
@@ -420,7 +428,9 @@ func TestGrantCookiesResourceWriteCannotInterveneBeforeJarAccess(t *testing.T) {
 	started, written := make(chan struct{}), make(chan error, 1)
 	go func() {
 		close(started)
-		written <- f.h.server.store.UpsertResource(f.item)
+		changed := f.item
+		changed.Domains = append(slices.Clone(changed.Domains), resources.DomainRule{Host: "added.example", Behavior: "proxy"})
+		written <- f.h.server.store.UpsertResource(changed)
 	}()
 	<-started
 	select {
@@ -475,7 +485,9 @@ func TestGrantCookiesPartialImportCannotHideCommittedChanges(t *testing.T) {
 			if err := os.Mkdir(resourceDir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			payload, err := json.Marshal(f.item) // An identical committed update still counts.
+			changed := f.item // A committed routing change must be observed.
+			changed.Domains = append(slices.Clone(changed.Domains), resources.DomainRule{Host: "added.example", Behavior: "proxy"})
+			payload, err := json.Marshal(changed)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -653,5 +665,44 @@ func TestGrantCookiesDeniedRequestsDoNotRecordActivity(t *testing.T) {
 	after, _, _ := f.h.server.store.GetSession(sessionID)
 	if after.LastSeenAt != before.LastSeenAt {
 		t.Fatal("denied proxied request recorded session activity")
+	}
+}
+
+// Vendor requests reuse the decoded snapshot while the revision is unchanged
+// and reread it as soon as a resource write commits.
+func TestGrantCookiesSnapshotCacheFollowsRevision(t *testing.T) {
+	f := newGrantCookieFixture(t)
+	first, err := f.c.currentSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.c.cacheMu.Lock()
+	readAt := f.c.cachedAt
+	f.c.cacheMu.Unlock()
+	again, err := f.c.currentSnapshot()
+	if err != nil || again.Revision != first.Revision {
+		t.Fatal(err)
+	}
+	f.c.cacheMu.Lock()
+	reused := f.c.cachedAt.Equal(readAt)
+	f.c.cacheMu.Unlock()
+	if !reused {
+		t.Fatal("unchanged revision reread the resource snapshot")
+	}
+	changed := f.item
+	changed.Description = "edited"
+	if err := f.h.server.store.UpsertResource(changed); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := f.c.currentSnapshot()
+	if err != nil || fresh.Revision == first.Revision {
+		t.Fatal("committed write did not refresh the cached snapshot")
+	}
+	found := false
+	for _, item := range fresh.Resources {
+		found = found || (item.ID == changed.ID && item.Description == "edited")
+	}
+	if !found {
+		t.Fatal("refreshed snapshot missed the committed change")
 	}
 }

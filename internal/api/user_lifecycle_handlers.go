@@ -24,6 +24,21 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 		actorID = auth.SubjectID
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
+	// Deleting a privileged account must not be easier than demoting it:
+	// changing or restoring non-default roles already requires admin scope.
+	target, exists, err := s.store.GetUser(id)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if exists && !hasRequiredScope(auth.Scopes, []string{"admin"}) {
+		for _, role := range target.Roles {
+			if role != "user" {
+				writeError(w, http.StatusForbidden, "admin scope is required to delete accounts with non-default roles")
+				return
+			}
+		}
+	}
 	found, err := s.store.DeleteUser(id, actorID)
 	if errors.Is(err, db.ErrDeleteSelf) {
 		writeError(w, http.StatusForbidden, "cannot delete own account")

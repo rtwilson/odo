@@ -70,16 +70,19 @@ accepts `true` or `false`; absent, empty, or `false` selects non-deleted users.
 
 Deletion/restoration return `401` without valid authentication, `403` for
 insufficient scope or invalid browser CSRF, and `404` for an unknown user.
-Self-deletion returns `403`. Last-administrator deletion and restoration of a
+Self-deletion returns `403`, as does deleting an account with any non-default
+role without the `admin` scope (the same scope required to change or restore
+those roles). Last-administrator deletion and restoration of a
 non-deleted account return `409`. Invalid restore input or a malformed deleted
 filter returns `400`. Database failures return a generic `500`, with the internal
 cause logged under the existing request ID; neither operation reports success
 when its transaction fails.
 
 Repeating deletion returns the same successful response. Deleted accounts cannot
-be enabled, unlocked, or assigned a password through ordinary endpoints (those
-operations return `404` for an unavailable account). A metadata/status PATCH of
-a deleted account returns `409`; use restore instead. Restore does not accept a
+be enabled, disabled, locked, unlocked, or assigned a password through ordinary
+endpoints. Status changes and metadata/status PATCH of a deleted account return
+`409`; use restore instead. Password assignment returns `404` for an
+unavailable account. Restore does not accept a
 new username, role list, account status, or actor ID.
 
 ## Admin UI

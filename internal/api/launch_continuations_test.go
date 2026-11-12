@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,14 +38,37 @@ func TestLaunchContinuationsBindingExpiryAndCapacity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.create("https://vendor.example/", "browser", now); !errors.Is(err, errLaunchContinuationsFull) {
-		t.Fatalf("capacity was not enforced: %v", err)
-	}
 	if _, ok := store.consume(expiring, "browser", now.Add(launchContinuationTTL)); ok {
 		t.Fatal("accepted expired token")
 	}
-	if _, err := store.create("https://vendor.example/", "browser", now.Add(launchContinuationTTL)); err != nil {
-		t.Fatalf("expired entries did not free capacity: %v", err)
+}
+
+// Anonymous floods must not deny launch-then-login to everyone: a full store
+// evicts its oldest entry, stays bounded, and keeps accepting new patrons.
+func TestLaunchContinuationsFloodEvictsOldest(t *testing.T) {
+	store := newLaunchContinuations()
+	now := time.Now()
+	oldest, err := store.create("https://vendor.example/first", "early", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxLaunchContinuations + 50 {
+		if _, err := store.create("https://vendor.example/", "flood", now.Add(time.Duration(i+1)*time.Millisecond)); err != nil {
+			t.Fatalf("flood entry %d refused: %v", i, err)
+		}
+	}
+	if len(store.entries) != maxLaunchContinuations {
+		t.Fatalf("store not bounded: %d", len(store.entries))
+	}
+	if _, ok := store.consume(oldest, "early", now.Add(time.Second)); ok {
+		t.Fatal("oldest entry survived capacity eviction")
+	}
+	patron, err := store.create("https://vendor.example/patron", "patron", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := store.consume(patron, "patron", now.Add(3*time.Second)); !ok || target != "https://vendor.example/patron" {
+		t.Fatal("new patron continuation was not usable during a flood")
 	}
 }
 

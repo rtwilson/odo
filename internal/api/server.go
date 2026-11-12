@@ -33,6 +33,12 @@ type Server struct {
 	launchContinuations *launchContinuations
 	handoff             *handoffSecurity
 	handoffErr          error
+
+	// Host-guard settings are read once, so request handling, cookie names and
+	// the guard always agree even if the environment changes later.
+	hostGuardEnabled bool
+	hostGuardConfig  proxy.HostRoutingConfig
+	hostGuardErr     error
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -83,6 +89,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		loginThrottle:       newLoginThrottle(),
 		launchContinuations: newLaunchContinuations(),
 	}
+	server.hostGuardEnabled, server.hostGuardConfig, server.hostGuardErr = hostGuardConfigFromEnv()
 	enabled, config, err := experimentalHandoffConfig()
 	server.handoffErr = err
 	if enabled && err == nil {

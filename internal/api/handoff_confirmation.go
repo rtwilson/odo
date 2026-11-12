@@ -76,7 +76,10 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		h.confirmationError(w, r, err)
 		return
 	}
-	if r.Method == http.MethodGet {
+	// A handoff started by a same-origin click inside Odo needs no second
+	// click. All session, nonce, proof, registry and resource checks above and
+	// in confirm still apply; only the redundant form is skipped.
+	if r.Method == http.MethodGet && !pending.directConfirm {
 		allowHandoffFormRedirect(r, pending.binding.proxyAuthority)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// Escape every interpolated value, as in the existing server-rendered pages.

@@ -49,3 +49,22 @@ func (s *Store) LookupProxyHostname(label string) (ProxyHostname, bool, error) {
 	}
 	return record, err == nil, err
 }
+
+// ListProxyHostnames returns every enrolled hostname, ordered by hostname.
+// Enrollment alone never authorizes a request.
+func (s *Store) ListProxyHostnames() ([]ProxyHostname, error) {
+	rows, err := s.db.Query(`SELECT hostname, label FROM proxy_hostnames ORDER BY hostname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProxyHostname
+	for rows.Next() {
+		var record ProxyHostname
+		if err := rows.Scan(&record.Hostname, &record.Label); err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}

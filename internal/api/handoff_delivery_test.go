@@ -120,6 +120,10 @@ func (v *fakeVendor) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "set")
 	case "/echo":
 		_, _ = io.WriteString(w, "cookie="+r.Header.Get("Cookie"))
+	case "/submit":
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<a href="https://vendor.example/next">`+r.Method+" "+r.Header.Get("Content-Type")+" "+r.Header.Get("Origin")+" "+string(body)+`</a>`)
 	case "/redirect":
 		if value := query.Get("cookie"); value != "" {
 			w.Header().Add("Set-Cookie", "who="+value+"; Path=/; Secure")
@@ -330,8 +334,13 @@ func TestVendorDeliveryHostAndRequestAdmission(t *testing.T) {
 	}{
 		{"unknown label", "GET", "unknown.proxy.example", "/private", nil, 421},
 		{"unregistered", "GET", unregistered + ".proxy.example", "/private", nil, 421},
-		{"post", "POST", d.authority, "/private", nil, 405},
-		{"delete", "DELETE", d.authority, "/private", nil, 405},
+		{"post without origin", "POST", d.authority, "/private", nil, 403},
+		{"delete without origin", "DELETE", d.authority, "/private", nil, 403},
+		{"post from another proxy host", "POST", d.authority, "/private", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-site") }, 403},
+		{"post cross-site", "POST", d.authority, "/private", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, 403},
+		{"post foreign origin", "POST", d.authority, "/private", func(r *http.Request) { r.Header.Set("Origin", "https://other.proxy.example") }, 403},
+		{"options", "OPTIONS", d.authority, "/private", nil, 405},
+		{"trace", "TRACE", d.authority, "/private", nil, 405},
 		{"body", "GET", d.authority, "/private", func(r *http.Request) { r.ContentLength = 4; r.Body = io.NopCloser(strings.NewReader("body")) }, 400},
 		{"chunked", "GET", d.authority, "/private", func(r *http.Request) { r.TransferEncoding = []string{"chunked"} }, 400},
 		{"absolute mismatch", "GET", d.authority, "/private", func(r *http.Request) { r.URL.Host = "odo.example" }, 421},
@@ -989,7 +998,7 @@ func (d *deliveryHarness) grantCount() int {
 // Post-commit retirement: a committed resource change clears idle jars at
 // commit, with no request in between.
 func TestVendorDeliveryResourceCommitRetiresIdleJars(t *testing.T) {
-	for _, kind := range []string{"cookie policy disabled", "resource disabled", "resource deleted", "identical write"} {
+	for _, kind := range []string{"cookie policy disabled", "resource disabled", "resource deleted", "domain rules changed"} {
 		t.Run(kind, func(t *testing.T) {
 			d := newDeliveryHarness(t)
 			if rec := d.serve("GET", "/set?v=idle", d.grant, nil); rec.Code != 200 || d.h.cookies.jars.Len() != 1 {
@@ -1006,7 +1015,8 @@ func TestVendorDeliveryResourceCommitRetiresIdleJars(t *testing.T) {
 				err = d.h.server.store.UpsertResource(item)
 			case "resource deleted":
 				_, err = d.h.server.store.DeleteResource("vendor")
-			case "identical write":
+			case "domain rules changed":
+				item.Domains = append(item.Domains, resources.DomainRule{Host: "added.example", Behavior: "proxy"})
 				err = d.h.server.store.UpsertResource(item)
 			}
 			if err != nil {
@@ -1016,6 +1026,28 @@ func TestVendorDeliveryResourceCommitRetiresIdleJars(t *testing.T) {
 				t.Fatal("committed resource change left the idle jar allocated")
 			}
 		})
+	}
+}
+
+// Editing a resource without touching its cookie policy or domain rules (for
+// example its display name) keeps every patron's vendor cookies.
+func TestVendorDeliveryUnrelatedResourceEditKeepsJars(t *testing.T) {
+	d := newDeliveryHarness(t)
+	if rec := d.serve("GET", "/set?v=kept", d.grant, nil); rec.Code != 200 || d.h.cookies.jars.Len() != 1 {
+		t.Fatal("jar not allocated")
+	}
+	item, _, _ := d.h.server.store.GetResource("vendor")
+	for _, description := range []string{"Updated description", "Updated again"} {
+		item.Description = description
+		if err := d.h.server.store.UpsertResource(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d.h.cookies.jars.Len() != 1 {
+		t.Fatal("unrelated resource edit dropped the patron's vendor jar")
+	}
+	if rec := d.serve("GET", "/echo", d.grant, nil); rec.Code != 200 || rec.Body.String() != "cookie=who=kept" {
+		t.Fatalf("vendor cookie not sent after unrelated edit: %d %q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1059,5 +1091,54 @@ func TestVendorDeliverySessionRevocationRetiresJarsAndGrants(t *testing.T) {
 				t.Fatal("another patron's vendor session was retired")
 			}
 		})
+	}
+}
+
+// Same-origin form posts from a vendor page reach upstream with their body,
+// content type and the upstream origin; the HTML reply is rewritten like GET.
+func TestVendorDeliveryForwardsSameOriginPost(t *testing.T) {
+	d := newDeliveryHarness(t)
+	for _, edit := range []func(*http.Request){
+		// Chromium form post from a no-referrer page.
+		func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin"); r.Header.Set("Origin", "null") },
+		// Older browser without fetch metadata.
+		func(r *http.Request) { r.Header.Set("Origin", "https://"+d.authority) },
+	} {
+		rec := d.serve("POST", "/submit", d.grant, func(r *http.Request) {
+			r.Body = io.NopCloser(strings.NewReader("q=private-search"))
+			r.ContentLength = int64(len("q=private-search"))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			edit(r)
+		})
+		want := `<a href="https://` + d.authority + `/next">POST application/x-www-form-urlencoded https://vendor.example q=private-search</a>`
+		if rec.Code != 200 || rec.Body.String() != want {
+			t.Fatalf("post: %d %q", rec.Code, rec.Body.String())
+		}
+	}
+	if strings.Contains(d.logs.String(), "private-search") {
+		t.Fatal("post body reached logs")
+	}
+}
+
+func TestVendorDeliveryPostLimits(t *testing.T) {
+	d := newDeliveryHarness(t)
+	sameOrigin := func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin") }
+	if rec := d.serve("POST", "/submit", d.grant, func(r *http.Request) {
+		sameOrigin(r)
+		r.ContentLength = vendorContentMaxRequestBody + 1
+		r.Body = io.NopCloser(strings.NewReader("x"))
+	}); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body: %d", rec.Code)
+	}
+	item, _, _ := d.h.server.store.GetResource("vendor")
+	item.HTTPMethods = []string{"GET", "HEAD"}
+	if err := d.h.server.store.UpsertResource(item); err != nil {
+		t.Fatal(err)
+	}
+	if rec := d.serve("POST", "/submit", d.grant, sameOrigin); rec.Code != http.StatusForbidden {
+		t.Fatalf("resource without POST allowed it: %d", rec.Code)
+	}
+	if d.vendor.hits.Load() != 0 {
+		t.Fatal("refused post reached upstream")
 	}
 }

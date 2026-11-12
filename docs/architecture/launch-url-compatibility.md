@@ -106,12 +106,15 @@ flow returns to that local path after authentication. SAML login remains
 unimplemented; this does not add SAML or cross-host authentication.
 
 The destination lives in a mutex-protected in-memory store with a five-minute
-logical lifetime and a global maximum of 256 pending launches. New entries
+logical lifetime and a global maximum of 1,024 pending launches. New entries
 sweep expired records; an expired redemption also removes its record. Idle
 expired records may remain in bounded process memory until the next operation.
 Nothing is stored in SQLite. Restarting Odo discards pending launches, and
-multiple instances do not share them. A full store returns 503 instead of
-evicting an unexpired launch. Reopen the original launch URL to start again.
+multiple instances do not share them. Anonymous visitors create these
+records, so a full store evicts its oldest launch rather than refusing new
+ones (a refusal would let anyone deny launch-then-login to every patron). An
+evicted patron still signs in normally and lands on the resource list; reopen
+the original launch URL to continue.
 
 Each continuation is bound to a random browser nonce cookie: host-only,
 HttpOnly, Path=/, SameSite=Lax, and Secure when required by existing cookie

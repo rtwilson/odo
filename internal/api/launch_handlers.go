@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -89,10 +88,6 @@ func (s *Server) beginLaunchLogin(w http.ResponseWriter, r *http.Request, target
 	}
 	now := time.Now()
 	token, err := s.launchContinuations.create(target, nonce, now)
-	if errors.Is(err, errLaunchContinuationsFull) {
-		writeError(w, http.StatusServiceUnavailable, "launch temporarily unavailable")
-		return
-	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return

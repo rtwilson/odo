@@ -92,3 +92,20 @@ func (s *Server) reconcileProxyHostnames(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hostnames": out})
 }
+
+// enrollConfiguredProxyHostnames registers the exact proxy hosts that active
+// resources already name, after an administrator saves or imports resources.
+// Saving an exact proxy domain is the administrator's approval of that host,
+// so a separate reconcile call is not required for it. Hosts covered only by
+// subdomain rules still need explicit approved_hosts through the reconcile API.
+// Path-only deployments (no virtual-host settings) skip enrollment. A failure
+// never undoes the committed resource write; the reconcile API reports details.
+func (s *Server) enrollConfiguredProxyHostnames() {
+	routing, err := proxy.NewHostRoutingConfig(os.Getenv("APP_PUBLIC_URL"), os.Getenv("APP_PROXY_BASE_DOMAIN"))
+	if err != nil {
+		return
+	}
+	if _, err := s.store.ReconcileProxyHostnames(routing.CentralHostname(), routing.ProxyBaseDomain(), nil); err != nil && s.logger != nil {
+		s.logger.Warn("automatic proxy hostname enrollment failed; run hostname reconciliation for details")
+	}
+}

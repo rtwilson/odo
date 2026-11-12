@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,7 +25,20 @@ type grantCookieCoordinator struct {
 	handoff *handoffSecurity
 	jars    *proxy.UpstreamCookieJars
 	now     func() time.Time
+
+	// cached is the last snapshot read from the database. Vendor requests reuse
+	// it while the committed revision is unchanged, instead of decoding every
+	// resource twice per request.
+	cacheMu  sync.Mutex
+	cached   db.ResourceSnapshot
+	cachedAt time.Time
+	hasData  bool
 }
+
+// snapshotCacheTTL bounds how long an unchanged revision is trusted without
+// rereading resources, so out-of-band database edits that skip the revision
+// (unsupported) are still noticed and fail closed within this window.
+const snapshotCacheTTL = time.Second
 
 func newGrantCookieCoordinator(h *handoffSecurity) (*grantCookieCoordinator, error) {
 	if h == nil || h.server == nil || h.server.store == nil || h.state == nil {
@@ -162,7 +176,7 @@ var errVendorTargetUnsafe = errors.New("vendor target failed DNS or address safe
 // the ResourcesChanged commit hook runs inside the committing writer. Any read
 // or publication failure (including a stale revision) invalidates all jars.
 func (c *grantCookieCoordinator) publishPolicies() (db.ResourceSnapshot, error) {
-	snapshot, err := c.handoff.server.store.ResourceSnapshot()
+	snapshot, err := c.currentSnapshot()
 	if err != nil {
 		c.jars.InvalidatePolicies()
 		return db.ResourceSnapshot{}, errors.New("cookie resource snapshot unavailable")
@@ -179,6 +193,32 @@ func (c *grantCookieCoordinator) publishPolicies() (db.ResourceSnapshot, error) 
 		c.jars.InvalidatePolicies()
 		return db.ResourceSnapshot{}, err
 	}
+	return snapshot, nil
+}
+
+// currentSnapshot returns the cached snapshot when the committed revision is
+// unchanged, and otherwise reads and caches a fresh one. The result is shared
+// and must be treated as read-only.
+func (c *grantCookieCoordinator) currentSnapshot() (db.ResourceSnapshot, error) {
+	store := c.handoff.server.store
+	revision, err := store.ResourceRevision()
+	if err != nil {
+		return db.ResourceSnapshot{}, err
+	}
+	// Cache age is not an authorization decision; it uses the wall clock and
+	// leaves the coordinator clock to authorize's single read.
+	now := time.Now()
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if c.hasData && c.cached.Revision == revision && now.Sub(c.cachedAt) < snapshotCacheTTL && !now.Before(c.cachedAt) {
+		return c.cached, nil
+	}
+	snapshot, err := store.ResourceSnapshot()
+	if err != nil {
+		c.hasData = false
+		return db.ResourceSnapshot{}, err
+	}
+	c.cached, c.cachedAt, c.hasData = snapshot, now, true
 	return snapshot, nil
 }
 

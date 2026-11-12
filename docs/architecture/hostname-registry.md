@@ -29,7 +29,13 @@ operation, so identities remain reserved when resources are removed.
 does not authorize access or establish DNS safety. Future routing must apply
 current resource/method/anonymous policy and validated-IP dialing independently.
 
-`db.ReconcileProxyHostnames` is an explicit administrative operation.
+`db.ReconcileProxyHostnames` is an explicit administrative operation. When
+virtual-host settings are configured, a successful resource create, update or
+config import also runs it with no approved hosts, because saving an exact
+`proxy` domain is the administrator's approval of that host. Hosts covered only
+by subdomain rules still need `approved_hosts`. An enrollment failure does not
+undo the saved resource; it logs a warning and the reconcile API reports
+details.
 It enrolls active exact proxy domains and explicitly approved
 concrete hosts covered by current domain policy. Subdomain rules do not trigger
 host discovery or enroll their base automatically. Global domain-rule precedence

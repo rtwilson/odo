@@ -290,7 +290,7 @@ and trusted bindings in server-side records, alongside the short-lived target.
 | Redemption tickets | 60 seconds; 256 globally |
 | Vendor grants | 30 minutes of inactivity (renewed by authorized use), capped by parent absolute expiry; 4,096 globally and 64 per parent session |
 
-The existing pre-login continuation retains its separate five-minute/256 bounds.
+The existing pre-login continuation retains its separate five-minute bound, with 1,024 entries that evict the oldest when full.
 Expired records must lose access immediately; cleanup must erase expired target
 records during normal state operations. Full capacity returns 503 without
 evicting live state or consuming a handoff/ticket needed for a retry. Restart,

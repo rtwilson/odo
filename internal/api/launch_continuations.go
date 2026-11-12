@@ -12,12 +12,10 @@ import (
 
 const (
 	launchContinuationTTL  = 5 * time.Minute
-	maxLaunchContinuations = 256
+	maxLaunchContinuations = 1024
 	launchNonceCookieName  = "odo_launch_nonce"
 	launchContinuePath     = "/launch/continue"
 )
-
-var errLaunchContinuationsFull = errors.New("pending launch capacity reached")
 
 type pendingLaunch struct {
 	target    string
@@ -48,8 +46,18 @@ func (s *launchContinuations) create(target, nonce string, now time.Time) (strin
 			delete(s.entries, key)
 		}
 	}
-	if len(s.entries) >= maxLaunchContinuations {
-		return "", errLaunchContinuationsFull
+	// Anonymous visitors create these entries, so refusing new ones at capacity
+	// would let anyone deny launch-then-login to every patron. Evict the oldest
+	// instead: a flood can at worst displace an older continuation, and that
+	// patron still signs in normally, landing on the resource list.
+	for len(s.entries) >= maxLaunchContinuations {
+		oldestKey, oldest := "", time.Time{}
+		for key, pending := range s.entries {
+			if oldestKey == "" || pending.expires.Before(oldest) {
+				oldestKey, oldest = key, pending.expires
+			}
+		}
+		delete(s.entries, oldestKey)
 	}
 	key := local.HashToken(token)
 	if _, exists := s.entries[key]; exists {

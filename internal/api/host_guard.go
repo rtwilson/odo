@@ -41,7 +41,10 @@ func ValidateHostGuardConfig() error {
 }
 
 func (s *Server) guardHost(next http.Handler) http.Handler {
-	enabled, config, configErr := hostGuardConfigFromEnv()
+	// Building the guard records the settings it enforces, so cookie naming
+	// (centralCookieName) always matches the guard actually serving requests.
+	s.hostGuardEnabled, s.hostGuardConfig, s.hostGuardErr = hostGuardConfigFromEnv()
+	enabled, config, configErr := s.hostGuardEnabled, s.hostGuardConfig, s.hostGuardErr
 	if !enabled && s.handoffErr == nil {
 		return next
 	}

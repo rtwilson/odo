@@ -890,7 +890,8 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 		return User{}, found, err
 	}
 	if existing.Status == "deleted" {
-		return User{}, false, nil
+		// Match PatchUser: the account exists but must be restored first.
+		return User{}, true, ErrUserDeleted
 	}
 	if err := protectLastAdministrator(tx, existing, status, existing.Roles); err != nil {
 		return User{}, false, err

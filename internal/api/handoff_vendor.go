@@ -78,6 +78,10 @@ func (h *handoffSecurity) serveVendor(w http.ResponseWriter, r *http.Request) {
 		h.redeemBrowser(w, r, mapping, authority, values[0])
 		return
 	}
+	if values, ok := fields["sibling"]; ok && len(values) == 1 && validLaunchToken(values[0]) {
+		h.redeemSiblingBrowser(w, r, authority, values[0])
+		return
+	}
 	writeError(w, 404, "handoff not found")
 }
 
@@ -85,7 +89,7 @@ func (h *handoffSecurity) prepareBrowser(w http.ResponseWriter, r *http.Request,
 	now := time.Now().UTC()
 	h.state.mu.Lock()
 	h.state.cleanupLocked(now)
-	pending, found := h.state.entries[local.HashToken(token)]
+	pending, found := h.state.liveEntry(local.HashToken(token), now)
 	h.state.mu.Unlock()
 	if !found || pending.binding.hostname != mapping.Hostname || pending.binding.label != mapping.Label || pending.binding.proxyAuthority != authority {
 		writeError(w, 404, "handoff not found")
@@ -157,6 +161,9 @@ func (h *handoffSecurity) redeemBrowser(w http.ResponseWriter, r *http.Request, 
 			location = next
 		}
 	}
+	// Walk the browser through the resource's other registered hosts first,
+	// so their assets and links work without another confirmation.
+	location = h.siblingChain(grantToken, ticket.resourceID, mapping.Hostname, location, time.Now().UTC())
 	w.Header().Set("Location", location)
 	w.WriteHeader(http.StatusSeeOther)
 }

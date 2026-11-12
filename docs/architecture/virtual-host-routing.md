@@ -10,8 +10,8 @@ virtual-host proxy mode.
 | State | Current behavior |
 | --- | --- |
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers, bounded upstream cookie jars and the live grant/snapshot cookie coordinator. |
-| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized `GET`/`HEAD` vendor content, rewriting only same-host absolute URLs in HTML attributes ([browser compatibility](#browser-compatibility)); see [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake. |
-| Unsupported | Unsafe methods, JavaScript/CSS rewriting, cross-host HTML rewriting, cross-host redirects and assets, automatic cold-host handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
+| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized vendor content: `GET`/`HEAD`, and same-origin `POST`/`PUT`/`PATCH`/`DELETE` when the resource allows them. Absolute URLs in HTML attributes and redirects are rewritten for the resource's own registered hosts, which receive their own grants in the same handoff ([same-resource hosts, POST and direct launch](#same-resource-hosts-post-and-direct-launch)); see also [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake; launches started inside Odo skip the confirmation form. |
+| Unsupported | JavaScript/CSS rewriting, hosts of other resources or unregistered hosts, cold hosts added after a handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
 | Production-disabled | All vendor-host delivery: startup rejects the flag outside development/test. Central path content, diagnostic body previews and missed-rewrite recovery are blocked while the experimental mode is on; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
 
 ## Trusted deployment names
@@ -573,7 +573,8 @@ Same-host rewriting rules (`proxy.RewriteSameHostHTML`, applied in
   unregistered destinations are never rewritten, so no new host is reached and
   authorization is unchanged.
 - Unchanged tokens are copied byte-for-byte. Only a changed tag is
-  re-serialized: its name and attribute keys lower-cased, values double-quoted,
+  re-serialized: its name and attribute keys keep their source spelling (so
+  case-sensitive SVG names such as `viewBox` survive), values double-quoted,
   decoded non-ASCII characters written as numeric character references (valid
   in any document encoding) and non-UTF-8 bytes kept as supplied. A document
   with nothing to rewrite is forwarded unchanged with its original headers.
@@ -606,15 +607,15 @@ Vendor HTML is served without the central application's CSP, frame or
 permissions headers (it is not an Odo page), with `no-store`, `no-referrer`
 and `nosniff`. Access logs record only the route and statuses.
 
-Confirmed limitations (deferred, not failures of this milestone): forms that
-`POST` (only `GET`/`HEAD` exist), cross-host links and assets such as a CDN
-image (they load directly from the third party, outside Odo and its privacy
-controls), URLs constructed by JavaScript, URLs inside CSS (`url(...)`,
+Confirmed limitations (deferred, not failures of this milestone): links and
+assets on hosts that are not registered hosts of the same resource, such as a
+third-party CDN image (they load directly from the third party, outside Odo
+and its privacy controls), URLs constructed by JavaScript, URLs inside CSS (`url(...)`,
 `@import`), `<meta http-equiv=refresh>` and `Link`/`Refresh` headers, cookies
 set by vendor JavaScript (`document.cookie` stays in the browser and is never
-sent upstream), and documents over 2 MiB or compressed upstream. Cross-host
-support needs registered-host rewriting with per-host grants and automatic
-cold-host handoff, which remain unimplemented.
+sent upstream), and documents over 2 MiB or compressed upstream. POST and
+same-resource cross-host support are described in
+[same-resource hosts, POST and direct launch](#same-resource-hosts-post-and-direct-launch).
 
 ### Two-host compatibility fixture
 
@@ -634,7 +635,55 @@ External URL rewriting remains unsupported. The next design decision is how a
 patron explicitly obtains a separate grant for a cold subresource host before
 the browser requests its assets; a subresource cannot complete an interactive
 confirmation flow. No automatic cross-host grants or new cookie-sharing rules
-are introduced by this test.
+are introduced by this test. The CDN here is its own resource, so it stays
+outside the same-resource host family described next and still needs its own
+handoff.
+
+## Same-resource hosts, POST and direct launch
+
+Added 2026-11-11 after local testing with real vendors showed the confirmation
+form, same-host-only delivery and GET-only methods made most vendor sites
+unusable.
+
+**Direct launch.** `/launch` records whether it was a top-level navigation the
+browser labels `Sec-Fetch-Site: same-origin` (a click in Odo's resource list,
+or the login form continuing a launch). For those handoffs the central
+confirmation `GET` performs the confirmation transition itself and redirects
+to the ticket, with every session, nonce, proof, registry and resource check
+unchanged. Proxy hosts are same-site with central but never same-origin, so
+vendor pages and scripts cannot claim this; cross-site links, bookmarks
+(`none`) and re-handoffs after inactivity still show the form.
+
+**Same-resource host family.** A resource's family is the set of registered
+hostnames whose current domain policy resolves to that resource as `proxy`
+(anonymous URL rules excluded), in hostname order, at most six besides the
+redeeming host. After a ticket is redeemed, the browser is sent through one
+single-use sibling hop per family host
+(`/.well-known/odo/redeem?sibling=<opaque>`, 30-second lifetime, stored only
+as a hash). Each hop rechecks the live parent session and that its host still
+belongs to the resource, sets that host's own `__Host-` grant, and continues to
+the next hop held server-side, ending at the original target. Grants are never
+shared between hosts; a family only links their inactivity deadlines, so using
+any member renews all of them (capped at each grant's parent limit). Sibling
+grant cookies last until the parent's absolute expiry because the browser may
+not visit those hosts directly; Odo enforces inactivity server-side. Unlike
+the redeeming host's ticket, a sibling hop is not bound to a browser nonce: it
+is consumed by the browser's own redirect within milliseconds, so it is only
+exposed to something that can already read that browser's redirects.
+
+HTML attribute rewriting and redirect translation use the family map: URLs for
+the request's host and its family hosts become their proxy authorities.
+Hosts of other resources and unregistered hosts are unchanged. A family host
+registered after a handoff gets no grant until the next handoff.
+
+**Unsafe methods.** Delivery carries `POST`, `PUT`, `PATCH` and `DELETE` when
+the resource's `http_methods` allow them. Every proxy host is same-site with
+every other, so the SameSite=Lax grant cookie does not stop one vendor's page
+posting to another: unsafe requests must carry `Sec-Fetch-Site: same-origin`
+or, without fetch metadata, `Origin: https://<this proxy authority>`.
+Upstream receives `Content-Type`, the body (at most 10 MiB) and
+`Origin: https://<upstream host>`. Bodies are never logged. HTML replies to
+any method except `HEAD` are rewritten like `GET` replies.
 
 ## Post-commit retirement
 

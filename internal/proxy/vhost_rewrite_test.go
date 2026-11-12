@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +87,45 @@ func TestRewriteSameHostHTMLKeepsLegacyEncodingBytes(t *testing.T) {
 	want := "<p>\xe9t\xe9</p><a href=\"https://h-test.proxy.example/p\" title=\"\xe9t\xe9 &#169;\">x</a>"
 	if got, changed := RewriteSameHostHTML([]byte(input), testUpstream, testProxy); !changed || string(got) != want {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// Re-serializing a rewritten tag must keep case-sensitive SVG names, which
+// browsers ignore when lower-cased.
+func TestRewriteSameHostHTMLKeepsSVGNameCase(t *testing.T) {
+	body := []byte(`<svg viewBox="0 0 10 10"><image href="https://vendor.example/a.png" preserveAspectRatio="none" data-x=1 /><linearGradient xlink:href="https://vendor.example/g"></linearGradient></svg>`)
+	out, changed := RewriteSameHostHTML(body, "vendor.example", "h-label.proxy.example")
+	if !changed {
+		t.Fatal("same-host href not rewritten")
+	}
+	want := `<svg viewBox="0 0 10 10"><image href="https://h-label.proxy.example/a.png" preserveAspectRatio="none" data-x="1" /><linearGradient xlink:href="https://vendor.example/g"></linearGradient></svg>`
+	if string(out) != want {
+		t.Fatalf("got  %s\nwant %s", out, want)
+	}
+}
+
+func TestScanTagNamesFallsBackOnMismatch(t *testing.T) {
+	for raw, want := range map[string]string{
+		`<IMG SRC='x' Alt = "a b" data-q=1>`: "IMG SRC Alt data-q",
+		`<a =odd href=x>`:                    "a =odd href",
+		`<a href="unterminated>`:             "",
+	} {
+		tag, attrs, ok := scanTagNames([]byte(raw))
+		got := ""
+		if ok {
+			got = strings.Join(append([]string{tag}, attrs...), " ")
+		}
+		if got != want {
+			t.Fatalf("%s: got %q want %q", raw, got, want)
+		}
+	}
+}
+
+func TestRewriteHostsHTMLMapsEachRegisteredHost(t *testing.T) {
+	body := []byte(`<a href="https://WWW.vendor.example/a">a</a><img src="//cdn.vendor.example/i.png" srcset="https://cdn.vendor.example/i2.png 2x, https://other.example/x.png 3x"><script src="https://other.example/t.js"></script>`)
+	out, changed := RewriteHostsHTML(body, map[string]string{"www.vendor.example": "h-www.proxy.example", "cdn.vendor.example": "h-cdn.proxy.example"})
+	want := `<a href="https://h-www.proxy.example/a">a</a><img src="https://h-cdn.proxy.example/i.png" srcset="https://h-cdn.proxy.example/i2.png 2x, https://other.example/x.png 3x"><script src="https://other.example/t.js"></script>`
+	if !changed || string(out) != want {
+		t.Fatalf("got  %s\nwant %s", out, want)
 	}
 }

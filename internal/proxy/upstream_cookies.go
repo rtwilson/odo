@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/cookiejar"
@@ -66,6 +67,9 @@ type upstreamCookiePolicy struct {
 	enabled    bool
 	domains    []string
 	generation uint64
+	// routing fingerprints the resource's domain rules, so a change to where
+	// the resource may reach also retires its jars.
+	routing string
 }
 
 type upstreamResourceJar struct {
@@ -116,8 +120,11 @@ func (m *UpstreamCookieJars) ReplacePolicies(active []resources.Resource) error 
 }
 
 // ReplacePolicySnapshot installs active policies from one trusted database
-// snapshot. A higher revision renews ALL generations even for identical JSON,
-// permanently retiring jars across missed changes/reversions. Older revisions
+// snapshot. The next consecutive revision keeps jars of resources whose cookie
+// policy and domain rules are unchanged, so editing one resource (or only its
+// name) does not sign every patron out of every vendor. A revision that skips
+// ahead may hide an intermediate change and reversion, so it renews ALL
+// generations even for identical JSON, permanently retiring those jars. Older revisions
 // cannot replace newer state. Invalid policy data clears jars and retains the
 // highest revision seen; recovery requires that revision or newer, never legacy
 // mode. Rejected stale/unversioned calls leave current valid state intact.
@@ -133,7 +140,7 @@ func (m *UpstreamCookieJars) ReplacePolicySnapshot(revision int64, active []reso
 	if versioned && revision < m.policyRevision {
 		return ErrCookiePolicy
 	}
-	renew := !versioned || revision != m.policyRevision
+	renew := !versioned || (revision != m.policyRevision && revision != m.policyRevision+1)
 	unchanged := versioned && revision == m.policyRevision && m.ready
 	m.policyRevision = revision
 	return m.replacePoliciesLocked(active, renew, unchanged)
@@ -180,7 +187,12 @@ func (m *UpstreamCookieJars) replacePoliciesLocked(active []resources.Resource, 
 			return failed(err)
 		}
 		old, found := m.policies[resource.ID]
-		same := found && old.enabled == policy.enabled && slices.Equal(old.domains, policy.domains)
+		routing, err := json.Marshal(resource.Domains)
+		if err != nil {
+			return failed(ErrCookiePolicy)
+		}
+		policy.routing = string(routing)
+		same := found && old.enabled == policy.enabled && slices.Equal(old.domains, policy.domains) && old.routing == policy.routing
 		if unchanged && !same {
 			return failed(ErrCookiePolicy)
 		}

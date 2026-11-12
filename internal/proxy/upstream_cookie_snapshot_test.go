@@ -106,6 +106,8 @@ func TestUpstreamCookieSnapshotFailuresRetireAndPreventRollback(t *testing.T) {
 			case "oversized":
 				items = make([]resources.Resource, UpstreamMaxPolicies+1)
 			case "overflow":
+				// A skipped revision must renew, which overflows the counter.
+				revision = 12
 				f.m.generation = ^uint64(0)
 			case "negative":
 				revision = -1
@@ -194,7 +196,40 @@ func TestUpstreamCookieSnapshotConcurrentAccess(t *testing.T) {
 		}
 	}
 	workers.Wait()
-	if err := f.m.ReplacePolicySnapshot(21, f.items); err != nil || len(f.m.jars) != 0 {
-		t.Fatal("final revision retained old jars")
+	// Skipping a revision may hide a change and reversion, so it retires all.
+	if err := f.m.ReplacePolicySnapshot(22, f.items); err != nil || len(f.m.jars) != 0 {
+		t.Fatal("skipped revision retained old jars")
+	}
+}
+
+// Consecutive revisions keep jars of resources whose cookie policy and domain
+// rules are unchanged, and retire only the resource that changed.
+func TestUpstreamCookieSnapshotConsecutiveRevisionKeepsUnchangedJars(t *testing.T) {
+	f := newUpstreamCookieFixture(t)
+	if err := f.m.ReplacePolicySnapshot(5, f.items); err != nil {
+		t.Fatal(err)
+	}
+	auth := f.auth(t, "alice", "a")
+	_, exchange, err := prepareCookieRequest(t, f.m, "https://vendor.example/", cookieAuthorization(auth))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := append([]resources.Resource(nil), f.items...)
+	items[0].Name = "Renamed vendor"
+	if err := f.m.ReplacePolicySnapshot(6, items); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeCookieResponse(t, exchange, "private=kept"); err != nil {
+		t.Fatalf("unrelated edit retired an in-flight exchange: %v", err)
+	}
+	if len(f.m.jars) == 0 {
+		t.Fatal("unrelated edit dropped the jar")
+	}
+	items[0].Domains = append(items[0].Domains, resources.DomainRule{Host: "other.example", Behavior: "proxy"})
+	if err := f.m.ReplacePolicySnapshot(7, items); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.m.jars) != 0 {
+		t.Fatal("domain rule change kept the jar")
 	}
 }

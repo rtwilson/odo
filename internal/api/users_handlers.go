@@ -221,6 +221,10 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 		writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
 		return
 	}
+	if errors.Is(err, db.ErrUserDeleted) {
+		writeError(w, http.StatusConflict, "restore the deleted account before updating it")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return

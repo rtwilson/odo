@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -328,5 +329,42 @@ func TestHandoffGrantConcurrentParentRemoval(t *testing.T) {
 	}
 	if len(s.entries) != 0 || len(s.tickets) != 0 || len(s.grants) != 0 {
 		t.Fatal("redemption escaped concurrent parent cleanup")
+	}
+}
+
+// Renewing a grant renews its sibling-host grants, never beyond their limit,
+// and never revives one from another family or parent.
+func TestHandoffGrantFamilyRenewsTogether(t *testing.T) {
+	_, _, _, now := pendingHandoffFixture(t)
+	s := newPendingHandoffs()
+	ticket, token, vendor := grantTicketFixture(t, s, "parent", now, now.Add(2*time.Hour))
+	mainToken, _, err := s.redeem(token, ticket.binding, vendor, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, ok := s.grantFamily(mainToken, now)
+	if !ok {
+		t.Fatal("main grant missing")
+	}
+	sibling := siblingHost{mapping: db.ProxyHostname{Hostname: "cdn.vendor.example", Label: "h-cdn"}, authority: "h-cdn.proxy.library.example"}
+	first, err := s.issueSiblings(main, "vendor", []siblingHost{sibling}, "https://final.example/", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(first)
+	hop, found := s.inspectSibling(parsed.Query().Get("sibling"), sibling.mapping, sibling.authority, now)
+	if !found || hop.next != "https://final.example/" {
+		t.Fatal("sibling hop not chained to the final location")
+	}
+	siblingToken, siblingGrant, err := s.redeemSibling(parsed.Query().Get("sibling"), hop.binding, now)
+	if err != nil || siblingGrant.family != main.family || siblingGrant.binding.parentSessionID != "parent" {
+		t.Fatalf("sibling grant: %+v %v", siblingGrant, err)
+	}
+	later := now.Add(handoffGrantTTL - time.Minute)
+	if _, renewed := s.renewGrant(mainToken, db.ProxyHostname{Hostname: ticket.binding.hostname, Label: ticket.binding.label}, ticket.binding.proxyAuthority, later); !renewed {
+		t.Fatal("main grant not renewed")
+	}
+	if _, alive := s.grantFamily(siblingToken, now.Add(handoffGrantTTL+time.Minute)); !alive {
+		t.Fatal("sibling grant expired although its family was in use")
 	}
 }

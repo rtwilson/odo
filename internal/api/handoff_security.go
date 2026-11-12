@@ -128,7 +128,7 @@ func (h *handoffSecurity) confirmation(ctx context.Context, token, centralToken,
 		return pendingHandoff{}, errInvalidPendingHandoff
 	}
 	h.state.mu.Lock()
-	pending, found := h.state.entries[local.HashToken(token)]
+	pending, found := h.state.liveEntry(local.HashToken(token), now)
 	h.state.mu.Unlock()
 	if !found || !pending.acceptsReturnProof(proof, now) || pending.centralNonceHash != local.HashToken(nonce) || local.SessionIDFromToken(centralToken) != pending.binding.parentSessionID ||
 		subtle.ConstantTimeCompare([]byte(h.server.browserSessionHash(centralToken)), []byte(pending.binding.parentSessionHash)) != 1 {

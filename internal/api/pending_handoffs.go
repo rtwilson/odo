@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"errors"
+	"net/url"
 	"sync"
 	"time"
 
@@ -12,15 +13,19 @@ import (
 )
 
 const (
-	pendingHandoffTTL           = 5 * time.Minute
-	returnProofTTL              = time.Minute
-	maxPendingHandoffs          = 256
-	handoffTicketTTL            = time.Minute
-	maxHandoffTickets           = 256
-	handoffGrantTTL             = 30 * time.Minute
-	handoffGrantRenewInterval   = time.Minute
-	maxHandoffGrants            = 4096
-	maxHandoffGrantsPerParent   = 64
+	pendingHandoffTTL         = 5 * time.Minute
+	returnProofTTL            = time.Minute
+	maxPendingHandoffs        = 256
+	handoffTicketTTL          = time.Minute
+	maxHandoffTickets         = 256
+	handoffGrantTTL           = 30 * time.Minute
+	handoffGrantRenewInterval = time.Minute
+	maxHandoffGrants          = 4096
+	maxHandoffGrantsPerParent = 64
+	// maxSiblingHosts bounds the extra hosts one redemption grants, keeping the
+	// redirect chain well under browser redirect limits.
+	maxSiblingHosts             = 6
+	siblingTicketTTL            = 30 * time.Second
 	maxHandoffSessionFieldBytes = 128
 )
 
@@ -56,6 +61,10 @@ type pendingHandoff struct {
 	created            time.Time
 	expires            time.Time
 	parentExpires      time.Time
+	// directConfirm records that the patron started this handoff with a
+	// same-origin navigation inside Odo, which is itself the explicit central
+	// action the confirmation form otherwise collects.
+	directConfirm bool
 }
 
 type handoffTicket struct {
@@ -77,6 +86,22 @@ type handoffGrant struct {
 	created time.Time
 	expires time.Time
 	limit   time.Time
+	// family links the grants one redemption issued for a resource's hosts.
+	// Renewing any member renews all of them; it is never a credential.
+	family string
+}
+
+// A siblingTicket lets the browser, already redirected through one redemption,
+// pick up a host-only grant on another registered host of the same resource.
+// It is single-use, short-lived, bound to the redeemed parent and family, and
+// stores the next hop server-side so no destination appears in URLs.
+type siblingTicket struct {
+	binding       handoffBinding
+	resourceID    string
+	family        string
+	next          string
+	expires       time.Time
+	parentExpires time.Time
 }
 
 // This passive store has no routes, cookie handling, database access, DNS or
@@ -88,10 +113,19 @@ type pendingHandoffs struct {
 	entries map[string]pendingHandoff
 	tickets map[string]handoffTicket
 	grants  map[string]handoffGrant
+	// siblings are pending cross-host grant hops (see siblingTicket).
+	siblings map[string]siblingTicket
+	// lastSweep throttles full expiry sweeps; lookups check their own key.
+	lastSweep time.Time
 }
 
+// handoffSweepInterval bounds how often every record is scanned. Lookups never
+// depend on the sweep: they treat an expired record as absent themselves, and
+// capacity checks sweep before refusing.
+const handoffSweepInterval = time.Second
+
 func newPendingHandoffs() *pendingHandoffs {
-	return &pendingHandoffs{entries: make(map[string]pendingHandoff), tickets: make(map[string]handoffTicket), grants: make(map[string]handoffGrant)}
+	return &pendingHandoffs{entries: make(map[string]pendingHandoff), tickets: make(map[string]handoffTicket), grants: make(map[string]handoffGrant), siblings: make(map[string]siblingTicket)}
 }
 
 func (s *pendingHandoffs) create(binding handoffBinding, target, resourceID, centralNonce string, parentExpires, now time.Time) (string, error) {
@@ -114,6 +148,9 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, resourceID, cen
 	parsed, err := proxy.ParseLaunchQuery("url=" + target)
 	if err != nil || parsed.Hostname() != binding.hostname || len(parsed.String())+len("url=") > proxy.MaxLaunchQueryBytes {
 		return "", errInvalidPendingHandoff
+	}
+	if len(s.entries) >= maxPendingHandoffs {
+		s.sweepLocked(now)
 	}
 	if len(s.entries) >= maxPendingHandoffs {
 		return "", errPendingHandoffsFull
@@ -140,6 +177,21 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, resourceID, cen
 	return token, nil
 }
 
+// allowDirectConfirm marks a freshly created pending handoff as started by a
+// same-origin central navigation. It never extends lifetimes or changes bindings.
+func (s *pendingHandoffs) allowDirectConfirm(token string) {
+	if !validLaunchToken(token) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := local.HashToken(token)
+	if pending, found := s.entries[key]; found {
+		pending.directConfirm = true
+		s.entries[key] = pending
+	}
+}
+
 // inspect is non-consuming and returns a value copy, not mutable store state.
 // HTTP confirmation must recheck live authorization before calling confirm;
 // inspection followed by a separate consume step would not be atomic.
@@ -150,7 +202,7 @@ func (s *pendingHandoffs) inspect(token string, binding handoffBinding, centralN
 	if !validLaunchToken(token) || !validLaunchToken(centralNonce) {
 		return pendingHandoff{}, false
 	}
-	pending, found := s.entries[local.HashToken(token)]
+	pending, found := s.liveEntry(local.HashToken(token), now)
 	if !found || pending.binding != binding || pending.centralNonceHash != local.HashToken(centralNonce) {
 		return pendingHandoff{}, false
 	}
@@ -168,7 +220,7 @@ func (s *pendingHandoffs) prepare(token string, mapping db.ProxyHostname, author
 		return "", errInvalidPendingHandoff
 	}
 	key := local.HashToken(token)
-	pending, found := s.entries[key]
+	pending, found := s.liveEntry(key, now)
 	if !found || pending.binding.hostname != mapping.Hostname || pending.binding.label != mapping.Label || pending.binding.proxyAuthority != authority {
 		return "", errInvalidPendingHandoff
 	}
@@ -213,9 +265,12 @@ func (s *pendingHandoffs) confirm(token string, binding handoffBinding, centralN
 		return "", errInvalidPendingHandoff
 	}
 	key := local.HashToken(token)
-	pending, found := s.entries[key]
+	pending, found := s.liveEntry(key, now)
 	if !found || pending.binding != binding || pending.centralNonceHash != local.HashToken(centralNonce) || pending.vendorNonceHash == "" || !pending.acceptsReturnProof(proof, now) {
 		return "", errInvalidPendingHandoff
+	}
+	if len(s.tickets) >= maxHandoffTickets {
+		s.sweepLocked(now)
 	}
 	if len(s.tickets) >= maxHandoffTickets {
 		return "", errHandoffTicketsFull
@@ -254,7 +309,7 @@ func (s *pendingHandoffs) inspectTicket(token string, mapping db.ProxyHostname, 
 	if !validLaunchToken(token) || !validLaunchToken(nonce) {
 		return handoffTicket{}, false
 	}
-	ticket, found := s.tickets[local.HashToken(token)]
+	ticket, found := s.liveTicket(local.HashToken(token), now)
 	if !found || ticket.binding.hostname != mapping.Hostname || ticket.binding.label != mapping.Label || ticket.binding.proxyAuthority != authority || ticket.vendorNonceHash != local.HashToken(nonce) {
 		return handoffTicket{}, false
 	}
@@ -273,9 +328,12 @@ func (s *pendingHandoffs) redeem(token string, binding handoffBinding, vendorNon
 		return "", "", errInvalidHandoffTicket
 	}
 	key := local.HashToken(token)
-	ticket, found := s.tickets[key]
+	ticket, found := s.liveTicket(key, now)
 	if !found || ticket.binding != binding || ticket.vendorNonceHash != local.HashToken(vendorNonce) {
 		return "", "", errInvalidHandoffTicket
+	}
+	if len(s.grants) >= maxHandoffGrants {
+		s.sweepLocked(now)
 	}
 	if len(s.grants) >= maxHandoffGrants {
 		return "", "", errHandoffGrantsFull
@@ -307,7 +365,7 @@ func (s *pendingHandoffs) redeem(token string, binding handoffBinding, vendorNon
 	if ticket.parentExpires.Before(expires) {
 		expires = ticket.parentExpires
 	}
-	s.grants[grantKey] = handoffGrant{binding: ticket.binding, created: now, expires: expires, limit: ticket.parentExpires}
+	s.grants[grantKey] = handoffGrant{binding: ticket.binding, created: now, expires: expires, limit: ticket.parentExpires, family: grantKey}
 	delete(s.tickets, key)
 	return grantToken, ticket.target, nil
 }
@@ -325,7 +383,7 @@ func (s *pendingHandoffs) renewGrant(token string, mapping db.ProxyHostname, aut
 		return time.Time{}, false
 	}
 	key := local.HashToken(token)
-	grant, found := s.grants[key]
+	grant, found := s.liveGrant(key, now)
 	if !found || grant.binding.hostname != mapping.Hostname || grant.binding.label != mapping.Label || grant.binding.proxyAuthority != authority {
 		return time.Time{}, false
 	}
@@ -338,6 +396,23 @@ func (s *pendingHandoffs) renewGrant(token string, mapping db.ProxyHostname, aut
 	}
 	grant.expires = next
 	s.grants[key] = grant
+	// Assets on sibling hosts are used whenever the main host is, so keep the
+	// whole family alive together, never past each member's own limit.
+	if grant.family != "" {
+		for otherKey, other := range s.grants {
+			if otherKey == key || other.family != grant.family || other.binding.parentSessionID != grant.binding.parentSessionID {
+				continue
+			}
+			deadline := now.Add(handoffGrantTTL)
+			if other.limit.Before(deadline) {
+				deadline = other.limit
+			}
+			if deadline.After(other.expires) {
+				other.expires = deadline
+				s.grants[otherKey] = other
+			}
+		}
+	}
 	return next, true
 }
 
@@ -351,7 +426,7 @@ func (s *pendingHandoffs) inspectGrant(token string, mapping db.ProxyHostname, a
 	if !validLaunchToken(token) {
 		return handoffGrant{}, false
 	}
-	grant, found := s.grants[local.HashToken(token)]
+	grant, found := s.liveGrant(local.HashToken(token), now)
 	if !found || grant.binding.hostname != mapping.Hostname || grant.binding.label != mapping.Label || grant.binding.proxyAuthority != authority {
 		return handoffGrant{}, false
 	}
@@ -379,6 +454,11 @@ func (s *pendingHandoffs) removeParent(parentSessionID string, now time.Time) {
 			delete(s.grants, key)
 		}
 	}
+	for key, sibling := range s.siblings {
+		if sibling.binding.parentSessionID == parentSessionID {
+			delete(s.siblings, key)
+		}
+	}
 }
 
 func (s *pendingHandoffs) cleanup(now time.Time) {
@@ -387,7 +467,45 @@ func (s *pendingHandoffs) cleanup(now time.Time) {
 	s.cleanupLocked(now)
 }
 
+// cleanupLocked runs a full sweep at most once per handoffSweepInterval (or
+// whenever the clock moves backwards), so routine vendor requests do not scan
+// every record under the lock.
 func (s *pendingHandoffs) cleanupLocked(now time.Time) {
+	if !s.lastSweep.IsZero() && !now.Before(s.lastSweep) && now.Sub(s.lastSweep) < handoffSweepInterval {
+		return
+	}
+	s.sweepLocked(now)
+}
+
+func (s *pendingHandoffs) liveEntry(key string, now time.Time) (pendingHandoff, bool) {
+	pending, found := s.entries[key]
+	if found && !now.Before(pending.expires) {
+		delete(s.entries, key)
+		return pendingHandoff{}, false
+	}
+	return pending, found
+}
+
+func (s *pendingHandoffs) liveTicket(key string, now time.Time) (handoffTicket, bool) {
+	ticket, found := s.tickets[key]
+	if found && !now.Before(ticket.expires) {
+		delete(s.tickets, key)
+		return handoffTicket{}, false
+	}
+	return ticket, found
+}
+
+func (s *pendingHandoffs) liveGrant(key string, now time.Time) (handoffGrant, bool) {
+	grant, found := s.grants[key]
+	if found && !now.Before(grant.expires) {
+		delete(s.grants, key)
+		return handoffGrant{}, false
+	}
+	return grant, found
+}
+
+func (s *pendingHandoffs) sweepLocked(now time.Time) {
+	s.lastSweep = now
 	for key, pending := range s.entries {
 		if !now.Before(pending.expires) {
 			delete(s.entries, key)
@@ -403,4 +521,136 @@ func (s *pendingHandoffs) cleanupLocked(now time.Time) {
 			delete(s.grants, key)
 		}
 	}
+	for key, sibling := range s.siblings {
+		if !now.Before(sibling.expires) {
+			delete(s.siblings, key)
+		}
+	}
+}
+
+// grantFamily returns the family and limit of a live grant, for issuing its
+// sibling hops. It authorizes nothing.
+func (s *pendingHandoffs) grantFamily(token string, now time.Time) (handoffGrant, bool) {
+	if !validLaunchToken(token) {
+		return handoffGrant{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.liveGrant(local.HashToken(token), now)
+}
+
+// issueSiblings creates one single-use hop per host, chained in order and
+// ending at final. It returns the first hop's URL. Hosts must be registered
+// mappings the caller verified for this grant's resource; bindings copy the
+// parent of grant, so a hop can only extend that same patron session.
+func (s *pendingHandoffs) issueSiblings(grant handoffGrant, resourceID string, hosts []siblingHost, final string, now time.Time) (string, error) {
+	if len(hosts) == 0 {
+		return final, nil
+	}
+	if len(hosts) > maxSiblingHosts || resourceID == "" || grant.family == "" {
+		return "", errHandoffDenied
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.siblings)+len(hosts) > maxHandoffTickets {
+		s.sweepLocked(now)
+	}
+	if len(s.siblings)+len(hosts) > maxHandoffTickets {
+		return "", errHandoffTicketsFull
+	}
+	expires := now.Add(siblingTicketTTL)
+	if grant.limit.Before(expires) {
+		expires = grant.limit
+	}
+	next := final
+	created := make([]string, 0, len(hosts))
+	for i := len(hosts) - 1; i >= 0; i-- {
+		host := hosts[i]
+		token, err := local.NewToken("", 32)
+		if err != nil {
+			for _, key := range created {
+				delete(s.siblings, key)
+			}
+			return "", errors.New("sibling ticket generation failed")
+		}
+		key := local.HashToken(token)
+		binding := grant.binding
+		binding.hostname, binding.label, binding.proxyAuthority = host.mapping.Hostname, host.mapping.Label, host.authority
+		s.siblings[key] = siblingTicket{binding: binding, resourceID: resourceID, family: grant.family, next: next, expires: expires, parentExpires: grant.limit}
+		created = append(created, key)
+		next = (&url.URL{Scheme: "https", Host: host.authority, Path: handoffVendorPath, RawQuery: url.Values{"sibling": {token}}.Encode()}).String()
+	}
+	return next, nil
+}
+
+// inspectSibling returns a live sibling hop for this exact host without
+// consuming it, so the caller can recheck the parent and resource first.
+func (s *pendingHandoffs) inspectSibling(token string, mapping db.ProxyHostname, authority string, now time.Time) (siblingTicket, bool) {
+	if !validLaunchToken(token) {
+		return siblingTicket{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := local.HashToken(token)
+	sibling, found := s.siblings[key]
+	if found && !now.Before(sibling.expires) {
+		delete(s.siblings, key)
+		return siblingTicket{}, false
+	}
+	if !found || sibling.binding.hostname != mapping.Hostname || sibling.binding.label != mapping.Label || sibling.binding.proxyAuthority != authority {
+		return siblingTicket{}, false
+	}
+	return sibling, true
+}
+
+// redeemSibling consumes a sibling hop and issues its host-only grant in the
+// same family. Replays find nothing.
+func (s *pendingHandoffs) redeemSibling(token string, binding handoffBinding, now time.Time) (string, handoffGrant, error) {
+	if !validLaunchToken(token) {
+		return "", handoffGrant{}, errInvalidHandoffTicket
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := local.HashToken(token)
+	sibling, found := s.siblings[key]
+	if !found || !now.Before(sibling.expires) || sibling.binding != binding {
+		return "", handoffGrant{}, errInvalidHandoffTicket
+	}
+	delete(s.siblings, key)
+	if len(s.grants) >= maxHandoffGrants {
+		s.sweepLocked(now)
+	}
+	if len(s.grants) >= maxHandoffGrants {
+		return "", handoffGrant{}, errHandoffGrantsFull
+	}
+	parentCount := 0
+	for _, grant := range s.grants {
+		if grant.binding.parentSessionID == binding.parentSessionID {
+			parentCount++
+		}
+	}
+	if parentCount >= maxHandoffGrantsPerParent {
+		return "", handoffGrant{}, errHandoffGrantsFull
+	}
+	grantToken, err := local.NewToken("", 32)
+	if err != nil {
+		return "", handoffGrant{}, errors.New("host grant token generation failed")
+	}
+	grantKey := local.HashToken(grantToken)
+	if _, exists := s.grants[grantKey]; exists {
+		return "", handoffGrant{}, errors.New("host grant token collision")
+	}
+	expires := now.Add(handoffGrantTTL)
+	if sibling.parentExpires.Before(expires) {
+		expires = sibling.parentExpires
+	}
+	grant := handoffGrant{binding: binding, created: now, expires: expires, limit: sibling.parentExpires, family: sibling.family}
+	s.grants[grantKey] = grant
+	return grantToken, grant, nil
+}
+
+// siblingHost is one verified registered host of a resource and its authority.
+type siblingHost struct {
+	mapping   db.ProxyHostname
+	authority string
 }

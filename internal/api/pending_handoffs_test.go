@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -291,5 +292,42 @@ func TestPendingHandoffResourceBindingAndBounds(t *testing.T) {
 	}
 	if pending, ok := s.inspect(token, binding, nonce, now); !ok || pending.resourceID != "approved-resource" {
 		t.Fatal("resource binding missing")
+	}
+}
+
+// Full sweeps are throttled, but an expired record is never returned: each
+// lookup checks its own key, and capacity checks sweep before refusing.
+func TestPendingHandoffSweepThrottleKeepsExpiryExact(t *testing.T) {
+	binding, target, nonce, now := pendingHandoffFixture(t)
+	s := newPendingHandoffs()
+	token, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.create(binding, target, "vendor", nonce, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := now.Add(pendingHandoffTTL)
+	s.mu.Lock()
+	s.lastSweep = expired.Add(-time.Millisecond) // A sweep just ran; the next is throttled.
+	s.mu.Unlock()
+	if _, found := s.inspect(token, binding, nonce, expired); found {
+		t.Fatal("expired pending handoff returned while sweeps were throttled")
+	}
+	s.mu.Lock()
+	_, stale := s.entries[local.HashToken(other)]
+	remaining := len(s.entries)
+	s.mu.Unlock()
+	if !stale || remaining != 1 {
+		t.Fatalf("throttled sweep still scanned every record: %d remaining", remaining)
+	}
+	s.mu.Lock()
+	for len(s.entries) < maxPendingHandoffs {
+		s.entries[strconv.Itoa(len(s.entries))] = pendingHandoff{expires: now}
+	}
+	s.mu.Unlock()
+	if _, err := s.create(binding, target, "vendor", nonce, expired.Add(time.Hour), expired); err != nil {
+		t.Fatalf("capacity check did not sweep expired records: %v", err)
 	}
 }

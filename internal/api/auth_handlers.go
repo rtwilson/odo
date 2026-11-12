@@ -132,8 +132,8 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.Audit("admin_ui_login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q}`, user.ID))
 	}
 	_ = s.store.Audit("login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"next_path":%q}`, user.ID, pathOnly(next)))
-	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
-	http.SetCookie(w, csrfCookie(r, csrfTokenForSessionToken(token)))
+	http.SetCookie(w, s.sessionCookie(r, token, session.ExpiresAt))
+	http.SetCookie(w, s.csrfCookie(r, csrfTokenForSessionToken(token)))
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
@@ -159,8 +159,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		outcome = "revoked"
 	}
 	s.auditLogout(r, "logout_success", outcome)
-	http.SetCookie(w, clearSessionCookie(r, browserSessionCookieName, true))
-	http.SetCookie(w, clearSessionCookie(r, csrfCookieName, false))
+	http.SetCookie(w, s.clearSessionCookie(r, browserSessionCookieName, true))
+	http.SetCookie(w, s.clearSessionCookie(r, csrfCookieName, false))
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
@@ -169,7 +169,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 // revoke them during user-status checks. A matching token may revoke its own
 // session even if the account has since become inactive.
 func (s *Server) sessionForLogout(r *http.Request) (db.Session, bool, error) {
-	cookie, err := r.Cookie(centralCookieName(browserSessionCookieName))
+	cookie, err := r.Cookie(s.centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return db.Session{}, false, nil
 	}
@@ -211,8 +211,8 @@ func (s *Server) auditLogout(r *http.Request, event, outcome string) {
 	}
 }
 
-func clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
-	return cookiepolicy.Apply(r, &http.Cookie{Name: centralCookieName(name), MaxAge: -1, HttpOnly: httpOnly})
+func (s *Server) clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
+	return cookiepolicy.Apply(r, &http.Cookie{Name: s.centralCookieName(name), MaxAge: -1, HttpOnly: httpOnly})
 }
 
 const browserSessionCookieName = "odo_session"
@@ -223,9 +223,8 @@ const csrfCookieName = "odo_csrf"
 // can use the browser-enforced host-only prefix. Never fall back to legacy names
 // when reading guarded credentials. Invalid enabled settings are blocked by the
 // guard before authentication and also select the stricter namespace here.
-func centralCookieName(legacyName string) string {
-	enabled, _, _ := hostGuardConfigFromEnv()
-	if enabled {
+func (s *Server) centralCookieName(legacyName string) string {
+	if s.hostGuardEnabled {
 		return "__Host-" + legacyName
 	}
 	return legacyName
@@ -271,19 +270,19 @@ func randomBootSecret() string {
 	return token
 }
 
-func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
+func (s *Server) sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 	expiresAt, _ := time.Parse(time.RFC3339, expires)
 	return cookiepolicy.Apply(r, &http.Cookie{
-		Name:     centralCookieName(browserSessionCookieName),
+		Name:     s.centralCookieName(browserSessionCookieName),
 		Value:    token,
 		HttpOnly: true,
 		Expires:  expiresAt,
 	})
 }
 
-func csrfCookie(r *http.Request, token string) *http.Cookie {
+func (s *Server) csrfCookie(r *http.Request, token string) *http.Cookie {
 	return cookiepolicy.Apply(r, &http.Cookie{
-		Name:     centralCookieName(csrfCookieName),
+		Name:     s.centralCookieName(csrfCookieName),
 		Value:    token,
 		HttpOnly: false,
 		MaxAge:   int(sessionTTL() / time.Second),
@@ -328,7 +327,7 @@ func sessionPersistOnRestart() bool {
 }
 
 func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error) {
-	cookie, err := r.Cookie(centralCookieName(browserSessionCookieName))
+	cookie, err := r.Cookie(s.centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return db.User{}, db.Session{}, false, nil
 	}
@@ -380,7 +379,7 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error)
 }
 
 func (s *Server) currentUserAuth(r *http.Request) (AuthContext, bool, error) {
-	cookie, err := r.Cookie(centralCookieName(browserSessionCookieName))
+	cookie, err := r.Cookie(s.centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return AuthContext{}, false, nil
 	}
@@ -467,7 +466,7 @@ func (s *Server) sessionMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.SubjectType == "user" {
-		http.SetCookie(w, csrfCookie(r, auth.csrfToken))
+		http.SetCookie(w, s.csrfCookie(r, auth.csrfToken))
 	}
 	writeJSON(w, http.StatusOK, auth)
 }

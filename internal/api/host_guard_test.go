@@ -134,3 +134,17 @@ func TestHostGuardRejectionUsesPrivacySafeRoute(t *testing.T) {
 		t.Fatalf("unsafe rejection log: status=%d log=%s", rec.Code, logs.String())
 	}
 }
+
+// Cookie names follow the guard that was built, not later environment reads,
+// so the guard and the login cookies can never use different namespaces.
+func TestCentralCookieNamesFollowBuiltGuard(t *testing.T) {
+	t.Setenv("APP_HOST_GUARD", "true")
+	t.Setenv("APP_PUBLIC_URL", "https://odo.example")
+	t.Setenv("APP_PROXY_BASE_DOMAIN", "proxy.example")
+	server := newTestServer(t, "secret")
+	_ = server.Routes()
+	t.Setenv("APP_HOST_GUARD", "false")
+	if got := server.centralCookieName(browserSessionCookieName); got != "__Host-"+browserSessionCookieName {
+		t.Fatalf("cookie name changed with the environment: %q", got)
+	}
+}

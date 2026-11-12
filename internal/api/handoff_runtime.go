@@ -120,6 +120,9 @@ func (h *handoffSecurity) launch(w http.ResponseWriter, r *http.Request, target 
 		h.confirmationError(w, r, err)
 		return
 	}
+	if sameOriginNavigation(r) {
+		h.state.allowDirectConfirm(token)
+	}
 	if fresh {
 		http.SetCookie(w, handoffCookie(handoffNonceCookie, nonce, time.Now().UTC().Add(pendingHandoffTTL)))
 	}
@@ -189,4 +192,14 @@ func (h *handoffSecurity) migrateLegacyBookmark(w http.ResponseWriter, r *http.R
 	// An empty redirect body avoids reflecting a patron destination into HTML.
 	w.Header().Set("Location", location.String())
 	w.WriteHeader(http.StatusSeeOther)
+}
+
+// sameOriginNavigation reports a browser top-level navigation that the browser
+// itself labels as initiated from an Odo central page (for example the resource
+// list, or the login form continuing a launch). Proxy hosts are same-site but
+// never same-origin with central, so vendor pages and vendor scripts cannot
+// claim this; cross-site links keep the explicit confirmation form.
+func sameOriginNavigation(r *http.Request) bool {
+	values := r.Header.Values("Sec-Fetch-Site")
+	return len(values) == 1 && values[0] == "same-origin" && r.Header.Get("Sec-Fetch-Mode") == "navigate" && isDocumentNavigation(r)
 }

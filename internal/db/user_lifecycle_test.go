@@ -57,7 +57,7 @@ func TestDeleteAndRestoreUser(t *testing.T) {
 	if err := s.CreateUser(User{ID: "replacement", Username: "patron", PasswordHash: "new"}); err == nil {
 		t.Fatal("deleted username was reusable")
 	}
-	if _, found, err := s.SetUserStatus("patron", "active"); err != nil || found {
+	if _, found, err := s.SetUserStatus("patron", "active"); !errors.Is(err, ErrUserDeleted) || !found {
 		t.Fatalf("enabled deleted account: %v %v", found, err)
 	}
 	u.Status = "active"

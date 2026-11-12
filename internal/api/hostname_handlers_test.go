@@ -162,3 +162,48 @@ func TestHostnameReconciliationAPIRejectsInvalidInputAndConfiguration(t *testing
 		t.Fatalf("invalid request mutated registry: found=%v err=%v", found, err)
 	}
 }
+
+func TestResourceSaveEnrollsExactProxyHostnames(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "https://odo.example")
+	t.Setenv("APP_PROXY_BASE_DOMAIN", "proxy.example")
+	server := newTestServer(t, "secret")
+	handler := server.Routes()
+	body := `{"id":"vendor","name":"Vendor","domains":[{"host":"vendor.example.org","behavior":"proxy"},{"host":"assets.example.org","behavior":"proxy","include_subdomains":true}]}`
+	for _, call := range []struct{ method, path string }{{"POST", "/api/v1/resources"}, {"PUT", "/api/v1/resources/vendor"}} {
+		req := httptest.NewRequest(call.method, call.path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s %s: %d %s", call.method, call.path, rec.Code, rec.Body.String())
+		}
+	}
+	for host, want := range map[string]bool{"vendor.example.org": true, "assets.example.org": false, "cdn.assets.example.org": false} {
+		_, label, err := proxy.RegistryHostname(host, "odo.example", "proxy.example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := server.store.LookupProxyHostname(label); err != nil || found != want {
+			t.Fatalf("%s enrolled=%v want %v err=%v", host, found, want, err)
+		}
+	}
+}
+
+func TestResourceSaveWithoutVirtualHostSettingsSkipsEnrollment(t *testing.T) {
+	t.Setenv("APP_PUBLIC_URL", "")
+	t.Setenv("APP_PROXY_BASE_DOMAIN", "")
+	server := newTestServer(t, "secret")
+	req := httptest.NewRequest("POST", "/api/v1/resources", strings.NewReader(`{"id":"vendor","name":"Vendor","domains":[{"host":"vendor.example.org","behavior":"proxy"}]}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body.String())
+	}
+	_, label, _ := proxy.RegistryHostname("vendor.example.org", "odo.example", "proxy.example")
+	if _, found, _ := server.store.LookupProxyHostname(label); found {
+		t.Fatal("path-only deployment enrolled a proxy hostname")
+	}
+}

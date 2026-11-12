@@ -19,8 +19,9 @@ import (
 
 // Experimental vendor content delivery on registered proxy hostnames. It is
 // reachable only through guardHost when APP_EXPERIMENTAL_HANDOFF is enabled,
-// which startup rejects outside development/test. It serves GET and HEAD only,
-// requires a live host-only grant, and authorizes every request and response
+// which startup rejects outside development/test. It serves GET and HEAD, and
+// POST/PUT/PATCH/DELETE when the resource's http_methods allow them and the
+// browser marks the request same-origin. It requires a live host-only grant, and authorizes every request and response
 // through the runtime's single grantCookieCoordinator. It never rewrites bodies,
 // follows redirects, or accepts client-supplied upstream URLs or resource IDs.
 
@@ -28,7 +29,19 @@ const (
 	vendorContentRoute         = "handoff_vendor_content"
 	vendorContentMaxRequestURI = 8 * 1024
 	vendorReservedPath         = "/.well-known/odo"
+	// vendorContentMaxRequestBody bounds request bodies forwarded upstream.
+	vendorContentMaxRequestBody = 10 << 20
 )
+
+// vendorContentMethods are the methods delivery can carry. The resource's
+// http_methods still decide, per request, which of them are authorized.
+var vendorContentMethods = map[string]bool{
+	http.MethodGet: true, http.MethodHead: true, http.MethodPost: true,
+	http.MethodPut: true, http.MethodPatch: true, http.MethodDelete: true,
+}
+
+// vendorBodyHeaders describe a forwarded request body.
+var vendorBodyHeaders = []string{"Content-Type"}
 
 // Only these browser request headers are sent upstream. Cookies, Authorization,
 // Forwarded/X-Forwarded-*, hop-by-hop and all other headers are never copied.
@@ -57,19 +70,31 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusServiceUnavailable, "vendor delivery is unavailable")
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
+	if !vendorContentMethods[r.Method] {
+		w.Header().Set("Allow", "GET, HEAD, POST, PUT, PATCH, DELETE")
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	safe := r.Method == http.MethodGet || r.Method == http.MethodHead
 	// GET/HEAD bodies are a smuggling and ambiguity vector; reject them.
-	if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+	if safe && (r.ContentLength != 0 || len(r.TransferEncoding) != 0) {
 		writeError(w, http.StatusBadRequest, "request body is not allowed")
 		return
 	}
+	// Every proxy host is same-site with every other one, so the SameSite=Lax
+	// grant cookie alone does not stop one vendor's page from posting to
+	// another. Unsafe methods must come from this exact proxy origin.
 	authority := h.vendorContentAuthority(r)
 	if authority == "" {
 		writeError(w, http.StatusMisdirectedRequest, "request authority is not admitted")
+		return
+	}
+	if !safe && !h.vendorSameOriginRequestFor(r, authority) {
+		writeError(w, http.StatusForbidden, "request origin is not allowed")
+		return
+	}
+	if !safe && r.ContentLength > vendorContentMaxRequestBody {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
 		return
 	}
 	if len(r.RequestURI) > vendorContentMaxRequestURI {
@@ -106,10 +131,28 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "authentication handoff required")
 		return
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
+	var requestBody io.Reader
+	if !safe {
+		requestBody = http.MaxBytesReader(w, r.Body, vendorContentMaxRequestBody)
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), requestBody)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "request target is invalid")
 		return
+	}
+	if !safe {
+		upstream.ContentLength = r.ContentLength
+		if r.ContentLength < 0 {
+			upstream.ContentLength = -1
+		}
+		for _, name := range vendorBodyHeaders {
+			for _, value := range r.Header.Values(name) {
+				upstream.Header.Add(name, value)
+			}
+		}
+		// The browser's origin was verified as this proxy host; present the
+		// equivalent upstream origin so vendor CSRF checks keep working.
+		upstream.Header.Set("Origin", "https://"+mapping.Hostname)
 	}
 	for _, name := range vendorRequestHeaders {
 		for _, value := range r.Header.Values(name) {
@@ -149,8 +192,12 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	// Decide representability before cookie storage: a redirect Odo refuses to
 	// deliver must leave no vendor cookie behind, in the browser or the jar.
 	var location string
+	var hosts map[string]string
+	if isVendorRedirect(response.StatusCode) || rewritableHTMLResponse(response) {
+		hosts = h.rewriteHosts(target, mapping.Hostname, authority)
+	}
 	if isVendorRedirect(response.StatusCode) {
-		next, ok := vendorRedirectLocation(target, mapping.Hostname, authority, response.Header.Get("Location"))
+		next, ok := vendorRedirectLocationHosts(target, hosts, response.Header.Get("Location"))
 		if !ok {
 			// Cross-host, downgraded or malformed redirects cannot be represented
 			// on this proxy hostname; never follow or expose them.
@@ -181,7 +228,7 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	}
 	// Read and possibly rewrite before any header is written, so a body read
 	// failure can still fail closed.
-	body, rewritten, mayRewrite, err := sameHostHTMLBody(r, response, mapping.Hostname, authority)
+	body, rewritten, mayRewrite, err := hostsHTMLBody(r, response, hosts)
 	if err != nil {
 		h.vendorDeliveryError(w, r, err, "fetch")
 		return
@@ -212,9 +259,22 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	headers.Set("X-Content-Type-Options", "nosniff")
 	renew()
 	w.WriteHeader(response.StatusCode)
-	if r.Method == http.MethodGet {
+	if r.Method != http.MethodHead {
 		_, _ = io.Copy(w, body)
 	}
+}
+
+// vendorSameOriginRequestFor accepts an unsafe-method request only when the
+// browser says it came from this same proxy origin. Fetch metadata decides when
+// present (form posts from no-referrer pages carry Origin: null, so Origin
+// alone cannot); otherwise Origin must name this exact authority. Requests with
+// neither (old browsers, non-browser clients) are refused.
+func (h *handoffSecurity) vendorSameOriginRequestFor(r *http.Request, authority string) bool {
+	if sites := r.Header.Values("Sec-Fetch-Site"); len(sites) > 0 {
+		return len(sites) == 1 && sites[0] == "same-origin"
+	}
+	origins := r.Header.Values("Origin")
+	return len(origins) == 1 && origins[0] == "https://"+authority
 }
 
 // rewritableHTMLResponse reports whether a response is a complete,
@@ -240,11 +300,11 @@ const vendorHTMLRewriteMaxBytes = 2 << 20
 // proxy.RewriteSameHostHTML and, if that changed anything, returns the
 // rewritten bytes. Everything else (ranges, compressed, binary, oversized or
 // unchanged documents) is forwarded byte-for-byte with its original headers.
-func sameHostHTMLBody(r *http.Request, response *http.Response, upstreamHost, authority string) (io.Reader, []byte, bool, error) {
+func hostsHTMLBody(r *http.Request, response *http.Response, hosts map[string]string) (io.Reader, []byte, bool, error) {
 	if !rewritableHTMLResponse(response) {
 		return response.Body, nil, false, nil
 	}
-	if r.Method != http.MethodGet {
+	if r.Method == http.MethodHead {
 		return response.Body, nil, true, nil
 	}
 	buffered, err := io.ReadAll(io.LimitReader(response.Body, vendorHTMLRewriteMaxBytes+1))
@@ -254,7 +314,7 @@ func sameHostHTMLBody(r *http.Request, response *http.Response, upstreamHost, au
 	if len(buffered) > vendorHTMLRewriteMaxBytes {
 		return io.MultiReader(bytes.NewReader(buffered), response.Body), nil, true, nil
 	}
-	if out, changed := proxy.RewriteSameHostHTML(buffered, upstreamHost, authority); changed {
+	if out, changed := proxy.RewriteHostsHTML(buffered, hosts); changed {
 		return nil, out, true, nil
 	}
 	return bytes.NewReader(buffered), nil, true, nil
@@ -340,12 +400,23 @@ func isVendorRedirect(status int) bool {
 // vendorRedirectLocation represents only same-host HTTPS redirects, on this
 // proxy authority. Anything else fails closed. Fragments are dropped.
 func vendorRedirectLocation(base *url.URL, hostname, authority, raw string) (string, bool) {
+	return vendorRedirectLocationHosts(base, map[string]string{strings.ToLower(hostname): authority}, raw)
+}
+
+// vendorRedirectLocationHosts represents HTTPS redirects to any host in hosts
+// (this host and its resource's registered hosts) on that host's proxy
+// authority. Anything else fails closed. Fragments are dropped.
+func vendorRedirectLocationHosts(base *url.URL, hosts map[string]string, raw string) (string, bool) {
 	if raw == "" || len(raw) > vendorContentMaxRequestURI {
 		return "", false
 	}
 	next, err := base.Parse(raw)
 	if err != nil || next.Scheme != "https" || next.User != nil || next.Opaque != "" ||
-		!strings.EqualFold(next.Hostname(), hostname) || (next.Port() != "" && next.Port() != "443") {
+		(next.Port() != "" && next.Port() != "443") {
+		return "", false
+	}
+	authority, found := hosts[strings.ToLower(next.Hostname())]
+	if !found {
 		return "", false
 	}
 	if !vendorContentPathAllowed(&url.URL{Path: next.Path, RawPath: next.RawPath}) {
