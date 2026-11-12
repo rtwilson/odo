@@ -216,6 +216,9 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	// host-only cookie. This is Odo's own cookie; upstream Set-Cookie is never
 	// copied. Responses that fail closed below never renew.
 	renew := func() {
+		if hasCookie(r, handoffAttemptCookie) {
+			http.SetCookie(w, handoffCookie(handoffAttemptCookie, "", time.Now().Add(-time.Hour)))
+		}
 		if expires, renewed := h.state.renewGrant(grant, mapping, authority, time.Now().UTC()); renewed {
 			http.SetCookie(w, handoffCookie(vendorGrantCookie, grant, expires))
 		}
@@ -320,22 +323,21 @@ func hostsHTMLBody(r *http.Request, response *http.Response, hosts map[string]st
 	return bytes.NewReader(buffered), nil, true, nil
 }
 
-// restartHandoff sends a top-level GET navigation that lacks a live grant to
-// central /launch with the trusted upstream target, so the patron re-runs the
-// normal login/confirmation handshake and returns here. The target is built
-// from the registry hostname, so this is never an open redirect. Subresource,
-// XHR and HEAD requests keep their 401 and are never redirected.
+// restartHandoff retains the destination server-side and sends only a bounded,
+// single-use continuation to central. Non-document requests never redirect.
 func (h *handoffSecurity) restartHandoff(w http.ResponseWriter, r *http.Request, target *url.URL) bool {
 	if !isDocumentNavigation(r) {
 		return false
 	}
-	raw := url.Values{"url": {target.String()}}.Encode()
-	if len(raw) > proxy.MaxLaunchQueryBytes {
-		return false
+	if !beginHandoffAttempt(w, r) {
+		return true
 	}
-	location := url.URL{Scheme: "https", Host: h.config.CentralHostname(), Path: "/launch", RawQuery: raw}
-	// An empty body avoids reflecting the patron destination into HTML.
-	w.Header().Set("Location", location.String())
+	location, err := h.navigationStart(target.String())
+	if err != nil {
+		h.server.internalError(w, r, err)
+		return true
+	}
+	w.Header().Set("Location", location)
 	w.WriteHeader(http.StatusSeeOther)
 	return true
 }

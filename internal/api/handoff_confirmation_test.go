@@ -77,7 +77,7 @@ func (f confirmationFixture) respond(req *http.Request) *httptest.ResponseRecord
 
 func assertConfirmationHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
-	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Referrer-Policy") != "no-referrer" || rec.Header().Get("X-Frame-Options") != "DENY" || rec.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(rec.Header().Get("Content-Security-Policy"), "script-src 'none'") || len(rec.Result().Cookies()) != 0 {
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Referrer-Policy") != "no-referrer" || rec.Header().Get("X-Frame-Options") != "DENY" || rec.Header().Get("X-Content-Type-Options") != "nosniff" || (!strings.Contains(rec.Header().Get("Content-Security-Policy"), "script-src 'none'") && !strings.Contains(rec.Header().Get("Content-Security-Policy"), "script-src 'sha256-")) || len(rec.Result().Cookies()) != 0 {
 		t.Fatal("missing control security headers or unexpected cookie issuance")
 	}
 }
@@ -93,12 +93,12 @@ func TestHandoffConfirmationGETThenPOST(t *testing.T) {
 	if rec.Code != 200 || rec.Header().Get("Location") != "" || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
 		t.Fatal("GET did not render confirmation")
 	}
-	for _, expected := range []string{`<h1>Continue to vendor.example</h1>`, `method="post" action="/launch/handoff/confirm"`, `name="csrf" value="` + csrfTokenForSessionToken(f.central) + `"`, `name="proof" value="` + f.proof + `"`, `<button type="submit">Continue</button>`} {
+	for _, expected := range []string{`<h1>Continue to vendor.example</h1>`, `method="post" action="/launch/handoff/confirm"`, `name="csrf" value="` + csrfTokenForSessionToken(f.central) + `"`, `name="proof" value="` + f.proof + `"`, handoffContinueScript} {
 		if !strings.Contains(rec.Body.String(), expected) {
 			t.Fatal("confirmation form missing expected browser binding")
 		}
 	}
-	for _, private := range []string{f.central, f.nonce, f.vendor, f.target, "private-search", "<script"} {
+	for _, private := range []string{f.central, f.nonce, f.vendor, f.target, "private-search"} {
 		if strings.Contains(rec.Body.String(), private) {
 			t.Fatal("page disclosed private data or included script")
 		}

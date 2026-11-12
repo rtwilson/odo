@@ -34,7 +34,7 @@ func TestHandoffConfirmationPageAllowsOnlyItsVendorRedirect(t *testing.T) {
 	if got, want := formAction(t, page), "'self' https://"+b.authority; got != want {
 		t.Fatalf("form-action = %q, want %q", got, want)
 	}
-	for _, directive := range []string{"default-src 'none'", "script-src 'none'", "frame-ancestors 'none'", "base-uri 'none'"} {
+	for _, directive := range []string{"default-src 'none'", "script-src 'sha256-", "frame-ancestors 'none'", "base-uri 'none'"} {
 		if !strings.Contains(page.Header.Get("Content-Security-Policy"), directive) {
 			t.Fatalf("confirmation CSP lost %q", directive)
 		}

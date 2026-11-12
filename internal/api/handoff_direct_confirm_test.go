@@ -4,7 +4,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 )
 
@@ -44,17 +43,15 @@ func (b handoffBrowser) confirmationFor(t *testing.T, site string) *http.Respons
 	return b.navigate(t, prepared.Header.Get("Location"), "same-site")
 }
 
-func TestSameOriginLaunchSkipsConfirmationForm(t *testing.T) {
+func TestSameOriginLaunchRequiresAutomaticCSRFPost(t *testing.T) {
 	b := newHandoffBrowser(t, true, true)
-	confirmed := b.confirmationFor(t, "same-origin")
-	location := confirmed.Header.Get("Location")
-	if confirmed.StatusCode != http.StatusSeeOther || !strings.HasPrefix(location, "https://"+b.authority+handoffVendorPath+"?ticket=") {
-		t.Fatalf("same-origin launch was not confirmed directly: %d %q", confirmed.StatusCode, location)
+	page := b.confirmationFor(t, "same-origin")
+	if page.StatusCode != http.StatusOK || page.Header.Get("Location") != "" || len(b.h.state.tickets) != 0 {
+		t.Fatal("GET must render the automatic page without confirming")
 	}
-	b.finish(t, location)
 }
 
-func TestOtherLaunchOriginsKeepConfirmationForm(t *testing.T) {
+func TestOtherLaunchOriginsRenderAutomaticPage(t *testing.T) {
 	// Proxy hosts are same-site with central, so "same-site" covers vendor
 	// pages and vendor scripts; they must not skip the central action.
 	for _, site := range []string{"cross-site", "same-site", "none", ""} {

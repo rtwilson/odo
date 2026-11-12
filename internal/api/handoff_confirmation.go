@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
@@ -34,7 +36,7 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if r.URL.Path != handoffConfirmPath || r.URL.EscapedPath() != handoffConfirmPath {
-		writeError(w, http.StatusNotFound, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -53,17 +55,17 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 	}
 	token, proof := fields.Get("handoff"), fields.Get("proof")
 	if !validLaunchToken(token) || !validLaunchToken(proof) {
-		writeError(w, http.StatusNotFound, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 		return
 	}
 	central, ok := uniqueConfirmationCookie(r, "__Host-odo_session")
 	if !ok || len(central) > maxHandoffSessionFieldBytes || local.SessionIDFromToken(central) == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login_required", "login_url": "/login"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login_required", "login_url": "/login", "message": "Authentication could not complete. Allow cookies and sign in again from Resources."})
 		return
 	}
 	nonce, ok := uniqueConfirmationCookie(r, handoffNonceCookie)
 	if !ok || !validLaunchToken(nonce) {
-		writeError(w, http.StatusNotFound, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 		return
 	}
 	csrf := csrfTokenForSessionToken(central)
@@ -76,14 +78,14 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		h.confirmationError(w, r, err)
 		return
 	}
-	// A handoff started by a same-origin click inside Odo needs no second
-	// click. All session, nonce, proof, registry and resource checks above and
-	// in confirm still apply; only the redundant form is skipped.
-	if r.Method == http.MethodGet && !pending.directConfirm {
+	if r.Method == http.MethodGet {
 		allowHandoffFormRedirect(r, pending.binding.proxyAuthority)
+		if policy, ok := r.Context().Value(responsePolicyKey{}).(*appResponseWriter); ok {
+			sum := sha256.Sum256([]byte(handoffContinueScript))
+			policy.csp = strings.Replace(policy.csp, "script-src 'none'", "script-src 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'; connect-src 'self'", 1)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Escape every interpolated value, as in the existing server-rendered pages.
-		_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Continue to resource</title></head><body><main><h1>Continue to %s</h1><p>Continue using your Odo access.</p><form method="post" action="/launch/handoff/confirm"><input type="hidden" name="handoff" value="%s"><input type="hidden" name="proof" value="%s"><input type="hidden" name="csrf" value="%s"><button type="submit">Continue</button></form><p><a href="/resources">Cancel</a></p></main></body></html>`, html.EscapeString(pending.binding.hostname), html.EscapeString(token), html.EscapeString(proof), html.EscapeString(csrf))
+		_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Connecting to resource</title></head><body><main><h1>Continue to %s</h1><p id="status" role="status">Connecting securely…</p><form id="handoff" method="post" action="/launch/handoff/confirm" hidden><input type="hidden" name="handoff" value="%s"><input type="hidden" name="proof" value="%s"><input type="hidden" name="csrf" value="%s"></form><noscript>JavaScript is required to continue automatically. Enable it and launch the resource again.</noscript><p><a href="/resources">Return to Resources</a></p></main><script>%s</script></body></html>`, html.EscapeString(pending.binding.hostname), html.EscapeString(token), html.EscapeString(proof), html.EscapeString(csrf), handoffContinueScript)
 		return
 	}
 	// Refresh the time after live database/DNS checks. An expired/rotated proof
@@ -94,6 +96,10 @@ func (h *handoffSecurity) serveConfirmation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	location := url.URL{Scheme: "https", Host: pending.binding.proxyAuthority, Path: handoffVendorPath, RawQuery: url.Values{"ticket": {ticket}}.Encode()}
+	if r.Header.Get("Accept") == "application/json" {
+		writeJSON(w, http.StatusOK, map[string]string{"next": location.String()})
+		return
+	}
 	http.Redirect(w, r, location.String(), http.StatusSeeOther)
 }
 
@@ -169,7 +175,7 @@ func confirmationFields(w http.ResponseWriter, r *http.Request) (url.Values, int
 func (h *handoffSecurity) confirmationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errInvalidPendingHandoff), errors.Is(err, errInvalidHandoffTicket):
-		writeError(w, http.StatusNotFound, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 	case errors.Is(err, errHandoffDenied):
 		writeError(w, http.StatusForbidden, "handoff is not allowed")
 	case errors.Is(err, errHandoffTicketsFull), errors.Is(err, errPendingHandoffsFull), errors.Is(err, errHandoffGrantsFull):

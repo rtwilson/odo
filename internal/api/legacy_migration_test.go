@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/proxy"
@@ -28,12 +29,13 @@ func TestExperimentalLegacyMigrationBookmarks(t *testing.T) {
 		t.Run(bookmark, func(t *testing.T) {
 			response, body := b.request(t, "GET", "https://odo.example"+bookmark, nil)
 			location, err := url.Parse(response.Header.Get("Location"))
-			if response.StatusCode != 303 || err != nil || location.Scheme != "https" || location.Host != "odo.example" || location.Path != "/launch" || body != "" {
+			if response.StatusCode != 303 || err != nil || location.Scheme != "https" || location.Host != "odo.example" || location.Path != handoffStartPath || body != "" {
 				t.Fatalf("migration response: %d %q", response.StatusCode, response.Header.Get("Location"))
 			}
-			parsed, err := proxy.ParseLaunchQuery(location.RawQuery)
-			if err != nil || parsed.String() != target {
-				t.Fatalf("target bytes changed: %v %v", parsed, err)
+			token, valid := launchContinuationToken(location.RawQuery)
+			stored, found := b.h.server.launchContinuations.peek(token, "", time.Now())
+			if !valid || !found || stored != target {
+				t.Fatal("opaque migration changed target bytes")
 			}
 			if len(response.Cookies()) != 0 || len(b.h.state.entries) != 0 || b.h.server.sessions.Count() != 0 {
 				t.Fatal("migration created credentials or state")

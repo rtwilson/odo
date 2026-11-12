@@ -111,7 +111,11 @@ func (s *Server) continueLaunch(w http.ResponseWriter, r *http.Request) {
 	token, valid := launchContinuationToken(r.URL.RawQuery)
 	nonce, err := r.Cookie(launchBrowserCookieName(r))
 	if !valid || err != nil || !validLaunchToken(nonce.Value) {
-		writeError(w, http.StatusNotFound, "launch continuation not found")
+		if s.handoff != nil {
+			handoffNavigationFailure(w, http.StatusNotFound)
+		} else {
+			writeError(w, http.StatusNotFound, "launch continuation not found")
+		}
 		return
 	}
 	_, _, signedIn, err := s.currentUser(r)
@@ -125,7 +129,11 @@ func (s *Server) continueLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	target, found := s.launchContinuations.consume(token, nonce.Value, time.Now())
 	if !found {
-		writeError(w, http.StatusNotFound, "launch continuation not found")
+		if s.handoff != nil {
+			handoffNavigationFailure(w, http.StatusNotFound)
+		} else {
+			writeError(w, http.StatusNotFound, "launch continuation not found")
+		}
 		return
 	}
 	s.redirectLaunchTarget(w, r, target)

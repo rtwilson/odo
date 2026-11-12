@@ -229,8 +229,10 @@ func TestVendorBrowserCompatibilitySameHostSite(t *testing.T) {
 	if index.StatusCode != 200 || !bytes.Contains(body, []byte("<h1>Fake Vendor</h1>")) {
 		t.Fatalf("index: %d", index.StatusCode)
 	}
-	if len(index.Cookies()) != 0 {
-		t.Fatal("upstream Set-Cookie reached the browser")
+	for _, cookie := range index.Cookies() {
+		if cookie.Name != handoffAttemptCookie || cookie.MaxAge >= 0 {
+			t.Fatal("upstream Set-Cookie reached the browser")
+		}
 	}
 	urls := pageURLs(t, body)
 	pageURL := proxyBase + "/"

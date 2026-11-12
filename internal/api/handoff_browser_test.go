@@ -88,7 +88,7 @@ func newHandoffBrowser(t *testing.T, enabled, authenticated bool) handoffBrowser
 	client := &http.Client{Jar: jar, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Hostname() != "odo.example" {
 			for _, cookie := range r.Cookies() {
-				if cookie.Name != vendorNonceCookie && cookie.Name != vendorGrantCookie {
+				if cookie.Name != vendorNonceCookie && cookie.Name != vendorGrantCookie && cookie.Name != handoffAttemptCookie {
 					t.Error("browser sent a central cookie to vendor host")
 				}
 			}
@@ -141,6 +141,14 @@ func (b handoffBrowser) launch(t *testing.T) (*http.Response, string) {
 
 func (b handoffBrowser) ticket(t *testing.T) string {
 	t.Helper()
+	// Force the full protocol for tests requesting a fresh ticket. Live-grant
+	// short-circuit behavior is exercised separately.
+	vendorURL, _ := url.Parse("https://" + b.authority)
+	saved := findCookie(b.client.Jar.Cookies(vendorURL), vendorGrantCookie)
+	b.client.Jar.SetCookies(vendorURL, []*http.Cookie{{Name: vendorGrantCookie, Path: "/", MaxAge: -1}})
+	if saved != nil {
+		defer b.client.Jar.SetCookies(vendorURL, []*http.Cookie{handoffCookie(vendorGrantCookie, saved.Value, time.Now().Add(time.Hour))})
+	}
 	response, _ := b.launch(t)
 	if response.StatusCode != 303 {
 		t.Fatalf("launch status: %d", response.StatusCode)
@@ -197,6 +205,15 @@ func (b handoffBrowser) finish(t *testing.T, ticket string) string {
 	grant := findCookie(response.Cookies(), vendorGrantCookie)
 	if grant == nil || !grant.Secure || !grant.HttpOnly || grant.Domain != "" || grant.Path != "/" || grant.SameSite != http.SameSiteLaxMode || grant.MaxAge > int(handoffGrantTTL.Seconds()) {
 		t.Fatal("incorrect grant cookie attributes")
+	}
+	// The next hop verifies that the browser accepted the host-only grant.
+	verification := response.Header.Get("Location")
+	if !strings.HasPrefix(verification, "https://"+b.authority+handoffVendorPath+"?finish=") {
+		t.Fatal("missing grant cookie verification")
+	}
+	response, _ = b.request(t, "GET", verification, nil)
+	if response.StatusCode != 303 {
+		t.Fatal("grant cookie verification failed")
 	}
 	// Redemption removes the one-use ticket and continues to the stored target
 	// on this same proxy host; it never names another host.
@@ -285,9 +302,11 @@ func TestExperimentalHandoffAdmissionAndIsolation(t *testing.T) {
 		"/admin": 303, "/login": 303, "/logout": 303, "/api/v1": 303, "/resources": 303, "/launch": 303,
 		"/.well-known/odo/prepare": 400, "/.well-known/odo/%72edeem": 400,
 	} {
+		vendorURL, _ := url.Parse("https://" + b.authority)
+		b.client.Jar.SetCookies(vendorURL, []*http.Cookie{{Name: handoffAttemptCookie, Path: "/", MaxAge: -1}})
 		response, body := b.request(t, "GET", "https://"+b.authority+path, nil)
-		relaunch := "https://odo.example/launch?" + url.Values{"url": {"https://vendor.example" + path}}.Encode()
-		if response.StatusCode != want || len(response.Cookies()) != 0 || strings.Contains(body, "<html") || (want == 303 && response.Header.Get("Location") != relaunch) {
+		relaunch := "https://odo.example" + handoffStartPath + "?token="
+		if response.StatusCode != want || strings.Contains(body, "<html") || (want == 303 && !strings.HasPrefix(response.Header.Get("Location"), relaunch)) {
 			t.Fatalf("%s: vendor host reached central application or another endpoint (%d)", path, response.StatusCode)
 		}
 	}

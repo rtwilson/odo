@@ -71,6 +71,16 @@ Use canonical registered labels initially. A mapping identity is the existing
 Bind state to the full proxy authority as well, so deployment-name changes do
 not reinterpret an old handoff. Registry membership never grants access.
 
+## Current automatic browser continuation
+
+The manual-confirmation checkpoint below records the original protocol design.
+[Automatic handoff](automatic-handoff.md) now supersedes its requirement for a
+Continue click: GET renders a CSP-hashed first-party script and hidden form;
+the script sends the same Origin/CSRF-protected POST. GET itself cannot confirm.
+The return proof, browser nonce, session binding, single-use ticket and live
+resource checks remain. Opaque restart and grant-cookie verification controls
+are described in that document. Development/test-only restrictions remain.
+
 ## HTTP/browser protocol review checkpoint
 
 This revision replaces automatic GET confirmation with a central confirmation

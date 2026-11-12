@@ -61,10 +61,6 @@ type pendingHandoff struct {
 	created            time.Time
 	expires            time.Time
 	parentExpires      time.Time
-	// directConfirm records that the patron started this handoff with a
-	// same-origin navigation inside Odo, which is itself the explicit central
-	// action the confirmation form otherwise collects.
-	directConfirm bool
 }
 
 type handoffTicket struct {
@@ -175,21 +171,6 @@ func (s *pendingHandoffs) create(binding handoffBinding, target, resourceID, cen
 	}
 	s.entries[key] = pendingHandoff{binding: binding, centralNonceHash: local.HashToken(centralNonce), target: parsed.String(), resourceID: resourceID, created: now, expires: expires, parentExpires: parentExpires}
 	return token, nil
-}
-
-// allowDirectConfirm marks a freshly created pending handoff as started by a
-// same-origin central navigation. It never extends lifetimes or changes bindings.
-func (s *pendingHandoffs) allowDirectConfirm(token string) {
-	if !validLaunchToken(token) {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := local.HashToken(token)
-	if pending, found := s.entries[key]; found {
-		pending.directConfirm = true
-		s.entries[key] = pending
-	}
 }
 
 // inspect is non-consuming and returns a value copy, not mutable store state.

@@ -78,11 +78,15 @@ func (h *handoffSecurity) serveVendor(w http.ResponseWriter, r *http.Request) {
 		h.redeemBrowser(w, r, mapping, authority, values[0])
 		return
 	}
+	if values, ok := fields["finish"]; ok && len(values) == 1 && validLaunchToken(values[0]) {
+		h.finishNavigation(w, r, mapping, authority, values[0])
+		return
+	}
 	if values, ok := fields["sibling"]; ok && len(values) == 1 && validLaunchToken(values[0]) {
 		h.redeemSiblingBrowser(w, r, authority, values[0])
 		return
 	}
-	writeError(w, 404, "handoff not found")
+	handoffNavigationFailure(w, http.StatusNotFound)
 }
 
 func (h *handoffSecurity) prepareBrowser(w http.ResponseWriter, r *http.Request, mapping db.ProxyHostname, authority, token string) {
@@ -92,7 +96,7 @@ func (h *handoffSecurity) prepareBrowser(w http.ResponseWriter, r *http.Request,
 	pending, found := h.state.liveEntry(local.HashToken(token), now)
 	h.state.mu.Unlock()
 	if !found || pending.binding.hostname != mapping.Hostname || pending.binding.label != mapping.Label || pending.binding.proxyAuthority != authority {
-		writeError(w, 404, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 		return
 	}
 	if _, err := h.parent(pending.binding, now); err != nil {
@@ -102,6 +106,20 @@ func (h *handoffSecurity) prepareBrowser(w http.ResponseWriter, r *http.Request,
 	if _, err := h.target(r.Context(), pending.binding, pending.target, "GET", pending.resourceID); err != nil {
 		h.confirmationError(w, r, err)
 		return
+	}
+	// Central cannot read a host-only vendor cookie. Check it here and skip
+	// proof/ticket issuance only for the same live central parent and target.
+	if grant, unique := uniqueConfirmationCookie(r, vendorGrantCookie); unique {
+		auth, err := h.authorizeGrant(r.Context(), grant, authority, pending.target, "GET", now)
+		if err == nil && auth.parentSessionID == pending.binding.parentSessionID && auth.parentSessionHash == pending.binding.parentSessionHash {
+			base, _ := url.Parse(pending.target)
+			if next, ok := vendorRedirectLocation(base, mapping.Hostname, authority, pending.target); ok {
+				h.discardPending(token)
+				w.Header().Set("Location", next)
+				w.WriteHeader(http.StatusSeeOther)
+				return
+			}
+		}
 	}
 	nonce, fresh, err := browserHandoffNonce(r, vendorNonceCookie)
 	if err != nil {
@@ -123,12 +141,12 @@ func (h *handoffSecurity) prepareBrowser(w http.ResponseWriter, r *http.Request,
 func (h *handoffSecurity) redeemBrowser(w http.ResponseWriter, r *http.Request, mapping db.ProxyHostname, authority, token string) {
 	nonce, ok := uniqueConfirmationCookie(r, vendorNonceCookie)
 	if !ok || !validLaunchToken(nonce) {
-		writeError(w, 404, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 		return
 	}
 	ticket, found := h.state.inspectTicket(token, mapping, authority, nonce, time.Now().UTC())
 	if !found {
-		writeError(w, 404, "handoff not found")
+		handoffNavigationFailure(w, http.StatusNotFound)
 		return
 	}
 	if _, err := h.parent(ticket.binding, time.Now().UTC()); err != nil {
@@ -164,8 +182,7 @@ func (h *handoffSecurity) redeemBrowser(w http.ResponseWriter, r *http.Request, 
 	// Walk the browser through the resource's other registered hosts first,
 	// so their assets and links work without another confirmation.
 	location = h.siblingChain(grantToken, ticket.resourceID, mapping.Hostname, location, time.Now().UTC())
-	w.Header().Set("Location", location)
-	w.WriteHeader(http.StatusSeeOther)
+	h.verifyGrantRedirect(w, r, authority, grantToken, location)
 }
 
 func (h *handoffSecurity) complete(w http.ResponseWriter, r *http.Request, mapping db.ProxyHostname, authority string) {

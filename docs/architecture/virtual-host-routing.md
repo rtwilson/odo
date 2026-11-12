@@ -291,7 +291,8 @@ Inputs permit only the documented fields, reject duplicate keys and POST query
 strings, and cap form bodies at 4 KiB. POST accepts URL-encoded UTF-8 forms only;
 missing/bad CSRF is 403 and receives no header-based fallback. No cookies are
 issued or cleared. Controls use fixed log labels, no-store/no-referrer, a
-script-free CSP and frame denial on successes and failures. Generic failures do
+a restrictive CSP and frame denial on successes and failures; only the
+automatic confirmation page permits its exact static script hash. Generic failures do
 not log or expose proofs, tokens or targets.
 
 ## Experimental runtime and trust boundary
@@ -509,9 +510,9 @@ Re-handoff: a top-level `GET` document navigation (`Sec-Fetch-Dest`/`Mode`
 document/navigate or absent, `Accept` HTML or absent) that has no grant cookie,
 or whose grant the coordinator rejects as unknown, expired or bound to an
 invalid parent session, receives a body-less 303 to central
-`/launch?url=<trusted upstream target>`. The target is built from the registry
-hostname, so this is never an open redirect. The patron repeats the normal
-login (if needed) and explicit central confirmation, and redemption returns
+`/launch/handoff/start?token=<opaque>`. The target is built from the registry
+hostname and retained in bounded server memory. The patron repeats login only
+if needed; the central page confirms automatically, and redemption returns
 them to the same path and query. The vendor jar survives because jar lifetime
 follows patron inactivity, not the grant. Subresource, `fetch`/XHR, `HEAD`,
 duplicate-grant-cookie and policy-denied requests are never redirected; they keep
@@ -532,8 +533,7 @@ Known limits: only same-host absolute URLs in HTML attributes are rewritten
 (see [browser compatibility](#browser-compatibility)); cross-host links, assets,
 frames and redirects, and URLs built by JavaScript or CSS, leave the proxy host
 and do not work.
-After 30 minutes of inactivity, a re-handoff requires the patron to confirm
-again at central. A stolen grant cookie can be kept alive by use until the
+After 30 minutes of inactivity, a re-handoff automatically repeats the protected central handoff when login remains valid. A stolen grant cookie can be kept alive by use until the
 parent's absolute expiry unless the parent session ends. There is no cookie
 persistence and no multi-instance state.
 
@@ -645,14 +645,14 @@ Added 2026-11-11 after local testing with real vendors showed the confirmation
 form, same-host-only delivery and GET-only methods made most vendor sites
 unusable.
 
-**Direct launch.** `/launch` records whether it was a top-level navigation the
-browser labels `Sec-Fetch-Site: same-origin` (a click in Odo's resource list,
-or the login form continuing a launch). For those handoffs the central
-confirmation `GET` performs the confirmation transition itself and redirects
-to the ticket, with every session, nonce, proof, registry and resource check
-unchanged. Proxy hosts are same-site with central but never same-origin, so
-vendor pages and scripts cannot claim this; cross-site links, bookmarks
-(`none`) and re-handoffs after inactivity still show the form.
+**Automatic launch.** All normal navigations now use a first-party central
+page that automatically performs the existing Origin/CSRF-protected confirmation
+POST, without a Continue click. The previous same-origin-only GET shortcut is
+removed. A valid host grant for the same central parent skips proof/ticket
+issuance at vendor preflight. Opaque restart tokens, grant-cookie verification
+and bounded failed-return attempts prevent silent authentication loops. See
+[automatic handoff](automatic-handoff.md) for the current sequence, controls,
+coverage and limitations.
 
 **Same-resource host family.** A resource's family is the set of registered
 hostnames whose current domain policy resolves to that resource as `proxy`

@@ -668,7 +668,7 @@ func navigation(r *http.Request) {
 }
 
 func TestVendorDeliveryRestartsHandoff(t *testing.T) {
-	relaunch := "https://odo.example/launch?" + url.Values{"url": {"https://vendor.example/private?search=private-search"}}.Encode()
+	relaunch := "https://odo.example" + handoffStartPath + "?token="
 	for _, kind := range []string{"missing", "invalid", "expired", "logout"} {
 		t.Run(kind, func(t *testing.T) {
 			d := newDeliveryHarness(t)
@@ -689,7 +689,7 @@ func TestVendorDeliveryRestartsHandoff(t *testing.T) {
 				requestLogout(d.h.server, &http.Cookie{Name: "__Host-odo_session", Value: d.central})
 			}
 			rec := d.serve("GET", "/private?search=private-search", grant, navigation)
-			if rec.Code != 303 || rec.Header().Get("Location") != relaunch || rec.Body.Len() != 0 || rec.Header().Get("Cache-Control") != "no-store" {
+			if rec.Code != 303 || !strings.HasPrefix(rec.Header().Get("Location"), relaunch) || rec.Body.Len() != 0 || rec.Header().Get("Cache-Control") != "no-store" {
 				t.Fatalf("navigation did not restart the handoff: %d %q", rec.Code, rec.Header().Get("Location"))
 			}
 			if d.vendor.hits.Load() != 0 {
@@ -736,8 +736,8 @@ func TestVendorDeliveryBrowserReHandoffKeepsVendorSession(t *testing.T) {
 	visit := func(path string) (*http.Response, string) {
 		d.target = "https://vendor.example" + path
 		response, _ := d.request(t, "GET", "https://"+d.authority+path, nil)
-		relaunch := "https://odo.example/launch?" + url.Values{"url": {d.target}}.Encode()
-		if response.StatusCode != 303 || response.Header.Get("Location") != relaunch {
+		relaunch := "https://odo.example" + handoffStartPath + "?token="
+		if response.StatusCode != 303 || !strings.HasPrefix(response.Header.Get("Location"), relaunch) {
 			t.Fatalf("%s: no re-handoff (%d)", path, response.StatusCode)
 		}
 		d.finish(t, d.ticket(t))

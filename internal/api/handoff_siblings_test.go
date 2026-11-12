@@ -69,6 +69,7 @@ func TestSameResourceHostsShareOneHandoff(t *testing.T) {
 
 	d.target = "https://vendor.example/"
 	redeemed, _ := d.request(t, "GET", d.ticket(t), nil)
+	redeemed, _ = d.request(t, "GET", redeemed.Header.Get("Location"), nil)
 	hop := redeemed.Header.Get("Location")
 	if redeemed.StatusCode != http.StatusSeeOther || !strings.HasPrefix(hop, "https://"+cdnAuthority+handoffVendorPath+"?sibling=") {
 		t.Fatalf("redemption did not continue to the sibling host: %d %q", redeemed.StatusCode, hop)
@@ -79,10 +80,11 @@ func TestSameResourceHostsShareOneHandoff(t *testing.T) {
 		}
 	}
 	sibling, _ := d.request(t, "GET", hop, nil)
+	cdnGrant := findCookie(sibling.Cookies(), vendorGrantCookie)
+	sibling, _ = d.request(t, "GET", sibling.Header.Get("Location"), nil)
 	if sibling.StatusCode != http.StatusSeeOther || sibling.Header.Get("Location") != "https://"+d.authority+"/" {
 		t.Fatalf("sibling hop did not return to the target: %d %q", sibling.StatusCode, sibling.Header.Get("Location"))
 	}
-	cdnGrant := findCookie(sibling.Cookies(), vendorGrantCookie)
 	if cdnGrant == nil || !cdnGrant.Secure || !cdnGrant.HttpOnly || cdnGrant.Domain != "" {
 		t.Fatal("sibling host did not receive a host-only grant")
 	}
@@ -127,6 +129,7 @@ func TestOtherResourceHostsGetNoSiblingGrant(t *testing.T) {
 	}
 	d.target = "https://vendor.example/"
 	redeemed, _ := d.request(t, "GET", d.ticket(t), nil)
+	redeemed, _ = d.request(t, "GET", redeemed.Header.Get("Location"), nil)
 	if location := redeemed.Header.Get("Location"); location != "https://"+d.authority+"/" {
 		t.Fatalf("other resource's host joined the handoff: %q", location)
 	}
