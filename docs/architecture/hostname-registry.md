@@ -104,6 +104,15 @@ config import also runs it with no approved hosts, because saving an exact
 by subdomain rules still need `approved_hosts`. An enrollment failure does not
 undo the saved resource; it logs a warning and the reconcile API reports
 details.
+
+In handoff mode, a launch whose target passes resource policy but has no
+registry entry is refused with 403 `{"error":"launch target is not allowed",
+"reason":"hostname_not_registered"}` and access log
+`denial_reason=hostname_not_registered`. The common case is an entry URL whose
+host is covered only by a subdomain rule, such as `https://library.example.edu`
+under a `library.example.edu` subdomain rule. Fix it by adding an exact
+`proxy` rule for the host, or by reconciling with that host in
+`approved_hosts`. Launch never enrolls hosts itself.
 It enrolls active exact proxy domains and explicitly approved
 concrete hosts covered by current domain policy. Subdomain rules do not trigger
 host discovery or enroll their base automatically. Global domain-rule precedence

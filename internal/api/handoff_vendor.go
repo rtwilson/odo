@@ -181,7 +181,7 @@ func (h *handoffSecurity) redeemBrowser(w http.ResponseWriter, r *http.Request, 
 	}
 	// Walk the browser through the resource's other registered hosts first,
 	// so their assets and links work without another confirmation.
-	location = h.siblingChain(grantToken, ticket.resourceID, mapping.Hostname, location, time.Now().UTC())
+	location = h.siblingChain(r.Context(), grantToken, ticket.resourceID, mapping.Hostname, location, time.Now().UTC())
 	h.verifyGrantRedirect(w, r, authority, grantToken, location)
 }
 

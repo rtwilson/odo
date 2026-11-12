@@ -584,6 +584,23 @@ func (s *pendingHandoffs) inspectSibling(token string, mapping db.ProxyHostname,
 	return sibling, true
 }
 
+// discardSibling consumes a sibling hop without issuing a grant and returns
+// the hop's stored continuation. Replays find nothing.
+func (s *pendingHandoffs) discardSibling(token string, binding handoffBinding, now time.Time) (string, bool) {
+	if !validLaunchToken(token) {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := local.HashToken(token)
+	sibling, found := s.siblings[key]
+	if !found || !now.Before(sibling.expires) || sibling.binding != binding {
+		return "", false
+	}
+	delete(s.siblings, key)
+	return sibling.next, true
+}
+
 // redeemSibling consumes a sibling hop and issues its host-only grant in the
 // same family. Replays find nothing.
 func (s *pendingHandoffs) redeemSibling(token string, binding handoffBinding, now time.Time) (string, handoffGrant, error) {

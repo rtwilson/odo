@@ -326,22 +326,38 @@ func (s *Server) proxyRawURL(rawURL string) resources.TestResult {
 }
 
 func (s *Server) proxyTarget(ctx context.Context, rawURL string) (*url.URL, resources.TestResult) {
+	target, result, _ := s.classifiedProxyTarget(ctx, rawURL)
+	return target, result
+}
+
+// classifiedProxyTarget is proxyTarget plus a launchDenied* code naming the
+// check that refused the target ("" when allowed or on internal error).
+func (s *Server) classifiedProxyTarget(ctx context.Context, rawURL string) (*url.URL, resources.TestResult, string) {
 	target, err := proxy.ValidateTargetURL(ctx, rawURL, s.ipLookup)
 	if err != nil {
-		return nil, resources.TestResult{Allowed: false, Reason: err.Error(), SafetyReason: proxy.SafetyReason(err)}
+		reason := launchDeniedInvalid
+		if proxy.SafetyReason(err) != "" {
+			reason = launchDeniedUnsafe
+		} else if proxy.IsTargetResolutionError(err) {
+			reason = launchDeniedUnresolved
+		}
+		return nil, resources.TestResult{Allowed: false, Reason: err.Error(), SafetyReason: proxy.SafetyReason(err)}, reason
 	}
 	items, err := s.store.ListResources()
 	if err != nil {
-		return nil, resources.TestResult{Allowed: false, Reason: "resource lookup failed", InternalError: err}
+		return nil, resources.TestResult{Allowed: false, Reason: "resource lookup failed", InternalError: err}, ""
 	}
 	result := resources.TestURL(target.String(), items)
 	if !result.Allowed {
-		return nil, result
+		if result.Blocked {
+			return nil, result, launchDeniedBlocked
+		}
+		return nil, result, launchDeniedNoResource
 	}
 	if result.Action != "proxy" {
 		result.Allowed = false
 		result.Reason = "not_proxyable"
-		return nil, result
+		return nil, result, launchDeniedNotProxyable
 	}
-	return target, result
+	return target, result, ""
 }

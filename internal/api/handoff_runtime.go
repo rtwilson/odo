@@ -105,8 +105,17 @@ func (h *handoffSecurity) launch(w http.ResponseWriter, r *http.Request, target 
 		return
 	}
 	mapping, err := h.upstreamMapping(target.Hostname())
-	if err != nil {
-		writeError(w, 403, "launch target is not allowed")
+	switch {
+	case errors.Is(err, errHostnameNotRegistered):
+		// Policy allows the host, but no administrator has enrolled a proxy
+		// hostname for it (for example a host covered only by a subdomain rule).
+		denyLaunch(w, r, launchDeniedUnregistered)
+		return
+	case errors.Is(err, errHandoffDenied):
+		denyLaunch(w, r, launchDeniedMappingInvalid)
+		return
+	case err != nil:
+		h.server.internalError(w, r, err)
 		return
 	}
 	authority := mapping.Label + "." + h.config.ProxyBaseDomain()
@@ -180,12 +189,16 @@ func (h *handoffSecurity) migrateLegacyBookmark(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "legacy target URL is invalid")
 		return
 	}
-	target, result := h.server.proxyTarget(r.Context(), target.String())
+	target, result, reason := h.server.classifiedProxyTarget(r.Context(), target.String())
 	if result.InternalError != nil {
 		h.server.internalError(w, r, result.InternalError)
 		return
 	}
-	if target == nil || !result.Allowed || !resources.MethodAllowed(result, http.MethodGet) {
+	if target != nil && result.Allowed && !resources.MethodAllowed(result, http.MethodGet) {
+		reason = launchDeniedMethod
+	}
+	if reason != "" {
+		recordDenialReason(r, reason)
 		writeError(w, http.StatusForbidden, "legacy target is not allowed")
 		return
 	}

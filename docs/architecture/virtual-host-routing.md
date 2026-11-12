@@ -10,7 +10,7 @@ virtual-host proxy mode.
 | State | Current behavior |
 | --- | --- |
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers, bounded upstream cookie jars and the live grant/snapshot cookie coordinator. |
-| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized vendor content: `GET`/`HEAD`, and same-origin `POST`/`PUT`/`PATCH`/`DELETE` when the resource allows them. Absolute URLs in HTML attributes and redirects are rewritten for the resource's own registered hosts, which receive their own grants in the same handoff ([same-resource hosts, POST and direct launch](#same-resource-hosts-post-and-direct-launch)); see also [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake; launches started inside Odo skip the confirmation form. |
+| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized vendor content: `GET`/`HEAD`, and same-origin `POST`/`PUT`/`PATCH`/`DELETE` when the resource allows them. Absolute URLs in HTML attributes and redirects are rewritten for the resource's own registered hosts, which receive their own grants in the same handoff ([same-resource hosts, POST and direct launch](#same-resource-hosts-post-and-direct-launch)); see also [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake automatically through a CSRF-protected first-party POST; a valid grant skips handoff. See [automatic handoff](automatic-handoff.md). |
 | Unsupported | JavaScript/CSS rewriting, hosts of other resources or unregistered hosts, cold hosts added after a handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
 | Production-disabled | All vendor-host delivery: startup rejects the flag outside development/test. Central path content, diagnostic body previews and missed-rewrite recovery are blocked while the experimental mode is on; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
 
@@ -489,8 +489,11 @@ Request flow on a non-central authority:
    `Content-Language`, `Last-Modified`, `ETag`, `Content-Length`,
    `Content-Encoding`, `Accept-Ranges` and `Content-Range` are copied;
    `Set-Cookie`, CSP, CORS, HSTS, `Link`, `Refresh`, `Alt-Svc` and `Location`
-   are dropped. Responses get `Cache-Control: no-store`,
-   `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. HEAD
+   are dropped. Responses get `Cache-Control: no-store` and
+   `X-Content-Type-Options: nosniff`. Relayed vendor responses get
+   `Referrer-Policy: strict-origin`; Odo's own errors, restarts and translated
+   redirects keep `no-referrer` (see [third-party assets and
+   Referer](#third-party-assets-and-referer)). HEAD
    responses carry no body. Bodies are streamed unmodified, except the
    narrow same-host HTML link rewriting described under
    [browser compatibility](#browser-compatibility).
@@ -605,8 +608,30 @@ opened it in the PDF viewer, and held only Odo's `__Host-` cookies. The
 external CDN image did not load through Odo, as expected.
 
 Vendor HTML is served without the central application's CSP, frame or
-permissions headers (it is not an Odo page), with `no-store`, `no-referrer`
-and `nosniff`. Access logs record only the route and statuses.
+permissions headers (it is not an Odo page), with `no-store`,
+`Referrer-Policy: strict-origin` and `nosniff`. Access logs record only the
+route and statuses.
+
+### Third-party assets and Referer
+
+Vendor pages often load public third-party assets directly: map tiles, fonts,
+script CDNs. Odo neither rewrites nor fetches hosts that are not registered
+hosts of the same resource, so the patron's browser requests them itself.
+Until 2026-11-12, vendor responses carried `Referrer-Policy: no-referrer`, so
+those requests had no `Referer`. Some services refuse such requests:
+OpenStreetMap's tile servers answer with HTTP 200 and an "Access blocked"
+image, so the browser shows no error and the map is blank. That is the third
+party enforcing its usage policy, not an Odo denial.
+
+Relayed vendor bytes now use `strict-origin`. Third parties receive only the
+proxy origin (for example `https://whatismyip-org.proxy.example.edu/`), never
+a path or query. HTTPS-to-HTTP requests get no `Referer` at all. The proxy
+origin does tell a third party which proxied vendor the patron is using.
+Odo never forwards the browser's `Referer` upstream, and vendor routes never
+log it. A vendor's own `<meta name="referrer">` or `referrerpolicy` attributes
+still apply, as before. Third parties that check `Referer` against the vendor's
+own domain, such as referrer-restricted map API keys, still refuse the proxy
+origin; Odo does not forge a `Referer` to get around third-party policies.
 
 Confirmed limitations (deferred, not failures of this milestone): links and
 assets on hosts that are not registered hosts of the same resource, such as a
@@ -671,6 +696,18 @@ not visit those hosts directly; Odo enforces inactivity server-side. Unlike
 the redeeming host's ticket, a sibling hop is not bound to a browser nonce: it
 is consumed by the browser's own redirect within milliseconds, so it is only
 exposed to something that can already read that browser's redirects.
+
+Before issuing hops, Odo runs each family host's live target check (resource
+policy, GET permission and DNS safety) concurrently. Hosts that fail, typically
+configured hosts that no longer exist in DNS, get no hop. A hop whose host fails
+the check later (DNS changed, or the resource was edited while the chain was
+running) is consumed without a grant and continues to the next hop; the access
+log records `denial_reason=sibling_host_unavailable`. A parent-session failure
+still ends the chain. Before 2026-11-12, one unresolvable family host ended the
+navigation with 403 "handoff is not allowed" after the redeeming host's grant
+had already been issued, so an immediate retry appeared to work. Dead hosts
+still count toward the six-host cap, because family selection happens before
+the check; remove them from the resource so live hosts are not crowded out.
 
 HTML attribute rewriting and redirect translation use the family map: URLs for
 the request's host and its family hosts become their proxy authorities.

@@ -389,7 +389,7 @@ func TestVendorBrowserCompatibilitySameHostSite(t *testing.T) {
 				t.Fatalf("central %s applied to vendor HTML", name)
 			}
 		}
-		if index.Header.Get("Cache-Control") != "no-store" || index.Header.Get("Referrer-Policy") != "no-referrer" || index.Header.Get("X-Content-Type-Options") != "nosniff" {
+		if index.Header.Get("Cache-Control") != "no-store" || index.Header.Get("Referrer-Policy") != "strict-origin" || index.Header.Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatal("vendor delivery headers missing")
 		}
 	})

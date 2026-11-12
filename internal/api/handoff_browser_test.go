@@ -128,7 +128,11 @@ func (b handoffBrowser) request(t *testing.T, method, target string, fields url.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Referrer-Policy") != "no-referrer" {
+	// Central and handoff control responses never send a Referer. Relayed
+	// vendor content may use the origin-only vendor policy instead.
+	policy := response.Header.Get("Referrer-Policy")
+	vendorContent := req.URL.Hostname() != "odo.example" && req.URL.Path != handoffVendorPath
+	if response.Header.Get("Cache-Control") != "no-store" || (policy != "no-referrer" && !(vendorContent && policy == vendorReferrerPolicy)) {
 		t.Fatal("missing handoff privacy headers")
 	}
 	return response, string(data)

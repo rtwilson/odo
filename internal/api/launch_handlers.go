@@ -5,11 +5,49 @@ import (
 	"net/url"
 	"time"
 
+	"example.org/odo/internal/accesslog"
 	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/cookiepolicy"
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 )
+
+// Launch denial reasons: a fixed vocabulary recorded as the access log
+// denial_reason. Codes never contain the target URL, its host or a resource ID.
+const (
+	launchDeniedInvalid        = "destination_invalid"
+	launchDeniedUnresolved     = "destination_unresolved"
+	launchDeniedUnsafe         = "destination_unsafe"
+	launchDeniedNoResource     = "no_resource_match"
+	launchDeniedBlocked        = "domain_blocked"
+	launchDeniedNotProxyable   = "not_proxyable"
+	launchDeniedMethod         = "method_not_allowed"
+	launchDeniedUnregistered   = "hostname_not_registered"
+	launchDeniedMappingInvalid = "hostname_mapping_invalid"
+)
+
+// launchDenialPublicReason is the coarser code returned to the browser. Safety,
+// DNS and policy outcomes share one code so an unauthenticated caller cannot use
+// /launch to learn how Odo's resolver answers for arbitrary hosts.
+func launchDenialPublicReason(reason string) string {
+	switch reason {
+	case launchDeniedMethod, launchDeniedUnregistered, launchDeniedMappingInvalid:
+		return reason
+	default:
+		return "resource_policy"
+	}
+}
+
+func recordDenialReason(r *http.Request, reason string) {
+	if metadata := accesslog.MetadataFrom(r.Context()); metadata != nil {
+		metadata.DenialReason = reason
+	}
+}
+
+func denyLaunch(w http.ResponseWriter, r *http.Request, reason string) {
+	recordDenialReason(r, reason)
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "launch target is not allowed", "reason": launchDenialPublicReason(reason)})
+}
 
 func (s *Server) launch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -30,17 +68,17 @@ func (s *Server) launch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) redirectLaunchTarget(w http.ResponseWriter, r *http.Request, rawTarget string) {
 	// Reuse the production DNS and resource checks, without issuing an upstream
 	// HTTP request or creating a vendor cookie jar or hostname mapping.
-	target, result := s.proxyTarget(r.Context(), rawTarget)
+	target, result, reason := s.classifiedProxyTarget(r.Context(), rawTarget)
 	if result.InternalError != nil {
 		s.internalError(w, r, result.InternalError)
 		return
 	}
 	if target == nil || !result.Allowed {
-		writeError(w, http.StatusForbidden, "launch target is not allowed")
+		denyLaunch(w, r, reason)
 		return
 	}
 	if !resources.MethodAllowed(result, http.MethodGet) {
-		writeError(w, http.StatusForbidden, "launch target is not allowed")
+		denyLaunch(w, r, launchDeniedMethod)
 		return
 	}
 	if s.handoff != nil {

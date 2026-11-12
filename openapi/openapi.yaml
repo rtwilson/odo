@@ -33,7 +33,15 @@ paths:
         "401":
           description: Browser login required for a non-document request. JSON contains error login_required and login_url /login.
         "403":
-          description: Target safety, resource policy, or GET permission denied.
+          description: >-
+            Target safety, resource policy, or GET permission denied. JSON contains error
+            "launch target is not allowed" and a reason code: resource_policy (DNS safety,
+            resolution or domain policy; deliberately not distinguished), method_not_allowed,
+            or, in virtual-host handoff mode, hostname_not_registered (policy allows the host
+            but no proxy hostname is enrolled) or hostname_mapping_invalid. The access log
+            denial_reason records the precise code (destination_invalid, destination_unresolved,
+            destination_unsafe, no_resource_match, domain_blocked, not_proxyable,
+            method_not_allowed, hostname_not_registered, hostname_mapping_invalid), never the target.
         "405":
           description: Only GET is supported.
         "500":

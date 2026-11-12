@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"example.org/odo/internal/proxy"
@@ -100,7 +102,7 @@ func (h *handoffSecurity) rewriteHosts(target *url.URL, hostname, authority stri
 // siblingChain issues hops for the resource's other registered hosts and
 // returns the first hop, or final when there are none. Failures fall back to
 // final: the patron still reaches the page, only without sibling grants.
-func (h *handoffSecurity) siblingChain(grantToken, resourceID, hostname, final string, now time.Time) string {
+func (h *handoffSecurity) siblingChain(ctx context.Context, grantToken, resourceID, hostname, final string, now time.Time) string {
 	grant, found := h.state.grantFamily(grantToken, now)
 	if !found {
 		return final
@@ -109,12 +111,48 @@ func (h *handoffSecurity) siblingChain(grantToken, resourceID, hostname, final s
 	if err != nil || len(hosts) == 0 {
 		return final
 	}
+	hosts = h.reachableSiblings(ctx, grant.binding, resourceID, hosts)
+	if len(hosts) == 0 {
+		return final
+	}
 	first, err := h.state.issueSiblings(grant, resourceID, hosts, final, now)
 	if err != nil {
 		return final
 	}
 	return first
 }
+
+// reachableSiblings keeps the hosts that pass the same live target check a hop
+// performs (resource policy, GET permission and DNS safety). A configured host
+// that does not resolve would otherwise cost the browser two redirects only to
+// be refused. Checks run concurrently; hostname order is preserved.
+func (h *handoffSecurity) reachableSiblings(ctx context.Context, parent handoffBinding, resourceID string, hosts []siblingHost) []siblingHost {
+	ok := make([]bool, len(hosts))
+	var wg sync.WaitGroup
+	for i, host := range hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			binding := parent
+			binding.hostname, binding.label, binding.proxyAuthority = host.mapping.Hostname, host.mapping.Label, host.authority
+			probe := (&url.URL{Scheme: "https", Host: host.mapping.Hostname, Path: "/"}).String()
+			_, err := h.target(ctx, binding, probe, http.MethodGet, resourceID)
+			ok[i] = err == nil
+		}()
+	}
+	wg.Wait()
+	kept := hosts[:0:0]
+	for i, host := range hosts {
+		if ok[i] {
+			kept = append(kept, host)
+		}
+	}
+	return kept
+}
+
+// siblingSkippedReason is the access log denial_reason for a hop whose host
+// failed its live check: the hop is dropped and navigation continues.
+const siblingSkippedReason = "sibling_host_unavailable"
 
 // redeemSiblingBrowser consumes one hop on its own host, rechecking the live
 // parent session and that this host still belongs to the resource, then sets
@@ -137,7 +175,21 @@ func (h *handoffSecurity) redeemSiblingBrowser(w http.ResponseWriter, r *http.Re
 	}
 	probe := (&url.URL{Scheme: "https", Host: mapping.Hostname, Path: "/"}).String()
 	if _, err := h.target(r.Context(), sibling.binding, probe, http.MethodGet, sibling.resourceID); err != nil {
-		h.confirmationError(w, r, err)
+		// This host alone is unavailable (it stopped resolving, or policy changed
+		// since the chain was issued). The parent is valid, so drop the hop
+		// without a grant and continue; one bad host must not strand the patron.
+		if !errors.Is(err, errHandoffDenied) {
+			h.confirmationError(w, r, err)
+			return
+		}
+		next, found := h.state.discardSibling(token, sibling.binding, now)
+		if !found {
+			writeError(w, http.StatusNotFound, "handoff not found")
+			return
+		}
+		recordDenialReason(r, siblingSkippedReason)
+		w.Header().Set("Location", next)
+		w.WriteHeader(http.StatusSeeOther)
 		return
 	}
 	grantToken, grant, err := h.state.redeemSibling(token, sibling.binding, now)

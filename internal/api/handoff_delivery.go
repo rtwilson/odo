@@ -47,6 +47,14 @@ var vendorBodyHeaders = []string{"Content-Type"}
 // Forwarded/X-Forwarded-*, hop-by-hop and all other headers are never copied.
 var vendorRequestHeaders = []string{"Accept", "Accept-Language", "User-Agent", "Range", "If-Range"}
 
+// vendorReferrerPolicy replaces the default no-referrer on relayed vendor
+// bytes only. A page's direct third-party requests (map tiles, public CDNs) then
+// carry just the proxy origin, never a path or query, and nothing on an
+// HTTPS-to-HTTP downgrade. Some third parties require a Referer and serve a
+// "blocked" response without one. Odo never forwards the browser Referer
+// upstream; its own errors, restarts and redirects keep no-referrer.
+const vendorReferrerPolicy = "strict-origin"
+
 // Only these upstream response headers reach the browser. Set-Cookie, CSP, CORS,
 // HSTS, Alt-Svc, Link, Refresh, Location (outside translated redirects) and
 // hop-by-hop headers are dropped. Cache-Control is replaced with no-store.
@@ -260,6 +268,7 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	}
 	headers.Set("Cache-Control", "no-store")
 	headers.Set("X-Content-Type-Options", "nosniff")
+	headers.Set("Referrer-Policy", vendorReferrerPolicy)
 	renew()
 	w.WriteHeader(response.StatusCode)
 	if r.Method != http.MethodHead {

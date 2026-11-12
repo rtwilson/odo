@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 )
 
 var errHandoffDenied = errors.New("handoff authorization denied")
+
+// errHostnameNotRegistered is a handoff denial for an upstream host that has
+// no proxy hostname registry entry. Launch reports it with its own reason code.
+var errHostnameNotRegistered = fmt.Errorf("%w: upstream hostname is not registered", errHandoffDenied)
 
 // The experimental runtime constructs this coordinator for control routes and
 // experimental vendor content delivery.
@@ -240,14 +245,14 @@ func (h *handoffSecurity) upstreamMapping(raw string) (db.ProxyHostname, error) 
 	// registry stores only canonical ASCII hostnames.
 	host, err := proxy.NormalizeRegistryHostname(raw)
 	if err != nil {
-		return db.ProxyHostname{}, errHandoffDenied
+		return db.ProxyHostname{}, errHostnameNotRegistered
 	}
 	record, found, err := h.server.store.LookupProxyHostnameByUpstream(host)
 	if err != nil {
 		return db.ProxyHostname{}, err
 	}
 	if !found {
-		return db.ProxyHostname{}, errHandoffDenied
+		return db.ProxyHostname{}, errHostnameNotRegistered
 	}
 	return h.mapping(record.Label + "." + h.config.ProxyBaseDomain())
 }
