@@ -96,7 +96,7 @@ func TestHostnameReconciliationAPIRequiresScopeAndCSRF(t *testing.T) {
 		{name: "write key", token: writeToken, want: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/v1/proxy-hostnames/reconcile", strings.NewReader(`{}`))
+			req := httptest.NewRequest("POST", "/api/v1/proxy-hostnames/reconcile", strings.NewReader(`{"migrate_readable":true}`))
 			if tc.token != "" {
 				req.Header.Set("Authorization", "Bearer "+tc.token)
 			}
@@ -143,6 +143,7 @@ func TestHostnameReconciliationAPIRejectsInvalidInputAndConfiguration(t *testing
 		{"unknown field", "https://odo.example", "proxy.example", `{"proxy_base":"evil.example"}`, 400},
 		{"trailing JSON", "https://odo.example", "proxy.example", `{} {}`, 400},
 		{"wrong type", "https://odo.example", "proxy.example", `{"approved_hosts":[1]}`, 400},
+		{"wrong migration type", "https://odo.example", "proxy.example", `{"migrate_readable":"true"}`, 400},
 		{"too large", "https://odo.example", "proxy.example", strings.Repeat(" ", 64<<10) + `{}`, 413},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

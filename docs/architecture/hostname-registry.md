@@ -36,16 +36,15 @@ unpadded base32 of the hostname's SHA-256 digest, 54 characters) when:
   253 characters under the configured suffix;
 - its first label is an IDN A-label (`xn--…`), which would read as a different
   punycode label once flattened (a later IDN label stays readable:
-  `www.bücher.example` becomes `www-xn--bcher-kva-example`);
-- its readable label is already held by another host, or was retired.
+  `www.bücher.example` becomes `www-xn--bcher-kva-example`).
 
-Collisions therefore never share or repoint a name. The first host enrolled
-under a readable label keeps it permanently; a later host that would produce
-the same label gets its own fallback label. Within one reconciliation batch
-hosts are processed in hostname order. If the fallback label is unavailable
-too, enrollment fails closed. Labels whose proxy FQDN would equal the central
-hostname are rejected. Arbitrary aliases are not supported; the fallback label
-is the documented form for exceptional hosts.
+Colliding enrollment is rejected: `a-b.example` and `a.b-example` cannot both
+be newly enrolled as `a-b-example`. Odo does not select a hash to hide a naming
+collision. A label that is already held by another host or permanently retired
+causes the entire enrollment/migration batch to fail without changing identities.
+The same uniqueness rules apply to the fixed-length fallback. Labels whose proxy
+FQDN would equal the central hostname are rejected. Arbitrary aliases are not
+supported; the documented fallback handles DNS length and IDN exceptions only.
 
 Admission accepts a stored mapping only if its label is either the host's
 current readable label or its fallback label, and the request authority is
@@ -59,19 +58,33 @@ Deployments that enrolled hosts before readable names keep their hashed
 labels: registration, resource saves and plain reconciliation never change an
 existing mapping. To move to readable names, an administrator calls the
 reconcile API with `{"migrate_readable":true}` (optionally with
-`approved_hosts`). In one transaction, each candidate whose readable label is
-free is relabeled and its old label is written to
-`proxy_hostname_retired_labels`; database triggers then refuse that label for
-any insert or update, so an old name can never be routed or reassigned. A host
-whose readable label is taken keeps its current label. Any error rolls back the
-whole batch, including tombstones. Repeating the migration is a no-op.
+`approved_hosts`). In one transaction, each eligible candidate is relabeled
+and its old label is written to `proxy_hostname_retired_labels`; database
+triggers then refuse that label for any insert or update, so an old name can
+never be routed or reassigned. A taken target label is an error and rolls back
+the whole batch, including tombstones. Repeating the migration is a no-op.
 
 Deployment impact: after migration, old `h-…` proxy URLs return 421, and
 outstanding pending handoffs, tickets and grants bound to the old authority are
-rejected (a page navigation restarts the handoff at central and lands on the
-readable name; subresources get 401). Patrons re-launch once; vendor cookie
-jars are unaffected. DNS and TLS must cover the proxy suffix with a wildcard
-already, so no DNS change is needed. Migrate during a quiet period.
+rejected. Old-host bookmarks do not redirect: patrons must re-launch from Odo.
+Presenting an old grant at the new hostname cannot authorize delivery: a document
+navigation restarts handoff, while a subresource receives 401. Central sessions
+remain valid; the usual automatic handoff creates a fresh host-bound grant.
+In-flight requests already authorized before migration may finish.
+
+Back up the database and migrate during a quiet period. Restart Odo after
+migration to discard all outstanding in-memory handoff state and vendor cookie
+jars; patrons may need to repeat vendor-side login. Wildcard DNS/TLS covering the
+same proxy suffix needs no change; exact-host certificates or reverse-proxy
+allowlists need the new names. No production virtual-host delivery is enabled.
+
+Migration only considers this batch's active exact-domain and explicitly
+approved concrete hosts. Inactive/removed resources retain their old registry
+names but still cannot bypass live authorization. Review the returned labels
+before updating bookmarks. Preserve the tombstone table in backups and never
+manually reassign its names. Rolling back to a pre-readable binary after
+migration is unsupported; restore the matching pre-migration database backup
+with that binary while Odo is stopped, or roll forward.
 
 `db.RegisterProxyHostname` explicitly enrolls one hostname. No HTTP handler
 calls it, and no request or vendor response automatically enrolls a host.
@@ -99,8 +112,7 @@ Resource rules must match the canonical ASCII hostname under existing resource
 matching semantics; reconciliation does not change that policy engine.
 
 Each reconciliation reads resources and inserts mappings within one transaction.
-A readable-name collision is resolved by the fallback label described above; any
-other conflict rolls back all new mappings from that batch. The returned list contains
+Any identity collision rolls back all new mappings from that batch. The returned list contains
 that batch's candidates, not every previously enrolled identity. Removed or
 disabled resources never remove stored identities.
 
@@ -127,7 +139,8 @@ except an optional literal `/`; even empty `?`/`#` suffixes are rejected.
 See [host validation](virtual-host-routing.md) for the shared configuration rules.
 
 The request body is a JSON object, at most 64 KiB, with an optional
-`approved_hosts` array of up to 100 hostnames. Unknown fields, trailing JSON,
+`approved_hosts` array of up to 100 hostnames and a `migrate_readable` boolean
+(default false). Unknown fields, trailing JSON,
 invalid hostnames, and candidates rejected by domain policy return 400.
 
 ```json
@@ -171,7 +184,5 @@ or production-readiness claim in this response.
 
 Arbitrary aliases are not supported; use the fallback label for exceptional
 hosts.
-SQLite contention may return an error;
-there is no retry policy in this foundation. Before a future rollback, stop Odo
-and back up the database. The previous binary ignores the additional table;
-retain it to preserve hostname identities if development resumes.
+SQLite contention may return an error after the configured busy timeout.
+The registry and retired-label tables must be preserved together.

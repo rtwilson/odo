@@ -89,8 +89,8 @@ func RegistryHostname(raw, centralHost, proxyBase string) (host, label string, e
 
 // FallbackRegistryLabel is the hashed label for a canonical host. It is used
 // for names that cannot be a readable DNS label (too long, or a leading IDN
-// A-label), and for a host whose readable label is already held or retired by
-// another host. It is never decoded into an upstream.
+// A-label, or an overlong proxy FQDN). Collisions never select this fallback.
+// It is never decoded into an upstream.
 func FallbackRegistryLabel(host string) string { return legacyRegistryLabel(host) }
 
 // legacyRegistryLabel is the format of the original hashed labels.

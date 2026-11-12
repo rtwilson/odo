@@ -125,9 +125,8 @@ func TestReconcileProxyHostnamesRollsBackWholeBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Hold both the readable and the fallback label, so z.example has no
-	// available identity and the batch must fail.
-	if _, err := store.db.Exec(`INSERT INTO proxy_hostnames (hostname, label) VALUES (?, ?), (?, ?)`, "other.example", collisionLabel, "other2.example", proxy.FallbackRegistryLabel("z.example")); err != nil {
+	// A taken readable label alone must fail the whole batch.
+	if _, err := store.db.Exec(`INSERT INTO proxy_hostnames (hostname, label) VALUES (?, ?)`, "other.example", collisionLabel); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ReconcileProxyHostnames("odo.example", "proxy.example", nil); err == nil {

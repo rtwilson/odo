@@ -63,7 +63,7 @@ func TestReadableMigrationPreservesUntilExplicitAndRetiresOldNames(t *testing.T)
 	}
 	// A single-label upstream can otherwise generate this exact old label. The
 	// tombstone must reject it even after schema migration/restart.
-	if reused, err := s.RegisterProxyHostname(old, "odo.example", "proxy.example"); err == nil && reused.Label == old {
+	if _, err := s.RegisterProxyHostname(old, "odo.example", "proxy.example"); err == nil {
 		t.Fatal("retired label reused by another upstream")
 	}
 	if _, err := s.db.Exec(`UPDATE proxy_hostnames SET label=? WHERE hostname=?`, old, "www.jstor.org"); err == nil {
@@ -75,36 +75,34 @@ func TestReadableMigrationPreservesUntilExplicitAndRetiresOldNames(t *testing.T)
 	}
 }
 
-// Ambiguous readable names never share a label: the first host (in hostname
-// order) takes it and the other keeps or gets its hashed fallback label.
-func TestReadableCollisionsUseFallbackLabel(t *testing.T) {
+// Real ambiguous names must roll back the whole migration, including names
+// sorted earlier in the batch, without minting fallback identities.
+func TestReadableCollisionsRejectEnrollmentAndMigration(t *testing.T) {
 	s := hostnameMigrationStore(t, "a.example", "a-b.example", "a.b-example")
-	records, err := s.MigrateProxyHostnames("odo.example", "proxy.example", nil)
+	if _, err := s.MigrateProxyHostnames("odo.example", "proxy.example", nil); err == nil {
+		t.Fatal("ambiguous names migrated")
+	}
+	for _, host := range []string{"a.example", "a-b.example", "a.b-example"} {
+		got, found, err := s.LookupProxyHostnameByUpstream(host)
+		if err != nil || !found || got.Label != legacyLabelForTest(host) {
+			t.Fatalf("partial migration: %+v %v", got, err)
+		}
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM proxy_hostname_retired_labels`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial tombstones: %d %v", count, err)
+	}
+	first, err := s.RegisterProxyHostname("x-y.example", "odo.example", "proxy.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"a-b.example": "a-b-example", "a.b-example": legacyLabelForTest("a.b-example"), "a.example": "a-example"}
-	if len(records) != len(want) {
-		t.Fatalf("records: %+v", records)
+	if _, err := s.RegisterProxyHostname("X.Y-EXAMPLE.", "odo.example", "proxy.example"); err == nil {
+		t.Fatal("colliding enrollment accepted")
 	}
-	for _, record := range records {
-		if want[record.Hostname] != record.Label {
-			t.Fatalf("%s: got %q want %q", record.Hostname, record.Label, want[record.Hostname])
-		}
-		got, found, err := s.LookupProxyHostnameByUpstream(record.Hostname)
-		if err != nil || !found || got.Label != record.Label {
-			t.Fatalf("stored mapping differs: %+v %v", got, err)
-		}
+	if _, found, err := s.LookupProxyHostnameByUpstream("x.y-example"); err != nil || found {
+		t.Fatal("collision created fallback mapping")
 	}
-	first, err := s.RegisterProxyHostname("x-y.example", "odo.example", "proxy.example")
-	if err != nil || first.Label != "x-y-example" {
-		t.Fatalf("first: %+v %v", first, err)
-	}
-	second, err := s.RegisterProxyHostname("X.Y-EXAMPLE.", "odo.example", "proxy.example")
-	if err != nil || second.Hostname != "x.y-example" || second.Label != legacyLabelForTest("x.y-example") {
-		t.Fatalf("colliding host did not get its fallback label: %+v %v", second, err)
-	}
-	got, found, err := s.LookupProxyHostname("x-y-example")
+	got, found, err := s.LookupProxyHostname(first.Label)
 	if err != nil || !found || got != first {
 		t.Fatalf("collision repointed name: %+v %v", got, err)
 	}

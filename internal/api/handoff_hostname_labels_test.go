@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -86,5 +87,73 @@ func TestReadableMigrationRetiresLegacyGrants(t *testing.T) {
 	d.securityFixture.authority = readable
 	if rec := d.serve("GET", "/private", d.securityFixture.grant(t), nil); rec.Code != http.StatusOK {
 		t.Fatalf("new grant on readable name: %d", rec.Code)
+	}
+}
+
+// Migration must also stop an in-progress protocol, not just a delivered grant.
+func TestReadableMigrationInvalidatesPendingHandoffsAndTickets(t *testing.T) {
+	f := newSecurityFixture(t)
+	legacy := proxy.FallbackRegistryLabel("vendor.example")
+	if _, err := f.control.Exec(`UPDATE proxy_hostnames SET label=? WHERE hostname=?`, legacy, "vendor.example"); err != nil {
+		t.Fatal(err)
+	}
+	f.authority = legacy + ".proxy.example"
+	pending, err := f.h.begin(context.Background(), f.central, f.authority, f.target, f.nonce, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := f.h.preflight(pending, f.authority, f.vendor, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := f.ticket(t)
+	if _, err := f.h.server.store.MigrateProxyHostnames("odo.example", "proxy.example", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.confirm(context.Background(), pending, f.central, f.authority, f.nonce, proof, f.now); err == nil {
+		t.Fatal("pending handoff survived migration")
+	}
+	for _, authority := range []string{f.authority, "vendor-example.proxy.example"} {
+		if _, err := f.h.preflight(pending, authority, f.vendor, f.now); err == nil {
+			t.Fatal("stale pending handoff prepared")
+		}
+		if _, _, err := f.h.redeem(context.Background(), ticket, authority, f.vendor, f.now); err == nil {
+			t.Fatal("stale ticket redeemed")
+		}
+	}
+}
+
+func TestLegacyRegisteredNameSupportsAutomaticBrowserHandoff(t *testing.T) {
+	d := newDeliveryHarness(t)
+	legacy := proxy.FallbackRegistryLabel("vendor.example")
+	if _, err := d.control.Exec(`UPDATE proxy_hostnames SET label=? WHERE hostname=?`, legacy, "vendor.example"); err != nil {
+		t.Fatal(err)
+	}
+	d.authority = legacy + ".proxy.example"
+	start := "https://odo.example/launch?" + url.Values{"url": {d.target}}.Encode()
+	response, body := followAutomaticHandoff(t, d.handoffBrowser, start)
+	if response.StatusCode != 200 || !strings.Contains(body, vendorBodyMarker) {
+		t.Fatalf("legacy browser flow: %d", response.StatusCode)
+	}
+	if response.Request.URL.Host != d.authority {
+		t.Fatalf("legacy flow guessed authority: %q", response.Request.URL.Host)
+	}
+}
+
+// Even a corrupted registry row using a genuinely ambiguous readable label
+// must not transfer a ticket/grant to the other upstream.
+func TestCollidingReadableNameCannotTransferAuthorization(t *testing.T) {
+	f := newSecurityFixture(t)
+	grant := f.grant(t)
+	ticket := f.ticket(t)
+	// vendor.example and vendor-example both flatten to vendor-example.
+	if _, err := f.control.Exec(`UPDATE proxy_hostnames SET hostname=? WHERE hostname=?`, "vendor-example", "vendor.example"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.h.validateGrant(context.Background(), grant, f.authority, "https://vendor-example/private", "GET", f.now); err == nil {
+		t.Fatal("grant transferred to colliding upstream")
+	}
+	if _, _, err := f.h.redeem(context.Background(), ticket, f.authority, f.vendor, f.now); err == nil {
+		t.Fatal("ticket transferred to colliding upstream")
 	}
 }

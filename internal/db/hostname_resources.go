@@ -121,15 +121,11 @@ func (s *Store) reconcileProxyHostnames(centralHost, proxyBase string, approvedH
 		if !migrate || stored == record.Label {
 			continue
 		}
-		// Migration moves a host to its readable label only when that label is
-		// free. A host whose readable label belongs to another host keeps its
-		// current (hashed) label rather than failing or sharing a name.
+		// Migration requires the default label to be free. A collision aborts
+		// the entire batch, preserving all original mappings and tombstones.
 		next, err := availableProxyLabelTx(tx, record.Hostname, record.Label)
 		if err != nil {
 			return nil, err
-		}
-		if next != record.Label {
-			continue
 		}
 		if _, err := tx.Exec(`UPDATE proxy_hostnames SET label = ? WHERE hostname = ?`, next, record.Hostname); err != nil {
 			return nil, err

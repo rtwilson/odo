@@ -253,6 +253,10 @@ paths:
               type: object
               additionalProperties: false
               properties:
+                migrate_readable:
+                  type: boolean
+                  default: false
+                  description: Explicitly migrate this batch's legacy hashed mappings to available readable labels. Retires replaced labels permanently and invalidates their handoffs and grants. Ordinary reconciliation preserves existing mappings. A collision fails and rolls back the entire batch.
                 approved_hosts:
                   type: array
                   maxItems: 100

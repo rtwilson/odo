@@ -40,10 +40,8 @@ func (s *Store) RegisterProxyHostname(raw, centralHost, proxyBase string) (Proxy
 	return ProxyHostname{Hostname: host, Label: stored}, nil
 }
 
-// enrollProxyHostnameTx returns host's existing label, or enrolls it under its
-// readable label. If another host already holds that label, or it is a retired
-// label, the host gets its hashed fallback label instead: a readable name is
-// never shared, reused or repointed. An unavailable fallback fails closed.
+// enrollProxyHostnameTx preserves an existing mapping or enrolls a new default.
+// Collisions, including retired names, fail without choosing another label.
 func enrollProxyHostnameTx(tx *sql.Tx, host, readable string) (string, error) {
 	var stored string
 	err := tx.QueryRow(`SELECT label FROM proxy_hostnames WHERE hostname = ?`, host).Scan(&stored)
@@ -63,20 +61,19 @@ func enrollProxyHostnameTx(tx *sql.Tx, host, readable string) (string, error) {
 	return label, nil
 }
 
-// availableProxyLabelTx picks readable when no other host holds it and it was
-// never retired, otherwise the host's hashed fallback under the same rule.
-func availableProxyLabelTx(tx *sql.Tx, host, readable string) (string, error) {
-	for _, label := range []string{readable, proxy.FallbackRegistryLabel(host)} {
-		var taken bool
-		if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM proxy_hostnames WHERE label = ? AND hostname != ?)
+// availableProxyLabelTx checks the default label under the transaction's write
+// lock. The unique constraint and retired-name triggers also enforce this at SQL
+// level. Never resolve a collision by silently choosing a different name.
+func availableProxyLabelTx(tx *sql.Tx, host, label string) (string, error) {
+	var taken bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM proxy_hostnames WHERE label = ? AND hostname != ?)
 OR EXISTS (SELECT 1 FROM proxy_hostname_retired_labels WHERE label = ?)`, label, host, label).Scan(&taken); err != nil {
-			return "", err
-		}
-		if !taken {
-			return label, nil
-		}
+		return "", err
 	}
-	return "", errors.New("registry hostname has a conflicting identity")
+	if taken {
+		return "", errors.New("registry hostname has a conflicting identity")
+	}
+	return label, nil
 }
 
 // LookupProxyHostname resolves an exact stored label without decoding a host or

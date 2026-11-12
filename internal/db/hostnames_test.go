@@ -1,7 +1,6 @@
 package db
 
 import (
-	"example.org/odo/internal/proxy"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -57,12 +56,8 @@ func TestProxyHostnameConflictsFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a stored hash collision without weakening the production hash.
+	// Simulate a label already held by another hostname.
 	if _, err := store.db.Exec(`UPDATE proxy_hostnames SET hostname = ? WHERE label = ?`, "other.example", record.Label); err != nil {
-		t.Fatal(err)
-	}
-	// The fallback label is retired too, so vendor.example has no free identity.
-	if _, err := store.db.Exec(`INSERT INTO proxy_hostname_retired_labels (label, hostname) VALUES (?, ?)`, proxy.FallbackRegistryLabel("vendor.example"), "vendor.example"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RegisterProxyHostname("vendor.example", "odo.example", "proxy.example"); err == nil {

@@ -53,24 +53,18 @@ A resource can reference many hosts; many resources can reference one host.
 A mapping never grants access. Evaluate current resource policy, method rules,
 explicit anonymous rules, and target safety on every request and redirect.
 
-Generate the default label as `h-` plus lower-case, unpadded base32 of SHA-256 of
-the normalized ASCII hostname (54 characters total). This fits a single DNS
-label without truncating long upstream names. It is a lookup key, never decoded
-into authority. Enforce uniqueness and fail closed on a hash/alias collision;
-do not claim that a finite hash is mathematically collision-free.
+Update 2026-11-12: generate the default label by replacing dots in the normalized
+ASCII hostname with hyphens (`www.jstor.org` → `www-jstor-org`). Existing hyphens
+remain unchanged. This is a registry key, never decoded into an authority.
+Reject colliding enrollment transactionally; never repoint or reuse a name.
 
-Update 2026-11-11: the default is now a readable EZproxy-style label
-(`www.jstor.org` → `www-jstor-org`), still never decoded. The hashed label
-above remains the fallback for long names, leading IDN labels and readable-name
-collisions, and existing hashed mappings are kept until an explicit migration
-retires them permanently. See
-[readable proxy names](../architecture/hostname-registry.md#readable-proxy-names).
-
-Allow explicit readable aliases such as `jstor`, reserved transactionally in the
-same label namespace. Reserve application/internal labels and the entire `h-`
-namespace against friendly aliases. Keep the generated canonical address working
-when an alias changes. Retire aliases without reassigning them to another host;
-old bookmarks and cookies must never acquire a different vendor origin.
+Use `h-` plus lowercase, unpadded base32 of SHA-256 (54 characters) only when
+DNS length limits or a leading IDN A-label prevent the readable form. Existing
+hashed mappings remain valid until an explicit migration retires them
+permanently. The fallback also has uniqueness checks; it is not mathematically
+collision-free. Arbitrary aliases remain unimplemented. See
+[readable proxy names](../architecture/hostname-registry.md#readable-proxy-names)
+for the current contract and deployment/migration procedure.
 
 Normalize DNS names using the existing x/net IDNA package with an explicitly
 selected lookup profile, lowercase ASCII and one terminal-dot normalization;

@@ -45,13 +45,13 @@ Odo does not manage DNS or TLS certificates. Those remain the responsibility of 
 
 ## Host encoding
 
-The simple readable format could be:
+The experimental registry uses this readable default:
 
 ```text
 www-jstor-org.access.example.edu
 ```
 
-This readable form is now the registry default (see [readable proxy names](architecture/hostname-registry.md#readable-proxy-names)). It is not reversible, so Odo never decodes it: the stored registry row supplies the upstream. Hosts that cannot use it safely get a hashed fallback label:
+This readable form is now the registry default (see [readable proxy names](architecture/hostname-registry.md#readable-proxy-names)). It is not reversible, so Odo never decodes it: the stored registry row supplies the upstream. Names exceeding DNS length limits or starting with a punycode A-label use a hashed fallback. Colliding enrollment is rejected, without selecting an alternate label:
 
 ```text
 h-<base32 of SHA-256 of the hostname>.access.example.edu
