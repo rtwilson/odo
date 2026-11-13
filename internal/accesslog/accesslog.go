@@ -25,10 +25,15 @@ const (
 )
 
 type Metadata struct {
-	RequestID            string
-	Route                string
-	UserID               string
-	SessionID            string
+	SuppressBrowserHeaders bool // Sensitive controls must not log raw Referer/User-Agent.
+	RequestID              string
+	Route                  string
+	// UserID and SessionID are inputs only: entries carry a pseudonymous patron
+	// key derived under the rotation policy, never either raw identifier.
+	UserID    string
+	SessionID string
+	// RequestClass is document, asset, api or other (from Fetch metadata).
+	RequestClass         string
 	TargetHost           string
 	ResourceID           string
 	RuleHost             string
@@ -48,6 +53,7 @@ type Logger struct {
 	out    io.Writer
 	mu     sync.Mutex
 	recent []Entry
+	pseudo atomic.Pointer[Pseudonymizer]
 }
 
 type Entry struct {
@@ -59,8 +65,8 @@ type Entry struct {
 	Status               int    `json:"status"`
 	Bytes                int    `json:"bytes"`
 	DurationMS           int64  `json:"duration_ms"`
-	UserID               string `json:"user_id,omitempty"`
-	SessionID            string `json:"session_id,omitempty"`
+	PatronKey            string `json:"patron,omitempty"`
+	RequestClass         string `json:"request_class,omitempty"`
 	UserAgent            string `json:"user_agent,omitempty"`
 	Referer              string `json:"referer,omitempty"`
 	TargetHost           string `json:"target_host,omitempty"`
@@ -91,7 +97,25 @@ func New(format string, out io.Writer) (*Logger, error) {
 	if out == nil {
 		out = os.Stdout
 	}
-	return &Logger{format: normalized, out: out}, nil
+	logger := &Logger{format: normalized, out: out}
+	logger.pseudo.Store(NewEphemeralPseudonymizer())
+	return logger, nil
+}
+
+// SetPseudonymizer installs the configured patron-key secret. Loggers start
+// with an ephemeral one, so raw user identifiers are never written.
+func (l *Logger) SetPseudonymizer(p *Pseudonymizer) {
+	if l != nil && p != nil {
+		l.pseudo.Store(p)
+	}
+}
+
+// Pseudonymizer returns the logger's patron-key derivation.
+func (l *Logger) Pseudonymizer() *Pseudonymizer {
+	if l == nil {
+		return nil
+	}
+	return l.pseudo.Load()
 }
 
 func Open(format, path string) (*Logger, io.Closer, error) {
@@ -199,8 +223,8 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		Status:               status,
 		Bytes:                bytes,
 		DurationMS:           duration.Milliseconds(),
-		UserID:               metadata.UserID,
-		SessionID:            metadata.SessionID,
+		PatronKey:            l.pseudo.Load().Key(metadata.UserID, metadata.SessionID, time.Now()),
+		RequestClass:         metadata.RequestClass,
 		TargetHost:           metadata.TargetHost,
 		ResourceID:           metadata.ResourceID,
 		RuleHost:             metadata.RuleHost,
@@ -214,7 +238,7 @@ func (l *Logger) Log(r *http.Request, status, bytes int, duration time.Duration)
 		Recovered:            metadata.Recovered,
 		AnonymousRuleMatched: metadata.AnonymousRuleMatched,
 	}
-	if l.format == FormatCombined || l.format == FormatJSON {
+	if !metadata.SuppressBrowserHeaders && (l.format == FormatCombined || l.format == FormatJSON) {
 		e.UserAgent = r.UserAgent()
 		e.Referer = r.Referer()
 	}
@@ -275,8 +299,8 @@ func privacyLine(e Entry) string {
 		"duration_ms=" + strconv.FormatInt(e.DurationMS, 10),
 	}
 	parts = appendIf(parts, "target_host", e.TargetHost)
-	parts = appendIf(parts, "user_id", e.UserID)
-	parts = appendIf(parts, "session_id", e.SessionID)
+	parts = appendIf(parts, "patron", e.PatronKey)
+	parts = appendIf(parts, "request_class", e.RequestClass)
 	parts = appendIf(parts, "resource_id", e.ResourceID)
 	parts = appendIf(parts, "rule_host", e.RuleHost)
 	parts = appendIf(parts, "rule_match", e.RuleMatch)

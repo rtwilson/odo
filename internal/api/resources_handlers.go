@@ -38,6 +38,7 @@ func (s *Server) upsertResource(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	s.enrollConfiguredProxyHostnames()
 	writeJSON(w, http.StatusOK, resource)
 }
 
@@ -87,6 +88,7 @@ func (s *Server) putResource(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	s.enrollConfiguredProxyHostnames()
 	writeJSON(w, http.StatusOK, resource)
 }
 
@@ -136,6 +138,11 @@ func (s *Server) testRawURL(rawURL string) resources.TestResult {
 }
 
 func (s *Server) proxyTestFetch(w http.ResponseWriter, r *http.Request) {
+	if s.handoff != nil {
+		handoffHeaders(w, r, "handoff_content_disabled")
+		writeError(w, http.StatusForbidden, "vendor content delivery is disabled")
+		return
+	}
 	defer r.Body.Close()
 	var req struct {
 		URL string `json:"url"`

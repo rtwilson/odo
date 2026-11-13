@@ -19,6 +19,41 @@ func TestBuildProxyURLDefaultsToPathMode(t *testing.T) {
 	}
 }
 
+func TestURLRoutingContextIsIndependentOfEnvironment(t *testing.T) {
+	target, err := url.Parse("https://example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := *target
+	for _, tc := range []struct {
+		mode string
+		want string
+	}{
+		{"", "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+		{ProxyURLModePath, "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+		{ProxyURLModeDual, "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+		{ProxyURLModeQuery, "/odo?url=" + url.QueryEscape(target.String())},
+		{ProxyURLModeVirtualHost, "/odo/https/example.com/a%2Fb?q=a%2Bb&next=https%3A%2F%2Fvendor.example%2F"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			routing := URLRoutingContext{Mode: tc.mode}
+			for _, envMode := range []string{ProxyURLModePath, ProxyURLModeQuery} {
+				t.Setenv("APP_PROXY_URL_MODE", envMode)
+				if got := routing.BuildProxyURL(target); got != tc.want {
+					t.Fatalf("environment %q: got %q, want %q", envMode, got, tc.want)
+				}
+				parsed, _, ok, err := routing.ParseProxyRequest(httptest.NewRequest("GET", tc.want, nil))
+				if err != nil || !ok || parsed.String() != target.String() {
+					t.Fatalf("round trip changed target: %v, ok=%v, err=%v", parsed, ok, err)
+				}
+			}
+			if *target != original {
+				t.Fatal("URL builder changed the caller's target")
+			}
+		})
+	}
+}
+
 func TestBuildProxyURLUsesQueryMode(t *testing.T) {
 	t.Setenv("APP_PROXY_URL_MODE", "query")
 	target, _ := url.Parse("https://example.com/path")
@@ -109,6 +144,37 @@ func TestParseProxyRequestQueryMode(t *testing.T) {
 	}
 }
 
+func TestProxyURLRoundTripPreservesVendorQuery(t *testing.T) {
+	for _, raw := range []string{
+		"https://vendor.example/search?url=https%3A%2F%2Fother.example%2F&term=a%2Bb",
+		"https://vendor.example/search?url=not-a-url&url=another-value",
+		"https://vendor.example/a%2Fb?",
+	} {
+		for _, mode := range []string{ProxyURLModePath, ProxyURLModeQuery, ProxyURLModeDual} {
+			t.Run(mode+raw, func(t *testing.T) {
+				target, err := url.Parse(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				built := BuildProxyURLWithMode(target, mode)
+				got, _, ok, err := ParseProxyRequest(httptest.NewRequest("GET", built, nil))
+				if err != nil || !ok || got.String() != target.String() {
+					t.Fatalf("round trip %q: got %v ok=%v err=%v", built, got, ok, err)
+				}
+			})
+		}
+	}
+}
+
+func TestQueryProxyEntryPointsRemainCompatible(t *testing.T) {
+	for _, path := range []string{PublicProxyPath, PublicProxyPath + "/", "/p"} {
+		target, mode, ok, err := ParseProxyRequest(httptest.NewRequest("GET", path+"?url=https%3A%2F%2Fvendor.example%2F", nil))
+		if err != nil || !ok || mode != ProxyURLModeQuery || target.String() != "https://vendor.example/" {
+			t.Fatalf("query entry %q: got %v mode=%q ok=%v err=%v", path, target, mode, ok, err)
+		}
+	}
+}
+
 func TestParseProxyRequestDualModeAcceptsPathAndQueryForms(t *testing.T) {
 	t.Setenv("APP_PROXY_URL_MODE", "dual")
 	for _, raw := range []string{
@@ -126,21 +192,24 @@ func TestParseProxyRequestDualModeAcceptsPathAndQueryForms(t *testing.T) {
 	}
 }
 
-func TestVirtualHostModeIsPlannedButNotImplemented(t *testing.T) {
+// virtual_host is served by the API's virtual-host runtime. The URL strategy
+// keeps producing path-form URLs, which that runtime redirects to launch.
+func TestVirtualHostModeKeepsPathURLShape(t *testing.T) {
 	if got := NormalizeProxyURLMode("virtual_host"); got != ProxyURLModePath {
-		t.Fatalf("expected virtual_host to fall back to path, got %q", got)
+		t.Fatalf("expected virtual_host URL output to use the path shape, got %q", got)
 	}
-	if warning := ProxyURLModeWarning("virtual_host"); !strings.Contains(warning, "planned but not implemented") {
-		t.Fatalf("expected virtual_host warning, got %q", warning)
+	if warning := ProxyURLModeWarning("virtual_host"); warning != "" {
+		t.Fatalf("virtual_host is implemented; unexpected warning %q", warning)
 	}
 }
 
+// The setup guide must cover what an operator needs before enabling the mode.
 func TestVirtualHostProxyingDocExists(t *testing.T) {
 	body, err := os.ReadFile("../../docs/virtual-host-proxying.md")
 	if err != nil {
 		t.Fatalf("expected docs/virtual-host-proxying.md to exist: %v", err)
 	}
-	for _, want := range []string{"Future Virtual-Host Proxying", "*.access.example.edu", "wildcard TLS", "APP_VIRTUAL_HOST_BASE_DOMAIN", "Migration plan"} {
+	for _, want := range []string{"APP_PROXY_URL_MODE=virtual_host", "APP_PROXY_BASE_DOMAIN", "Wildcard DNS", "Wildcard TLS", "DNS-01", "Single instance", "Rollback"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("expected virtual-host doc to contain %q", want)
 		}

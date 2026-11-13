@@ -184,11 +184,13 @@ var validAPIKeyScopes = map[string]bool{
 	"config:write":     true,
 	"diagnostics:read": true,
 	"logs:read":        true,
-	"auth:read":        true,
-	"auth:write":       true,
-	"system:read":      true,
-	"users:read":       true,
-	"users:write":      true,
+	// logs:reidentify is never implied by admin; grant it explicitly.
+	"logs:reidentify": true,
+	"auth:read":       true,
+	"auth:write":      true,
+	"system:read":     true,
+	"users:read":      true,
+	"users:write":     true,
 }
 
 func validateAPIKeyScopes(scopes []string) ([]string, error) {

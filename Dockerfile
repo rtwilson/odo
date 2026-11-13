@@ -28,5 +28,7 @@ ENV APP_ACCESS_LOG_FORMAT=privacy
 ENV APP_ACCESS_LOG_PATH=
 VOLUME ["/var/lib/odo", "/etc/odo"]
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -qO- http://127.0.0.1:8080/api/v1/health >/dev/null || exit 1
+# With APP_HOST_GUARD=true Odo answers only its configured public host (other
+# authorities get 421), so present that host name when one is configured.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD H="${APP_PUBLIC_URL#*://}"; H="${H%%/*}"; wget -qO- ${H:+--header "Host: $H"} http://127.0.0.1:8080/api/v1/health >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/odo"]

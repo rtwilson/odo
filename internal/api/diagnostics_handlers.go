@@ -34,7 +34,7 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 		"config_dir":                   s.configDir,
 		"proxy_require_login":          s.proxyLoginRequired(),
 		"trust_proxy_headers":          trustProxyHeaders(),
-		"proxy_url_mode":               proxy.ProxyURLMode(),
+		"proxy_url_mode":               s.effectiveProxyURLMode(),
 		"session_persist_on_restart":   sessionPersistOnRestart(),
 		"session_ttl_minutes":          int(sessionTTL() / time.Minute),
 		"session_idle_timeout_minutes": int(sessionIdleTimeout() / time.Minute),
@@ -117,4 +117,13 @@ func filepathDir(path string) string {
 		return "/"
 	}
 	return path[:idx]
+}
+
+// effectiveProxyURLMode reports virtual_host when this process serves virtual
+// hosts, otherwise the configured path/query/dual URL mode.
+func (s *Server) effectiveProxyURLMode() string {
+	if s.handoff != nil {
+		return proxy.ProxyURLModeVirtualHost
+	}
+	return proxy.ProxyURLMode()
 }

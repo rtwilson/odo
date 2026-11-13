@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,7 +33,18 @@ type userPasswordRequest struct {
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := s.store.ListUsers()
+	deleted := r.URL.Query().Get("deleted")
+	if deleted != "" && deleted != "true" && deleted != "false" {
+		writeError(w, http.StatusBadRequest, "deleted must be true or false")
+		return
+	}
+	var users []db.User
+	var err error
+	if deleted == "true" {
+		users, err = s.store.ListDeletedUsers()
+	} else {
+		users, err = s.store.ListUsers()
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -83,25 +95,19 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	id := strings.TrimSpace(r.PathValue("id"))
-	existing, found, err := s.store.GetUser(id)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if !found {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
-	}
 	var req userPatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if req.Email != nil {
-		existing.Email = strings.TrimSpace(*req.Email)
+		*req.Email = strings.TrimSpace(*req.Email)
 	}
 	if req.DisplayName != nil {
-		existing.DisplayName = strings.TrimSpace(*req.DisplayName)
+		*req.DisplayName = strings.TrimSpace(*req.DisplayName)
+	}
+	if s.forbidPrivilegedTarget(w, r, id, "update") {
+		return
 	}
 	if len(req.Roles) > 0 {
 		if !s.requestHasAdminScope(r) {
@@ -113,11 +119,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if hasSuperAdminRole(existing.Roles) && !hasSuperAdminRole(roles) && s.activeSuperAdminCount() <= 1 {
-			writeError(w, http.StatusBadRequest, "cannot remove the last admin account")
-			return
-		}
-		existing.Roles = roles
+		req.Roles = roles
 	}
 	if strings.TrimSpace(req.Status) != "" {
 		status, err := validateUserStatus(req.Status)
@@ -125,9 +127,17 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		existing.Status = status
+		req.Status = status
 	}
-	user, found, err := s.store.UpdateUser(existing)
+	user, found, err := s.store.PatchUser(id, db.UserPatch{Email: req.Email, DisplayName: req.DisplayName, Status: strings.TrimSpace(req.Status), Roles: req.Roles})
+	if errors.Is(err, db.ErrLastAdministrator) {
+		writeError(w, http.StatusBadRequest, "cannot remove or deactivate the last admin account")
+		return
+	}
+	if errors.Is(err, db.ErrUserDeleted) {
+		writeError(w, http.StatusConflict, "restore the deleted account before updating it")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -155,12 +165,15 @@ func (s *Server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "password must be at most 72 bytes")
 		return
 	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if s.forbidPrivilegedTarget(w, r, id, "set passwords for") {
+		return
+	}
 	hash, err := local.HashPassword(req.Password)
 	if err != nil {
 		s.internalError(w, r, fmt.Errorf("password hashing failed: %w", err))
 		return
 	}
-	id := strings.TrimSpace(r.PathValue("id"))
 	updated, err := s.store.SetUserPassword(id, hash)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -170,7 +183,6 @@ func (s *Server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	_ = s.store.RevokeUserSessions(id)
 	_ = s.store.Audit("user_password_set", fmt.Sprintf(`{"id":%q}`, id))
 	writeJSON(w, http.StatusOK, map[string]any{"password_set": true, "id": id})
 }
@@ -193,6 +205,9 @@ func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
+	if s.forbidPrivilegedTarget(w, r, id, "revoke sessions for") {
+		return
+	}
 	if _, found, err := s.store.GetUser(id); err != nil {
 		s.internalError(w, r, err)
 		return
@@ -210,22 +225,18 @@ func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status string) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if status == "disabled" || status == "locked" {
-		existing, found, err := s.store.GetUser(id)
-		if err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		if !found {
-			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		if hasSuperAdminRole(existing.Roles) && s.activeSuperAdminCount() <= 1 {
-			writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
-			return
-		}
+	if s.forbidPrivilegedTarget(w, r, id, "change the status of") {
+		return
 	}
 	user, found, err := s.store.SetUserStatus(id, status)
+	if errors.Is(err, db.ErrLastAdministrator) {
+		writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")
+		return
+	}
+	if errors.Is(err, db.ErrUserDeleted) {
+		writeError(w, http.StatusConflict, "restore the deleted account before updating it")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -241,30 +252,6 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status st
 func (s *Server) requestHasAdminScope(r *http.Request) bool {
 	auth, status, _, _ := s.authorizeRequest(r, "admin")
 	return status == 0 && auth.IsAuthenticated
-}
-
-func (s *Server) activeSuperAdminCount() int {
-	users, err := s.store.ListUsers()
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, user := range users {
-		if user.Status == "active" && hasSuperAdminRole(user.Roles) {
-			count++
-		}
-	}
-	return count
-}
-
-func hasSuperAdminRole(roles []string) bool {
-	for _, role := range roles {
-		switch strings.ToLower(strings.TrimSpace(role)) {
-		case "admin", "super_admin":
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) newStoredUser(req userCreateRequest) (db.User, error) {

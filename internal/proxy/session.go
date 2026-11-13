@@ -3,6 +3,8 @@ package proxy
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"sync"
@@ -18,6 +20,7 @@ type SessionStore struct {
 	sessions    map[string]*proxySession
 	idleTimeout time.Duration
 	lastCleanup time.Time
+	random      io.Reader
 }
 
 type proxySession struct {
@@ -38,10 +41,11 @@ func NewSessionStore(idleTimeout time.Duration) *SessionStore {
 	return &SessionStore{
 		sessions:    map[string]*proxySession{},
 		idleTimeout: idleTimeout,
+		random:      rand.Reader,
 	}
 }
 
-func (s *SessionStore) GetOrCreate(r *http.Request, w http.ResponseWriter) SessionInfo {
+func (s *SessionStore) GetOrCreate(r *http.Request, w http.ResponseWriter) (SessionInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -55,12 +59,15 @@ func (s *SessionStore) GetOrCreate(r *http.Request, w http.ResponseWriter) Sessi
 	if id != "" {
 		if session, ok := s.sessions[id]; ok {
 			session.lastAccess = now
-			return SessionInfo{ID: id, Jar: session.jar, Created: false}
+			return SessionInfo{ID: id, Jar: session.jar, Created: false}, nil
 		}
 	}
 
+	id, err := randomSessionID(s.random)
+	if err != nil {
+		return SessionInfo{}, err
+	}
 	jar, _ := cookiejar.New(nil)
-	id = randomSessionID()
 	s.sessions[id] = &proxySession{jar: jar, lastAccess: now}
 	http.SetCookie(w, cookiepolicy.Apply(r, &http.Cookie{
 		Name:     ProxySessionCookieName,
@@ -69,7 +76,7 @@ func (s *SessionStore) GetOrCreate(r *http.Request, w http.ResponseWriter) Sessi
 		MaxAge:   int(s.idleTimeout / time.Second),
 		Expires:  now.Add(s.idleTimeout),
 	}))
-	return SessionInfo{ID: id, Jar: jar, Created: true}
+	return SessionInfo{ID: id, Jar: jar, Created: true}, nil
 }
 
 func (s *SessionStore) Count() int {
@@ -91,10 +98,12 @@ func (s *SessionStore) cleanupLocked(now time.Time) {
 	s.lastCleanup = now
 }
 
-func randomSessionID() string {
+func randomSessionID(random io.Reader) (string, error) {
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return base64.RawURLEncoding.EncodeToString([]byte(time.Now().Format(time.RFC3339Nano)))
+	// Read from the cryptographic reader directly so read failures propagate
+	// without a predictable fallback. Tests can supply a reader on one store.
+	if _, err := io.ReadFull(random, buf); err != nil {
+		return "", fmt.Errorf("generate proxy session ID: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(buf)
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

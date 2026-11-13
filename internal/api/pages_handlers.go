@@ -44,10 +44,14 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.SubjectType == "user" {
-		http.SetCookie(w, csrfCookie(r, auth.csrfToken))
+		http.SetCookie(w, s.csrfCookie(r, auth.csrfToken))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(ui.AdminHTML()))
+	// Change only metadata, keeping the trusted inline script identical to the
+	// source used by appSecurityHeaders to calculate its CSP hash.
+	page := strings.Replace(ui.AdminHTML(), `<meta name="odo-csrf-cookie" content="odo_csrf">`,
+		`<meta name="odo-csrf-cookie" content="`+s.centralCookieName(csrfCookieName)+`">`, 1)
+	_, _ = w.Write([]byte(page))
 }
 
 func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
@@ -87,8 +91,12 @@ func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
 		if entry == "" {
 			continue
 		}
-		parsed, _ := url.Parse(entry)
-		b.WriteString(`<li><a href="` + html.EscapeString(proxy.BuildProxyURL(parsed)) + `">` + html.EscapeString(resource.Title) + `</a></li>`)
+		href := "/launch?" + url.Values{"url": {entry}}.Encode()
+		if s.handoff == nil {
+			parsed, _ := url.Parse(entry)
+			href = proxy.BuildProxyURL(parsed)
+		}
+		b.WriteString(`<li><a href="` + html.EscapeString(href) + `">` + html.EscapeString(resource.Title) + `</a></li>`)
 	}
 	b.WriteString(`</ul><footer><small><a href="/about">Source &amp; license</a></small></footer></main></body></html>`)
 	_, _ = w.Write([]byte(b.String()))

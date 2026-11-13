@@ -2,9 +2,12 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,7 +26,42 @@ import (
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	next, _ := safeNextPath(r.URL.Query().Get("next"))
+	if strings.HasPrefix(next, launchContinuePath+"?") {
+		w.Header().Set("Cache-Control", "no-store")
+		s.allowLaunchContinuationFormRedirect(r, strings.TrimPrefix(next, launchContinuePath+"?"))
+	}
 	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><link rel="icon" href="/favicon.ico"><meta charset="utf-8"><title>odo login</title><style>:root{color-scheme:dark;font-family:system-ui;background:#101316;color:#f2f4f7}main{max-width:420px;margin:12vh auto;padding:24px}input,button{width:100%%;box-sizing:border-box;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #39414b;background:#181d22;color:#f2f4f7}button{background:#245c45}footer{margin-top:2rem}footer a{color:#8cc7ff}</style></head><body><main><h1>odo login</h1><p>Sign in to continue</p><form method="post" action="/login"><input type="hidden" name="next" value="%s"><input name="username" autocomplete="username" placeholder="Username"><input name="password" type="password" autocomplete="current-password" placeholder="Password"><button>Sign in</button></form><footer><small><a href="/about">Source &amp; license</a></small></footer></main></body></html>`, html.EscapeString(next))
+}
+
+// allowLaunchContinuationFormRedirect: in experimental handoff mode, a login
+// that continues a launch redirects (within the same form submission) to the
+// target's vendor proxy host, which CSP form-action 'self' would block. For a
+// live continuation held by this browser, allow only that registered proxy
+// origin. Nothing is consumed; /launch/continue revalidates everything.
+func (s *Server) allowLaunchContinuationFormRedirect(r *http.Request, rawQuery string) {
+	if s.handoff == nil {
+		return
+	}
+	token, ok := launchContinuationToken(rawQuery)
+	if !ok {
+		return
+	}
+	cookie, err := r.Cookie(launchBrowserCookieName(r))
+	if err != nil || !validLaunchToken(cookie.Value) {
+		return
+	}
+	target, ok := s.launchContinuations.peek(token, cookie.Value, time.Now())
+	if !ok {
+		return
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return
+	}
+	config := s.handoff.config
+	if mapping, err := s.handoff.upstreamMapping(parsed.Hostname()); err == nil {
+		allowHandoffFormRedirect(r, mapping.Label+"."+config.ProxyBaseDomain())
+	}
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +101,13 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, fmt.Errorf("session creation failed: %w", err))
 		return
 	}
-	if err := s.store.CreateSession(session); err != nil {
+	if err := s.store.CreateAuthenticatedSession(session, user); err != nil {
+		if errors.Is(err, db.ErrLoginStateChanged) {
+			failed = true
+			_ = s.store.Audit("login_failed", `{"path":"/login"}`)
+			writeError(w, http.StatusUnauthorized, "invalid username or password")
+			return
+		}
 		s.internalError(w, r, err)
 		return
 	}
@@ -75,6 +119,9 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	rawNext := next
 	next, ok := safeNextPath(next)
+	if strings.HasPrefix(next, launchContinuePath+"?") {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if !ok && strings.TrimSpace(rawNext) != "" {
 		_ = s.store.Audit("login_next_rejected", `{"path":"/login"}`)
 	}
@@ -85,8 +132,8 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.Audit("admin_ui_login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q}`, user.ID))
 	}
 	_ = s.store.Audit("login_success", fmt.Sprintf(`{"subject_type":"user","subject_id":%q,"next_path":%q}`, user.ID, pathOnly(next)))
-	http.SetCookie(w, sessionCookie(r, token, session.ExpiresAt))
-	http.SetCookie(w, csrfCookie(r, csrfTokenForSessionToken(token)))
+	http.SetCookie(w, s.sessionCookie(r, token, session.ExpiresAt))
+	http.SetCookie(w, s.csrfCookie(r, csrfTokenForSessionToken(token)))
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
@@ -95,21 +142,93 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(browserSessionCookieName); err == nil {
-		_ = s.store.RevokeSession(local.SessionIDFromToken(cookie.Value))
+	w.Header().Set("Cache-Control", "no-store")
+	session, active, err := s.sessionForLogout(r)
+	if err != nil {
+		s.auditLogout(r, "logout_failed", "lookup_failed")
+		s.internalError(w, r, err)
+		return
 	}
-	http.SetCookie(w, clearSessionCookie(r, browserSessionCookieName, true))
-	http.SetCookie(w, clearSessionCookie(r, csrfCookieName, false))
+	outcome := "no_active_session"
+	if active {
+		if err := s.store.RevokeSession(session.ID); err != nil {
+			s.auditLogout(r, "logout_failed", "revocation_failed")
+			s.internalError(w, r, fmt.Errorf("revoke logout session: %w", err))
+			return
+		}
+		outcome = "revoked"
+	}
+	s.auditLogout(r, "logout_success", outcome)
+	http.SetCookie(w, s.clearSessionCookie(r, browserSessionCookieName, true))
+	http.SetCookie(w, s.clearSessionCookie(r, csrfCookieName, false))
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
-func clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
-	return cookiepolicy.Apply(r, &http.Cookie{Name: name, MaxAge: -1, HttpOnly: httpOnly})
+// Logout needs proof that the caller owns the session, not a new authorization
+// decision. Keep validation read-only: currentUser also touches sessions and can
+// revoke them during user-status checks. A matching token may revoke its own
+// session even if the account has since become inactive.
+func (s *Server) sessionForLogout(r *http.Request) (db.Session, bool, error) {
+	cookie, err := r.Cookie(s.centralCookieName(browserSessionCookieName))
+	if err != nil || cookie.Value == "" {
+		return db.Session{}, false, nil
+	}
+	id := local.SessionIDFromToken(cookie.Value)
+	if id == "" {
+		return db.Session{}, false, nil
+	}
+	session, found, err := s.store.GetSession(id)
+	if err != nil {
+		return db.Session{}, false, fmt.Errorf("load logout session: %w", err)
+	}
+	if !found || session.RevokedAt != "" ||
+		subtle.ConstantTimeCompare([]byte(session.SessionHash), []byte(s.browserSessionHash(cookie.Value))) != 1 {
+		return db.Session{}, false, nil
+	}
+	now := time.Now().UTC()
+	expires, err := time.Parse(time.RFC3339, session.ExpiresAt)
+	if err != nil || !now.Before(expires) {
+		return db.Session{}, false, nil
+	}
+	lastSeen, err := time.Parse(time.RFC3339, session.LastSeenAt)
+	if err == nil && now.Sub(lastSeen) > sessionIdleTimeout() {
+		return db.Session{}, false, nil
+	}
+	return session, true, nil
+}
+
+func (s *Server) auditLogout(r *http.Request, event, outcome string) {
+	id := accesslog.RequestID(r)
+	detail := fmt.Sprintf(`{"path":"/logout","request_id":%q,"outcome":%q}`, id, outcome)
+	if err := s.store.Audit(event, detail); err != nil {
+		// Auth audit persistence is best-effort. Never undo a confirmed
+		// revocation or claim the audit row was persisted when this write fails.
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.WarnContext(r.Context(), "logout audit write failed", "request_id", id, "event", event, "error", err)
+	}
+}
+
+func (s *Server) clearSessionCookie(r *http.Request, name string, httpOnly bool) *http.Cookie {
+	return cookiepolicy.Apply(r, &http.Cookie{Name: s.centralCookieName(name), MaxAge: -1, HttpOnly: httpOnly})
 }
 
 const browserSessionCookieName = "odo_session"
 
 const csrfCookieName = "odo_csrf"
+
+// Guarded deployments require a trusted HTTPS central origin, so their cookies
+// can use the browser-enforced host-only prefix. Never fall back to legacy names
+// when reading guarded credentials. Invalid enabled settings are blocked by the
+// guard before authentication and also select the stricter namespace here.
+func (s *Server) centralCookieName(legacyName string) string {
+	if s.hostGuardEnabled {
+		return "__Host-" + legacyName
+	}
+	return legacyName
+}
 
 func (s *Server) newBrowserSession(userID string, r *http.Request) (string, db.Session, error) {
 	idPart, err := local.NewToken("", 16)
@@ -151,19 +270,19 @@ func randomBootSecret() string {
 	return token
 }
 
-func sessionCookie(r *http.Request, token, expires string) *http.Cookie {
+func (s *Server) sessionCookie(r *http.Request, token, expires string) *http.Cookie {
 	expiresAt, _ := time.Parse(time.RFC3339, expires)
 	return cookiepolicy.Apply(r, &http.Cookie{
-		Name:     browserSessionCookieName,
+		Name:     s.centralCookieName(browserSessionCookieName),
 		Value:    token,
 		HttpOnly: true,
 		Expires:  expiresAt,
 	})
 }
 
-func csrfCookie(r *http.Request, token string) *http.Cookie {
+func (s *Server) csrfCookie(r *http.Request, token string) *http.Cookie {
 	return cookiepolicy.Apply(r, &http.Cookie{
-		Name:     csrfCookieName,
+		Name:     s.centralCookieName(csrfCookieName),
 		Value:    token,
 		HttpOnly: false,
 		MaxAge:   int(sessionTTL() / time.Second),
@@ -208,12 +327,12 @@ func sessionPersistOnRestart() bool {
 }
 
 func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error) {
-	cookie, err := r.Cookie(browserSessionCookieName)
+	cookie, err := r.Cookie(s.centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return db.User{}, db.Session{}, false, nil
 	}
 	sessionID := local.SessionIDFromToken(cookie.Value)
-	session, found, err := s.store.GetSession(sessionID)
+	session, user, found, err := s.store.GetSessionWithUser(sessionID)
 	if err != nil {
 		return db.User{}, db.Session{}, false, fmt.Errorf("load browser session: %w", err)
 	}
@@ -243,11 +362,7 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error)
 		_ = s.store.Audit("session_rejected_idle_timeout", fmt.Sprintf(`{"session_id":%q}`, session.ID))
 		return db.User{}, db.Session{}, false, nil
 	}
-	user, found, err := s.store.GetUser(session.UserID)
-	if err != nil {
-		return db.User{}, db.Session{}, false, fmt.Errorf("load session user: %w", err)
-	}
-	if !found || user.Status != "active" {
+	if user.Status != "active" {
 		_ = s.store.RevokeSession(session.ID)
 		return db.User{}, db.Session{}, false, nil
 	}
@@ -264,7 +379,7 @@ func (s *Server) currentUser(r *http.Request) (db.User, db.Session, bool, error)
 }
 
 func (s *Server) currentUserAuth(r *http.Request) (AuthContext, bool, error) {
-	cookie, err := r.Cookie(browserSessionCookieName)
+	cookie, err := r.Cookie(s.centralCookieName(browserSessionCookieName))
 	if err != nil || cookie.Value == "" {
 		return AuthContext{}, false, nil
 	}
@@ -290,6 +405,12 @@ func safeNextPath(raw string) (string, bool) {
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+		return "/resources", false
+	}
+	if parsed.Path == launchContinuePath {
+		if _, ok := launchContinuationToken(parsed.RawQuery); ok && parsed.Fragment == "" {
+			return parsed.RequestURI(), true
+		}
 		return "/resources", false
 	}
 	if parsed.Path != "/resources" && parsed.Path != "/admin" && parsed.Path != proxy.PublicProxyPath && !strings.HasPrefix(parsed.Path, proxy.PublicProxyPath+"/") {
@@ -345,7 +466,7 @@ func (s *Server) sessionMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if auth.SubjectType == "user" {
-		http.SetCookie(w, csrfCookie(r, auth.csrfToken))
+		http.SetCookie(w, s.csrfCookie(r, auth.csrfToken))
 	}
 	writeJSON(w, http.StatusOK, auth)
 }

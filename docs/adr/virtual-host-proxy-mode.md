@@ -1,0 +1,373 @@
+# Stable launch URLs and virtual-host proxy routing
+
+Status: proposed architecture; first review checkpoint, 2026-10-25.
+Internal handoff security foundation implemented 2026-11-06; vendor delivery
+remains disabled. Experimental handoff-only HTTP integration is now available
+behind `APP_EXPERIMENTAL_HANDOFF` in development/test; see the implementation
+update and routing guide.
+
+## Problem and direction
+
+Modern vendor applications assume paths belong to their own origin. Path proxying
+requires increasingly complex rewriting of navigation, scripts, assets, frames,
+and cookies. Introduce virtual-host routing as the preferred production mode
+once its security and compatibility acceptance criteria pass. Keep path mode for
+local testing and existing integrations. Virtual hosts improve origin fidelity;
+they do not guarantee compatibility or bypass vendor anti-bot controls.
+
+External library systems use one permanent application URL:
+
+```text
+https://odo.access.edu/launch?url=https%3A%2F%2Fwww.jstor.org%2Fstable%2F123
+```
+
+They must not need a resource ID or know the selected routing mode. Constructing
+a launch redirect must never fetch vendor content. DNS safety checks are allowed;
+HTTP requests to discover redirects, content, or hostnames are not.
+
+## Original review inventory (2026-10-25)
+
+Paths are relative to the repository root. This inventory describes inspected
+code at the original review date, not current completion status.
+
+| Area | Current implementation and evidence |
+| --- | --- |
+| URL strategy | `internal/proxy/urlstrategy.go` already defines `URLStrategy`, `BuildProxyURL`, `ParseProxyRequest`, and prefix generation. `urlstrategy_test.go` covers path/query output, escaped paths, and repeated-prefix normalization. |
+| Modes | `APP_PROXY_URL_MODE` currently accepts `path`, `query`, and `dual`; default and `dual` generate path URLs. `virtual_host` warns and falls back to path. Both proxy request shapes are parsed regardless of generated URL mode. |
+| Routes | `internal/api/server.go:Routes` registers `/odo`, `/odo/`, and legacy `/p`; there is no `/launch` or hostname registry. Application routes and proxy routes share one mux. |
+| Resource policy | `internal/resources/resources.go` defines `Resource`, `DomainRule`, anonymous URL rules, validation, and `TestURL`. Active rules select a winning candidate; domain roles/actions, method constraints, and anonymous exceptions must remain effective. Resource IDs are not hostname ownership. |
+| Target safety | `internal/proxy/safety.go` rejects unsafe schemes, IP literals, local names, userinfo, fragments, and non-default ports in normal production targets; validates DNS and supports validated-IP transport. `internal/api/proxy_handlers.go:proxyTarget` combines safety and resource checks. |
+| Storage | `internal/db/db.go` stores resource JSON, configuration revisions, API keys, users, and browser sessions in SQLite. Resource writes already call validation. There are no mapping/ticket tables. |
+| Browser authentication | `internal/api/auth_handlers.go` uses `odo_session` and `odo_csrf`; `safeNextPath` allows only selected local paths, not arbitrary URLs. `/launch` is not currently an allowed login return path. Local and SAML flows must both be reviewed. |
+| Vendor sessions | `internal/proxy/session.go` holds upstream cookie jars in process memory keyed by `odo_proxy_sid`. Existing browser-session logout revokes the browser session and clears application cookies; it does not implement the proposed cross-host grant revocation. |
+| Headers and rewriting | `internal/proxy/proxy.go`, `rewrite.go`, `jsshim.go`, and `missed.go` implement upstream headers, redirects, HTML/CSS/JS transformations, and recovery. Upstream request headers are allowlisted. Vendor CSP is currently suppressed; do not claim virtual-host CSP fidelity is already implemented. |
+| Security middleware | `internal/api/middleware.go`, `security_headers.go`, and `internal/cookiepolicy` implement API scopes, session/CSRF and application header/cookie policy. Host dispatch must precede application routing and credential processing. |
+| Deployment | `cmd/odo/main.go` validates production settings. Existing `docs/virtual-host-proxying.md` describes an earlier future direction and inactive placeholders; it is not an implemented hostname contract. |
+| Tests and tooling | URL, navigation, PDF/frame, SSRF/rebinding, login/SAML, API and response-header tests exist under `internal/proxy` and `internal/api`. `Makefile` has build/test/install targets, no documentation checker. |
+
+## Decision 1: persist mappings; derive defaults deterministically
+
+Use SQLite for exact upstream-host-to-proxy-label records, with unique normalized
+upstream hostname and unique label, and a many-to-many resource relationship.
+A resource can reference many hosts; many resources can reference one host.
+A mapping never grants access. Evaluate current resource policy, method rules,
+explicit anonymous rules, and target safety on every request and redirect.
+
+Update 2026-11-12: generate the default label by replacing dots in the normalized
+ASCII hostname with hyphens (`www.jstor.org` → `www-jstor-org`). Existing hyphens
+remain unchanged. This is a registry key, never decoded into an authority.
+Reject colliding enrollment transactionally; never repoint or reuse a name.
+
+Use `h-` plus lowercase, unpadded base32 of SHA-256 (54 characters) only when
+DNS length limits or a leading IDN A-label prevent the readable form. Existing
+hashed mappings remain valid until an explicit migration retires them
+permanently. The fallback also has uniqueness checks; it is not mathematically
+collision-free. Arbitrary aliases remain unimplemented. See
+[readable proxy names](../architecture/hostname-registry.md#readable-proxy-names)
+for the current contract and deployment/migration procedure.
+
+Normalize DNS names using the existing x/net IDNA package with an explicitly
+selected lookup profile, lowercase ASCII and one terminal-dot normalization;
+validate label and full-name lengths after conversion. Reject malformed IDNs,
+IP literals, ports other than HTTPS 443, and proxy/application host loops.
+No dot-to-hyphen decoding. Valid long vendor names use the fixed-length generated
+label; reject names beyond DNS limits. Validate proxy FQDN length too.
+
+Registry population is an administrative reconciliation operation from configured
+exact hosts and explicitly approved concrete hosts covered by subdomain rules.
+A wildcard rule is not a list of concrete hosts. Never register a host merely
+because an untrusted URL or vendor response mentions it. Removing or disabling
+the last authorizing resource disables routing immediately; retain a tombstone
+for stable identity. Reconciliation/import needs atomic conflict handling.
+
+Alternatives: pure deterministic encoding avoids tables but cannot cleanly manage
+friendly aliases, tombstones and inspectable relationships. Fully manual labels
+increase setup work and typo risk. Persistent generated defaults plus optional
+aliases add one durable registry while keeping routine setup predictable.
+
+## Decision 2: one launch contract with bounded raw-prefix compatibility
+
+Canonical callers percent-encode the entire absolute HTTPS target as one `url`
+value, once. Preserve the target's escaped path and raw query; never decode and
+re-encode nested query values. Reject missing/duplicate envelope parameters,
+malformed escaping, credentials, unsafe destinations and excessive input length.
+Use generic public errors without disclosing private resource details.
+
+Compatibility parser proposal: inspect `RawQuery`, requiring its first bytes to
+be `url=`. If the remainder begins literally with `https://`, treat the entire
+remainder as the raw target, with no outer query decoding or additional envelope
+parameters. Otherwise use strict `url.ParseQuery`, requiring exactly one `url`
+value and no other keys. Select the parsing branch once, before decoding; do not
+repeatedly decode. Raw `&url=` inside the raw target is vendor data, not a second
+launch parameter. In encoded mode duplicate `url` keys are an error.
+
+For example, raw `url=https://vendor.example/search?a=1&b=2` must preserve both
+vendor parameters. Go's ordinary `URL.Query().Get("url")` loses `b=2`; query
+unescaping also turns `+` into space and consumes one percent-encoding layer.
+Go's `ParseQuery` reports invalid escapes and raw semicolons; `URL.Query` drops
+parse errors. See the [Go net/url contract](https://pkg.go.dev/net/url).
+
+A literal browser `#` never reaches the server as query data. Canonical encoding
+can carry a target fragment, but current safety validation rejects fragments:
+retain that rejection for the launch MVP, documenting the limitation. A later
+fragment-preservation design requires explicit approval. Raw prefix integrations
+cannot promise lossless fragment or intermediary-reencoded input handling.
+Document byte-level cases for `&`, `=`, `?`, `+`, `%`, Unicode and nested URLs in
+the subsequent launch specification. Do not change `/login` parameter meanings;
+no `/login?url=` alias in the MVP.
+
+## Decision 3: isolate central credentials and vendor grants
+
+Use a host-only `__Host-` central authentication cookie (Secure, HttpOnly, Path=/,
+no Domain, SameSite=Lax). Keep central CSRF state host-only too. No application
+API, admin page, login form, or API-key processing is available on vendor hosts.
+No browser or API credentials are forwarded upstream. Never distribute a
+parent-domain authentication or CSRF cookie.
+
+Store pending destinations briefly on the server, referenced by an opaque random
+continuation. Login returns only to a validated central continuation endpoint;
+recheck destination policy after authentication. Do not broaden `safeNextPath`
+to arbitrary external return URLs.
+
+After login, issue a short-lived, single-use random launch ticket bound to the
+central session, exact destination hostname/mapping, policy context and pending
+target. Store only a hash of the ticket; consume atomically. Redeem at a reserved
+vendor-host endpoint, set that host's Secure/HttpOnly `__Host-` proxy-grant cookie,
+and immediately redirect to the clean vendor path. Prevent redemption CSRF and
+ticket swapping with a host-only preflight binding nonce. Ticket endpoints must
+be no-store/no-referrer, render no vendor assets and emit no analytics. Scrub
+queries/tickets from reverse-proxy logs as well as Odo logs. Exact handoff and
+cross-host frame/asset bootstrapping need specification before implementation.
+
+Use server-side session references to revoke all host grants at central logout,
+user disablement or explicit revocation. Clearing cookies on remote hosts is not
+required for revocation. Scope vendor jars by patron/session and explicit vendor
+cookie policy, never by a global browser cookie shared with admin credentials.
+
+Sibling hosts are different origins but usually the same site. SameSite alone
+is not CSRF protection against vendor scripts: require exact central Origin,
+existing CSRF checks and restrictive central CORS, including login/logout flows.
+Host-only cookies also do not make legacy path-mode vendor scripts safe to run
+on the central origin. Production central authentication must not coexist with
+path-mode vendor content on that origin; migration must redirect safe old GET
+bookmarks into virtual hosts, or use a separate legacy origin. This is a release
+gate, not a detail deferred until after routing is enabled. Cookie prefix behavior
+is documented in [MDN Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie).
+
+## Mode, host, API and deployment direction
+
+Retain the current path default during development. Existing `query` and `dual`
+semantics remain until an explicit migration introduces a separate canonical
+output preference or a versioned mode change. Proposed `APP_PROXY_BASE_DOMAIN`
+identifies the proxy suffix; existing `APP_PUBLIC_URL` identifies the central
+application origin. In virtual-host production, unsupported configuration must
+fail closed rather than silently fall back to path mode.
+
+Central host dispatch uses configured authority, never arbitrary Host or forwarded
+host values. Only exact registered single-label hosts below the proxy suffix may
+reach vendor routing. Unknown hosts are rejected before cookies or authentication
+are processed. Reverse proxies must preserve validated authority, overwrite
+forwarded headers and prevent direct untrusted backend access. Wildcard DNS and
+TLS are infrastructure requirements, not authorization.
+
+Extend resource APIs and rules/test-url for relationship inspection and policy
+preview; add registry list/preview/alias operations only where distinct registry
+state requires them. Existing resource read/write scopes are candidates; no new
+scope names are established here. Anonymous clients use launch redirects and
+generic errors, with no public registry enumeration or target-fetch oracle.
+
+Subsequent specifications will define API payloads/status codes, proposed SQLite
+tables and transactions, DNS/TLS/Caddy/Apache deployment examples, compatibility
+matrices and acceptance tests. Their names are the requested
+`docs/architecture/virtual-host-routing.md`, `hostname-registry.md`, and
+`launch-url-compatibility.md`; they are intentionally pending this checkpoint.
+
+## Implementation order and release gates
+
+1. Extend the existing URL strategy seam with explicit routing context; preserve
+   path/query output and parsing. Inventory all URL construction call sites.
+2. Implement normalization, registry, alias lifecycle and protected management
+   APIs, with collision/concurrency tests and migration rollback planning.
+3. Add mode-independent launch and continuation handling in path testing mode;
+   verify byte-preserving prefix behavior, policy rejection and no upstream fetch.
+4. Specify and implement host admission, central cookie isolation, ticket handoff,
+   revocation, cookie-jar boundaries and reserved internal endpoint handling.
+   Keep virtual-host traffic disabled until these work together.
+5. Enable experimental virtual-host routing behind a disabled-by-default flag;
+   adapt redirects, rewriting, CSP, CORS, iframe/assets and PDF workflows. Unknown
+   hosts get bounded diagnostics and explicit deny/direct policies, no auto-enroll.
+6. Supply wildcard DNS/TLS (including DNS-01 renewal) deployment examples before
+   enabling a test deployment. Verify host forwarding and log redaction at edges.
+7. Run vendor compatibility, browser isolation, DNS rebinding, open-redirect,
+   replay/race, cross-host asset/frame, logout and migration/rollback tests.
+   Only then recommend virtual-host production mode.
+
+Acceptance gates: stable mappings across restart; collision failure without partial
+writes; shared-host authorization unchanged; disable/delete enforced immediately;
+unknown Host rejected; upstream dialing remains validated; no credentials cross
+origin boundaries; replay/expired/swapped tickets fail; central logout revokes
+all grants; complex encoded links preserve target bytes; raw limitations explicit;
+no sensitive target/ticket logs; old GET bookmarks and rollback documented.
+
+## Decisions for maintainer review
+
+- Approve generated opaque canonical labels plus optional friendly aliases, with
+  permanent non-reassignment of retired labels.
+- Approve explicitly registered concrete hosts even when a policy permits a wider
+  suffix; this trades automatic wildcard-host discovery for inspectability.
+- Choose legacy path deployment separation versus redirect-only production
+  migration; do not serve vendor scripts alongside central credentials.
+- Confirm fragment rejection, raw compatibility parsing and no login alias.
+- Set ticket/continuation limits and retention, exact nonce-binding protocol,
+  iframe bootstrapping expectations, and shared-host resource-policy conflict
+  behavior in the detailed specifications before runtime implementation.
+
+## Implemented internal handoff security foundation
+
+`internal/api/handoff_security.go` coordinates the bounded in-memory state in
+`pending_handoffs.go`. The default server leaves it inactive. The
+`APP_EXPERIMENTAL_HANDOFF=true` test-only runtime now constructs it and connects
+launch, central confirmation and one exact registered-vendor control endpoint.
+Vendor content delivery and rewriting remain disabled; default path/query
+operation is unchanged.
+
+Pending browser handoffs last at most five minutes. Confirmation replaces a
+prepared handoff with a cryptographically random, single-use 60-second ticket;
+redemption atomically replaces that ticket with a host-specific grant that
+expires after 30 minutes without authorized use (update: experimental delivery
+renews it on use). All lifetimes are capped by the original central session's
+absolute expiration. Records include creation/expiration times, parent user and
+session references, the captured account `auth_version`, and exact registry
+hostname/label and proxy authority. Tokens and browser nonces are stored only as
+SHA-256 hashes. Pending handoffs and tickets also bind the selected approved
+resource ID (at most 128 bytes); confirmation and redemption reject a change to
+the resource selected for that same target, even when the replacement permits
+access. Tickets retain the approved destination only until redemption;
+grants retain no destination or browsing history.
+
+Vendor preparation now issues a separate 32-random-byte return proof, retaining
+only its hash in the pending record. It lasts at most 60 seconds and is capped by
+pending/parent expiry. Same-vendor-nonce retries replace that proof without
+extending the pending deadline. Confirmation requires the proof as well as the
+central session/nonce, and checks it again under the atomic transition lock.
+This prevents confirmation based only on another browser having completed
+preflight. Proofs are not retained in tickets/grants. Central confirmation now has
+a central HTTP handler with exact host/Origin checks, unique prefixed cookie
+validation, form CSRF, bounded parsing and a fixed registered-vendor redirect.
+The experimental flag connects it and launch to the vendor control handler.
+To admit only the redemption endpoint, preflight uses the same
+`/.well-known/odo/redeem` path with an opaque `handoff` field; ticket exchange uses
+a `ticket` field. The clean endpoint validates the grant and shows only an inert
+receipt. No upstream destination enters the preflight or ticket redirects.
+Update: redemption now continues to the ticket's server-side target on the same
+proxy host, and grant-less document navigations restart the handoff at central
+`/launch`; see the virtual-host routing architecture document.
+
+The coordinator verifies the complete central token before beginning or
+confirming a handoff. Vendor operations require their own browser nonce and
+never receive that central token. Issuance, confirmation, redemption, and grant
+validation recheck the persistent registry, current resource/method policy and
+existing DNS/SSRF validation. Grant validation takes the actual requested
+upstream target and method: host enrollment alone never authorizes a resource.
+These checks perform no fetch and do not update session activity timestamps.
+
+Each redemption and grant use reads a joined session/account snapshot and
+requires an active account, matching user and authentication version, matching
+session hash, no revocation, and valid absolute and idle lifetimes. Central
+logout revokes that session. Password, account status, role, deletion and
+restoration changes transactionally advance the account authentication version
+and revoke affected sessions. An old grant therefore cannot survive such a
+change simply because its own TTL remains. Definitively invalid parents remove
+all their local handoff state; absence represents local revocation rather than
+retaining unbounded revocation tombstones. Database errors fail closed without
+asserting successful revocation. No authentication result is cached.
+
+Database validation and memory transitions are separate operations. A concurrent
+revocation can occur after a validation snapshot; every subsequent use must
+validate again, including any newly minted grant. Requests already authorized
+before a security change may finish. This is not a cross-store transaction or a
+promise to cancel requests already in flight.
+
+State has hard limits of 256 pending records, 256 tickets, 4096 grants overall
+and 64 grants per parent session. Retained fields are length-bounded. Expired
+entries are reclaimed on operations; capacity exhaustion rejects new state and
+preserves live entries for retry. Restart loses all state and requires a new
+handoff. State is process-local: multiple replicas require a deliberate shared
+storage/affinity design before deployment. No persistent patron destination
+history or background worker is introduced.
+
+The reviewed HTTP/browser handshake with host-only nonce/grant cookies and CSRF
+defenses is implemented experimentally. Remaining delivery gates include live
+integration of the isolated upstream cookie manager, validated-IP dialing on
+actual fetches, session activity handling, redirect/content rewriting, wildcard
+DNS/TLS deployment, and end-to-end browser and privacy testing. Update: with the
+experimental flag, the host guard now also admits grant-authorized GET/HEAD
+vendor content (rewriting only same-host absolute URLs in HTML attributes),
+through the live cookie coordinator and
+validated-IP dialing; production delivery remains disabled. See
+[virtual-host routing](../architecture/virtual-host-routing.md#experimental-vendor-content-delivery).
+
+
+## Experimental handoff integration status
+
+Implemented and enabled only for testing: `/launch` authentication continuation,
+return-proof preflight, explicit central confirmation POST, atomic ticket exchange
+and host-only `__Host-odo_proxy_grant` issuance. `APP_EXPERIMENTAL_HANDOFF`
+defaults false, requires the central host guard and valid HTTPS deployment names,
+and is rejected for production or unknown environments. The flag captures
+configuration at startup and blocks central-origin path content/recovery and
+diagnostic body previews while active. Validated legacy GET bookmarks redirect
+to configured central launch without fetching or minting credentials; HEAD and
+unsafe methods return 405 without reading/replaying their bodies. Ordinary
+path/query/dual deployments retain their behavior with it off.
+
+Only the exact redemption path is admitted on registered vendor hosts, and only
+GET control phases are supported. Other paths remain 421, including every
+central management route. Cookie nonces/grants are Secure/HttpOnly, Path=/,
+SameSite=Lax and no Domain. Grant receipts check the live parent/account version
+and current registry/domain policy; future content fetches must also check the
+actual resource URL/method and connection-time SSRF safety.
+
+All control responses use no-store/no-referrer and script-free/frame-denied
+policy. Experimental logging suppresses Referer and User-Agent even for combined
+and JSON formats. Edge log suppression is a separate deployment requirement.
+No central credential is copied to vendor URLs or cookies. State bounds and
+lifetimes above are unchanged. Restart invalidates the process-local grant state;
+requests already authorized before a revocation may finish.
+
+Bounded parent/resource upstream cookie jars and cookie-policy enforcement are
+implemented separately, with public-suffix/deployment-domain restrictions and
+policy retirement. They are not connected to delivery or live authorization,
+resource updates or session retirement. Not implemented/enabled: production
+virtual-host content, live jar integration, rewriting, cold-host bootstrap and
+multi-instance state. The old proposed separate `/prepare` vendor path is not
+admitted by this implementation. See [the routing guide](../architecture/virtual-host-routing.md)
+for the exact fake-host test commands, flag configuration and remaining gates.
+
+## Update 2026-11-13: production availability (0.1.0)
+
+`APP_PROXY_URL_MODE=virtual_host` now enables the runtime in production.
+Release gates as assessed for 0.1.0:
+
+- **Gates 1–5 (registry, launch, handoff, cookie isolation, delivery):**
+  implemented, with regression tests.
+- **Gate 6 (wildcard DNS/TLS examples, including DNS-01):** documented in the
+  [setup guide](../virtual-host-proxying.md).
+- **Gate 7 (security behaviour):** covered by automated tests. These cover
+  browser isolation, DNS-rebinding defence through validated-IP dialing, and
+  replay or expired tickets. They also cover cross-host assets, logout
+  revocation, readable-name migration, and launch from legacy bookmarks.
+- **Gate 7 (vendor compatibility):** remains per resource. JSTOR is the
+  regression fixture.
+
+Two decisions taken:
+
+- **Instances:** a single instance is required. Host grants persist across
+  restarts (`handoff_grants`); pending protocol state and vendor cookie jars do
+  not.
+- **Migration path:** redirect-only migration. The central origin never serves
+  vendor content in this mode.
+
+Shared state for multiple instances, and vendor cookie-jar persistence, remain
+future work.
+

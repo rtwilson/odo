@@ -94,6 +94,7 @@ APP_DB_PATH=/var/lib/odo/odo.db
 APP_ACCESS_LOG_PATH=/var/log/odo/access.log
 APP_ACCESS_LOG_FORMAT=privacy
 APP_KEY_HASH_SECRET=change-me
+APP_LOG_PSEUDONYM_SECRET=change-me
 APP_ADMIN_API_KEY=change-me
 APP_PROXY_REQUIRE_LOGIN=true
 APP_TRUST_PROXY_HEADERS=true
@@ -112,7 +113,10 @@ Use different random values for:
 ```bash
 APP_KEY_HASH_SECRET=...
 APP_ADMIN_API_KEY=...
+APP_LOG_PSEUDONYM_SECRET=...
 ```
+
+`APP_LOG_PSEUDONYM_SECRET` (at least 32 bytes) keys the pseudonymous patron identifiers in access logs. Holding it is what allows re-identification, so store it separately from other secrets and keep it stable. See [patron log pseudonymization](security/patron-log-pseudonymization.md).
 
 `APP_KEY_HASH_SECRET` is used to protect stored API key hashes. Keep it stable after deployment. Changing it may invalidate or break verification of stored API keys, depending on the current Odo implementation.
 
@@ -318,6 +322,19 @@ Set:
 APP_PUBLIC_URL=https://access.example.edu
 APP_TRUST_PROXY_HEADERS=true
 ```
+
+## Optional: Virtual-Host Proxying
+
+The reverse-proxy examples above serve path-mode Odo on one hostname.
+Virtual-host mode (`APP_PROXY_URL_MODE=virtual_host`) gives each vendor host
+its own proxy hostname. It also needs:
+- wildcard DNS for `*.<proxy base>`;
+- a wildcard certificate obtained with ACME DNS-01;
+- a reverse proxy that forwards the original `Host` on port 443;
+- exactly one Odo instance.
+
+Follow the [virtual-host setup guide](virtual-host-proxying.md) before
+enabling it.
 
 ## First Access: Bootstrap Key, Stored API Key, and Admin Login
 
@@ -582,7 +599,7 @@ sudo systemctl start odo
 sudo systemctl status odo
 ```
 
-Database migrations run automatically on startup if implemented by the current Odo build.
+Database migrations run automatically on startup. Odo stops gracefully on `systemctl stop`, letting in-flight requests finish for up to 8 seconds. Upgrading to 0.1.0 requires `APP_LOG_PSEUDONYM_SECRET` in production; see the [changelog](../CHANGELOG.md).
 
 Before upgrading server installations, back up:
 
@@ -785,6 +802,7 @@ If direct access works, check reverse proxy configuration, SELinux, firewall, an
 - [ ] Run `sudo scripts/install-linux.sh`.
 - [ ] Edit `/etc/odo/odo.env`.
 - [ ] Replace `APP_KEY_HASH_SECRET`.
+- [ ] Set `APP_LOG_PSEUDONYM_SECRET` (at least 32 random bytes).
 - [ ] Replace `APP_ADMIN_API_KEY`.
 - [ ] Confirm `APP_DB_PATH=/var/lib/odo/odo.db`.
 - [ ] Set `APP_PUBLIC_URL=https://access.example.edu`.

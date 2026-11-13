@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,7 +29,16 @@ type Server struct {
 	startedAt  time.Time
 	bootSecret string
 
-	loginThrottle *loginThrottle
+	loginThrottle       *loginThrottle
+	launchContinuations *launchContinuations
+	handoff             *handoffSecurity
+	handoffErr          error
+
+	// Host-guard settings are read once, so request handling, cookie names and
+	// the guard always agree even if the environment changes later.
+	hostGuardEnabled bool
+	hostGuardConfig  proxy.HostRoutingConfig
+	hostGuardErr     error
 }
 
 func NewServer(store *db.Store, configDir, adminKey string, logger *slog.Logger) *Server {
@@ -60,7 +71,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 	if client == nil {
 		client = proxy.DefaultHTTPClientWithResolver(lookup)
 	}
-	return &Server{
+	server := &Server{
 		store:      store,
 		configDir:  configDir,
 		adminKey:   adminKey,
@@ -75,8 +86,49 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		startedAt:  time.Now().UTC(),
 		bootSecret: randomBootSecret(),
 
-		loginThrottle: newLoginThrottle(),
+		loginThrottle:       newLoginThrottle(),
+		launchContinuations: newLaunchContinuations(),
 	}
+	server.hostGuardEnabled, server.hostGuardConfig, server.hostGuardErr = hostGuardConfigFromEnv()
+	enabled, config, err := virtualHostRoutingConfig()
+	server.handoffErr = err
+	if enabled && err == nil {
+		server.handoff, server.handoffErr = newHandoffRuntime(server, config)
+	}
+	return server
+}
+
+// newHandoffRuntime owns one cookie coordinator (sharing this Server's Store
+// with every resource writer) and one dedicated upstream client. Vendor delivery
+// never uses the injectable legacy proxy client or the odo_proxy_sid store. A
+// construction failure disables the experiment: guardHost then rejects all
+// requests rather than falling back to another mode.
+func newHandoffRuntime(server *Server, config proxy.HostRoutingConfig) (*handoffSecurity, error) {
+	h := &handoffSecurity{server: server, config: config, state: newPendingHandoffs()}
+	// Host grants survive restarts; a load failure disables vhost routing
+	// (fail closed) rather than starting with an inconsistent state.
+	h.state.persist = server.store
+	if err := h.state.loadGrants(time.Now().UTC()); err != nil {
+		return nil, errors.New("persisted host grants could not be loaded")
+	}
+	cookies, err := newGrantCookieCoordinator(h)
+	if err != nil {
+		return nil, errors.New("experimental handoff cookie coordinator could not be constructed")
+	}
+	h.cookies = cookies
+	// Post-commit retirement: clear in-memory credential state as soon as a
+	// resource change or session revocation commits, instead of at the next
+	// request. Live revalidation on every request remains the authority.
+	server.store.AddCommitHooks(db.CommitHooks{
+		ResourcesChanged: func() { _, _ = cookies.publishPolicies() },
+		SessionsRevoked:  cookies.retireParents,
+	})
+	// Dial-time validation reads the same resolver as the coordinator's target
+	// check, so the two can never be configured differently.
+	h.vendor = proxy.NewSafeHTTPClient(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return server.ipLookup(ctx, host)
+	}, nil, nil)
+	return h, nil
 }
 
 func (s *Server) Routes() http.Handler {
@@ -91,6 +143,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /logout", s.logout)
 	mux.HandleFunc("POST /logout", s.logoutPost)
 	mux.HandleFunc("GET /resources", s.userResources)
+	mux.HandleFunc("GET /launch", s.launch)
+	mux.HandleFunc("POST /launch", s.launch)
+	mux.HandleFunc("GET /launch/continue", s.continueLaunch)
+	mux.HandleFunc("POST /launch/continue", s.continueLaunch)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /auth/saml/metadata", s.samlMetadata)
 	mux.HandleFunc("GET /auth/saml/login", s.samlLogin)
@@ -106,6 +162,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/resources/{id}", s.requireScopes(s.getResource, "resources:read"))
 	mux.HandleFunc("PUT /api/v1/resources/{id}", s.requireScopes(s.putResource, "resources:write"))
 	mux.HandleFunc("DELETE /api/v1/resources/{id}", s.requireScopes(s.deleteResource, "resources:write"))
+	mux.HandleFunc("POST /api/v1/proxy-hostnames/reconcile", s.requireScopes(s.reconcileProxyHostnames, "resources:write"))
+	mux.HandleFunc("GET /api/v1/proxy-hostnames/{label}", s.requireScopes(s.getProxyHostname, "resources:read"))
 	mux.HandleFunc("POST /api/v1/config/validate", s.requireScopes(s.validateConfig, "config:write"))
 	mux.HandleFunc("POST /api/v1/config/import", s.requireScopes(s.importConfig, "config:write"))
 	mux.HandleFunc("GET /api/v1/config/revisions", s.requireScopes(s.listConfigRevisions, "config:read"))
@@ -113,6 +171,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/rules/test-url", s.requireScopes(s.testURL, "resources:read", "diagnostics:read"))
 	mux.HandleFunc("POST /api/v1/proxy/test-fetch", s.requireScopes(s.proxyTestFetch, "diagnostics:read"))
 	mux.HandleFunc("GET /api/v1/logs/access/recent", s.requireScopes(s.recentAccessLogs, "logs:read"))
+	mux.HandleFunc("POST /api/v1/logs/access/reidentify", s.requireScopes(s.reidentifyPatron, reidentifyScope))
+	mux.HandleFunc("GET /api/v1/settings/log-pseudonymization", s.requireScopes(s.getLogPseudonymPolicy, "system:read", "logs:read"))
+	mux.HandleFunc("PUT /api/v1/settings/log-pseudonymization", s.requireScopes(s.setLogPseudonymPolicy, "admin"))
 	mux.HandleFunc("GET /api/v1/diagnostics/proxy/recent", s.requireScopes(s.recentProxyDiagnostics, "diagnostics:read"))
 	mux.HandleFunc("GET /api/v1/diagnostics/missed-rewrites/recent", s.requireScopes(s.recentMissedRewrites, "diagnostics:read"))
 	mux.HandleFunc("POST /api/v1/api-keys", s.requireScopes(s.createAPIKey, "api_keys:write"))
@@ -129,6 +190,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/users", s.requireScopes(s.createUser, "users:write"))
 	mux.HandleFunc("GET /api/v1/users/{id}", s.requireScopes(s.getUser, "users:read", "users:write"))
 	mux.HandleFunc("PATCH /api/v1/users/{id}", s.requireScopes(s.patchUser, "users:write"))
+	mux.HandleFunc("DELETE /api/v1/users/{id}", s.requireScopes(s.deleteUser, "users:write"))
+	mux.HandleFunc("POST /api/v1/users/{id}/restore", s.requireScopes(s.restoreUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/set-password", s.requireScopes(s.setUserPassword, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/disable", s.requireScopes(s.disableUser, "users:write"))
 	mux.HandleFunc("POST /api/v1/users/{id}/enable", s.requireScopes(s.enableUser, "users:write"))
@@ -143,6 +206,12 @@ func (s *Server) Routes() http.Handler {
 		DebugHeaders: s.proxyDebug,
 		Diagnostics:  s.proxyDiag,
 	}))
+	if s.handoff != nil {
+		proxyHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handoffHeaders(w, r, "handoff_content_disabled")
+			writeError(w, 403, "vendor content delivery is disabled")
+		})
+	}
 	s.proxyH = proxyHandler
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /odo", s.requireProxySession(proxyHandler))
@@ -150,5 +219,9 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.HandleFunc("GET /p", s.legacyProxyRedirect)
 	mux.HandleFunc("HEAD /p", s.legacyProxyRedirect)
-	return s.logging(appSecurityHeaders(s.requireAPIAuthentication(mux)))
+	central := s.requireAPIAuthentication(mux)
+	if s.handoff != nil {
+		central = s.handoff.dispatchCentral(central)
+	}
+	return s.logging(appSecurityHeaders(s.guardHost(s.guardCentralOrigin(central))))
 }

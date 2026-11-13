@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"example.org/odo/internal/auth/saml"
@@ -16,6 +18,10 @@ import (
 
 type Store struct {
 	db *sql.DB
+	// Orders resource commits with WithResourceSnapshot callbacks on this Store.
+	resourceMu sync.Mutex
+	hooksMu    sync.Mutex
+	hooks      []CommitHooks
 }
 
 type ConfigRevision struct {
@@ -54,6 +60,7 @@ type User struct {
 	Email        string   `json:"email,omitempty"`
 	DisplayName  string   `json:"display_name,omitempty"`
 	PasswordHash string   `json:"-"`
+	AuthVersion  int64    `json:"-"`
 	Status       string   `json:"status"`
 	Roles        []string `json:"roles"`
 	CreatedAt    string   `json:"created_at"`
@@ -75,11 +82,25 @@ type Session struct {
 	IPHash        string `json:"ip_hash,omitempty"`
 }
 
+// sqliteConnectionParams applies to every pooled connection. SQLite allows one
+// writer at a time: without a busy timeout, a connection that meets another
+// connection's write lock fails at once with SQLITE_BUSY (concurrent session
+// touches, logins, resource or registry writes). Immediate transactions take the
+// write lock at BEGIN, so read-then-write transactions wait for it instead of
+// failing on lock upgrade, where SQLite skips the busy handler. The journal
+// mode is unchanged.
+const sqliteConnectionParams = "?_pragma=busy_timeout(5000)&_txlock=immediate"
+
 func Open(path string) (*Store, error) {
+	// The driver splits a plain DSN at its first '?', which would silently open
+	// a different file and drop the connection parameters.
+	if strings.Contains(path, "?") {
+		return nil, errors.New("database path must not contain '?'")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	conn, err := sql.Open("sqlite", path)
+	conn, err := sql.Open("sqlite", path+sqliteConnectionParams)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +120,69 @@ CREATE TABLE IF NOT EXISTS resources (
 	config_json TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS resource_state (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	revision INTEGER NOT NULL CHECK (typeof(revision) = 'integer' AND revision >= 0)
+);
+INSERT OR IGNORE INTO resource_state (id, revision) VALUES (1, 0);
+
+-- Append-only history of patron-key rotation policies. The latest row applies
+-- to new access-log lines; earlier rows let re-identification derive keys for
+-- lines written under them.
+CREATE TABLE IF NOT EXISTS log_pseudonym_policies (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	mode TEXT NOT NULL CHECK (mode IN ('never', 'session', 'time')),
+	unit TEXT NOT NULL DEFAULT '',
+	count INTEGER NOT NULL DEFAULT 0,
+	effective_from TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS log_pseudonym_policies_append_only_update
+BEFORE UPDATE ON log_pseudonym_policies
+BEGIN SELECT RAISE(ABORT, 'pseudonym policy history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS log_pseudonym_policies_append_only_delete
+BEFORE DELETE ON log_pseudonym_policies
+BEGIN SELECT RAISE(ABORT, 'pseudonym policy history is append-only'); END;
+
+-- Host grants survive restarts. Only the SHA-256 hash of each grant token is
+-- stored; every use still re-validates the live parent session, account,
+-- registry mapping, resource policy and DNS safety, so a row never authorizes
+-- anything by itself.
+CREATE TABLE IF NOT EXISTS handoff_grants (
+	token_hash TEXT PRIMARY KEY NOT NULL,
+	parent_user_id TEXT NOT NULL,
+	parent_auth_version INTEGER NOT NULL,
+	parent_session_id TEXT NOT NULL,
+	parent_session_hash TEXT NOT NULL,
+	hostname TEXT NOT NULL,
+	label TEXT NOT NULL,
+	proxy_authority TEXT NOT NULL,
+	family TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	limit_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS handoff_grants_parent ON handoff_grants (parent_session_id);
+CREATE INDEX IF NOT EXISTS handoff_grants_expires ON handoff_grants (expires_at);
+
+CREATE TABLE IF NOT EXISTS proxy_hostnames (
+	hostname TEXT PRIMARY KEY NOT NULL,
+	label TEXT UNIQUE NOT NULL
+);
+
+-- Retired names are permanent tombstones, never routable aliases.
+CREATE TABLE IF NOT EXISTS proxy_hostname_retired_labels (
+ label TEXT PRIMARY KEY NOT NULL,
+ hostname TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS proxy_hostname_no_retired_insert
+BEFORE INSERT ON proxy_hostnames
+WHEN EXISTS (SELECT 1 FROM proxy_hostname_retired_labels WHERE label = NEW.label)
+BEGIN SELECT RAISE(ABORT, 'proxy hostname label is retired'); END;
+CREATE TRIGGER IF NOT EXISTS proxy_hostname_no_retired_update
+BEFORE UPDATE OF label ON proxy_hostnames
+WHEN EXISTS (SELECT 1 FROM proxy_hostname_retired_labels WHERE label = NEW.label)
+BEGIN SELECT RAISE(ABORT, 'proxy hostname label is retired'); END;
 
 CREATE TABLE IF NOT EXISTS audit_events (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,6 +249,39 @@ CREATE TABLE IF NOT EXISTS sessions (
 	ip_hash TEXT NULL
 );
 `)
+	if err != nil {
+		return err
+	}
+	// Additive, idempotent migration for existing databases. Keep this private
+	// counter out of user JSON; zero preserves all existing account/session data.
+	rows, err := s.db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "auth_version" {
+			found = true
+		}
+	}
+	readErr := rows.Err()
+	closeErr := rows.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !found {
+		_, err = s.db.Exec(`ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0`)
+	}
 	return err
 }
 
@@ -177,9 +294,18 @@ func (s *Store) UpsertResource(resource resources.Resource) error {
 	if err != nil {
 		return err
 	}
+	s.resourceMu.Lock()
+	defer s.resourceMu.Unlock()
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	_, err = s.db.Exec(`
+	// Resource state and its audit must succeed together. Future policy
+	// publication must not miss a committed write reported as an audit failure.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`
 INSERT INTO resources (id, name, status, config_json, updated_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -192,7 +318,16 @@ ON CONFLICT(id) DO UPDATE SET
 		return err
 	}
 
-	return s.Audit("resource.upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, resource.ID, resource.Status))
+	if err := advanceResourceRevision(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO audit_events (ts, event, detail) VALUES (?, ?, ?)`, now,
+		"resource.upsert", fmt.Sprintf(`{"id":%q,"status":%q}`, resource.ID, resource.Status)); err != nil {
+		return err
+	}
+	err = tx.Commit()
+	s.resourcesChanged()
+	return err
 }
 
 func (s *Store) ListResources() ([]resources.Resource, error) {
@@ -200,6 +335,11 @@ func (s *Store) ListResources() ([]resources.Resource, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeResourceRows(rows)
+}
+
+// Both ordinary reads and transactional snapshots use the same validation.
+func decodeResourceRows(rows *sql.Rows) ([]resources.Resource, error) {
 	defer rows.Close()
 
 	var out []resources.Resource
@@ -234,7 +374,14 @@ func (s *Store) GetResource(id string) (resources.Resource, bool, error) {
 }
 
 func (s *Store) DeleteResource(id string) (bool, error) {
-	result, err := s.db.Exec(`DELETE FROM resources WHERE id = ?`, id)
+	s.resourceMu.Lock()
+	defer s.resourceMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`DELETE FROM resources WHERE id = ?`, id)
 	if err != nil {
 		return false, err
 	}
@@ -245,7 +392,16 @@ func (s *Store) DeleteResource(id string) (bool, error) {
 	if rows == 0 {
 		return false, nil
 	}
-	if err := s.Audit("resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+	if err := advanceResourceRevision(tx); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`INSERT INTO audit_events (ts, event, detail) VALUES (?, ?, ?)`, time.Now().UTC().Format(time.RFC3339),
+		"resource.delete", fmt.Sprintf(`{"id":%q}`, id)); err != nil {
+		return false, err
+	}
+	err = tx.Commit()
+	s.resourcesChanged()
+	if err != nil {
 		return false, err
 	}
 	return true, nil
@@ -624,7 +780,16 @@ VALUES (?, ?, nullif(?, ''), nullif(?, ''), ?, ?, ?, ?, ?, nullif(?, ''), nullif
 }
 
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users ORDER BY username`)
+	return s.listUsers(false)
+}
+
+// ListDeletedUsers is separate so normal administration does not include deleted accounts.
+func (s *Store) ListDeletedUsers() ([]User, error) {
+	return s.listUsers(true)
+}
+
+func (s *Store) listUsers(deleted bool) ([]User, error) {
+	rows, err := s.db.Query(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE (status = 'deleted') = ? ORDER BY username`, deleted)
 	if err != nil {
 		return nil, err
 	}
@@ -641,52 +806,148 @@ func (s *Store) ListUsers() ([]User, error) {
 }
 
 func (s *Store) GetUser(id string) (User, bool, error) {
-	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, id)
 	return scanUserFound(row)
 }
 
 func (s *Store) GetUserByUsername(username string) (User, bool, error) {
-	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, '') FROM users WHERE username = ?`, username)
+	row := s.db.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE username = ?`, username)
 	return scanUserFound(row)
 }
 
+// UserPatch carries only fields explicitly supplied by a management caller.
+type UserPatch struct {
+	Email       *string
+	DisplayName *string
+	Status      string
+	Roles       []string
+}
+
 func (s *Store) UpdateUser(user User) (User, bool, error) {
-	existing, found, err := s.GetUser(user.ID)
+	return s.PatchUser(user.ID, UserPatch{Email: &user.Email, DisplayName: &user.DisplayName, Status: user.Status, Roles: user.Roles})
+}
+
+func (s *Store) PatchUser(id string, patch UserPatch) (User, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback()
+	existing, found, err := userForUpdate(tx, id)
 	if err != nil || !found {
 		return User{}, found, err
 	}
-	if user.Username == "" {
-		user.Username = existing.Username
+	if existing.Status == "deleted" {
+		return User{}, true, ErrUserDeleted
 	}
-	if user.Status == "" {
-		user.Status = existing.Status
+	user := existing
+	if patch.Email != nil {
+		user.Email = *patch.Email
 	}
-	if len(user.Roles) == 0 {
-		user.Roles = existing.Roles
+	if patch.DisplayName != nil {
+		user.DisplayName = *patch.DisplayName
+	}
+	if patch.Status != "" {
+		user.Status = patch.Status
+	}
+	if len(patch.Roles) > 0 {
+		user.Roles = patch.Roles
+	}
+	securityChange := user.Status == "disabled" || user.Status == "locked" || !sameRoles(existing.Roles, user.Roles)
+	if err := protectLastAdministrator(tx, existing, user.Status, user.Roles); err != nil {
+		return User{}, false, err
 	}
 	roles, err := json.Marshal(user.Roles)
 	if err != nil {
 		return User{}, false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = s.db.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, updated_at = ? WHERE id = ?`,
-		user.Email, user.DisplayName, user.Status, string(roles), now, user.ID)
+	if securityChange {
+		user.AuthVersion++
+	}
+	disabledAt, lockedAt := existing.DisabledAt, existing.LockedAt
+	if user.Status != existing.Status {
+		disabledAt, lockedAt = "", ""
+		if user.Status == "disabled" {
+			disabledAt = now
+		}
+		if user.Status == "locked" {
+			lockedAt = now
+		}
+	}
+	result, err := tx.Exec(`UPDATE users SET email = nullif(?, ''), display_name = nullif(?, ''), status = ?, roles_json = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ?, auth_version = ? WHERE id = ? AND status != 'deleted'`,
+		user.Email, user.DisplayName, user.Status, string(roles), disabledAt, lockedAt, now, user.AuthVersion, user.ID)
 	if err != nil {
 		return User{}, false, err
 	}
-	return s.GetUser(user.ID)
+	if rows, err := result.RowsAffected(); err != nil || rows == 0 {
+		if err != nil {
+			return User{}, false, err
+		}
+		return User{}, true, ErrUserDeleted
+	}
+	var revoked []string
+	if securityChange {
+		if revoked, err = revokeUserSessionsTx(tx, now, user.ID); err != nil {
+			return User{}, false, err
+		}
+	}
+	updated, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, user.ID))
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, false, err
+	}
+	s.sessionsRevoked(revoked)
+	return updated, true, nil
 }
 
+// SetUserPassword commits the new password and session revocation together.
+// Missing/deleted accounts remain unavailable and do not trigger revocation.
 func (s *Store) SetUserPassword(id, hash string) (bool, error) {
-	result, err := s.db.Exec(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, hash, time.Now().UTC().Format(time.RFC3339), id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := tx.Exec(`UPDATE users SET password_hash = ?, updated_at = ?, auth_version = auth_version + 1 WHERE id = ? AND status != 'deleted'`, hash, now, id)
 	if err != nil {
 		return false, err
 	}
 	rows, err := result.RowsAffected()
-	return rows > 0, err
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	revoked, err := revokeUserSessionsTx(tx, now, id)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	s.sessionsRevoked(revoked)
+	return true, nil
 }
 
 func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback()
+	existing, found, err := userForUpdate(tx, id)
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if existing.Status == "deleted" {
+		// Match PatchUser: the account exists but must be restored first.
+		return User{}, true, ErrUserDeleted
+	}
+	if err := protectLastAdministrator(tx, existing, status, existing.Roles); err != nil {
+		return User{}, false, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	disabledAt, lockedAt := "", ""
 	if status == "disabled" {
@@ -695,7 +956,11 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if status == "locked" {
 		lockedAt = now
 	}
-	result, err := s.db.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ? WHERE id = ?`, status, disabledAt, lockedAt, now, id)
+	version := existing.AuthVersion
+	if status == "disabled" || status == "locked" {
+		version++
+	}
+	result, err := tx.Exec(`UPDATE users SET status = ?, disabled_at = nullif(?, ''), locked_at = nullif(?, ''), updated_at = ?, auth_version = ? WHERE id = ? AND status != 'deleted'`, status, disabledAt, lockedAt, now, version, id)
 	if err != nil {
 		return User{}, false, err
 	}
@@ -703,10 +968,21 @@ func (s *Store) SetUserStatus(id, status string) (User, bool, error) {
 	if err != nil || rows == 0 {
 		return User{}, false, err
 	}
+	var revoked []string
 	if status == "disabled" || status == "locked" {
-		_ = s.RevokeUserSessions(id)
+		if revoked, err = revokeUserSessionsTx(tx, now, id); err != nil {
+			return User{}, false, err
+		}
 	}
-	return s.GetUser(id)
+	user, found, err := scanUserFound(tx.QueryRow(`SELECT id, username, coalesce(email, ''), coalesce(display_name, ''), password_hash, status, roles_json, created_at, updated_at, coalesce(last_login_at, ''), coalesce(locked_at, ''), coalesce(disabled_at, ''), auth_version FROM users WHERE id = ?`, id))
+	if err != nil || !found {
+		return User{}, found, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, false, err
+	}
+	s.sessionsRevoked(revoked)
+	return user, true, nil
 }
 
 func (s *Store) MarkUserLogin(id string) error {
@@ -714,6 +990,8 @@ func (s *Store) MarkUserLogin(id string) error {
 	return err
 }
 
+// CreateSession stores trusted prepared session data (including test fixtures).
+// Browser login must use CreateAuthenticatedSession to recheck eligibility.
 func (s *Store) CreateSession(session Session) error {
 	_, err := s.db.Exec(`
 INSERT INTO sessions (id, user_id, session_hash, created_at, last_seen_at, expires_at, revoked_at, user_agent_hash, ip_hash)
@@ -752,13 +1030,34 @@ func (s *Store) CountActiveSessionsSince(since time.Time, now time.Time) (int, e
 }
 
 func (s *Store) RevokeSession(id string) error {
-	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), id)
-	return err
+	result, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows > 0 {
+		s.sessionsRevoked([]string{id})
+	}
+	return nil
 }
 
 func (s *Store) RevokeUserSessions(userID string) error {
-	_, err := s.db.Exec(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339), userID)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE users SET auth_version = auth_version + 1 WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	revoked, err := revokeUserSessionsTx(tx, time.Now().UTC().Format(time.RFC3339), userID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.sessionsRevoked(revoked)
+	return nil
 }
 
 type userScanner interface {
@@ -779,7 +1078,7 @@ func scanUserFound(row userScanner) (User, bool, error) {
 func scanUser(row userScanner) (User, error) {
 	var user User
 	var rolesJSON string
-	if err := row.Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash, &user.Status, &rolesJSON, &user.CreatedAt, &user.UpdatedAt, &user.LastLoginAt, &user.LockedAt, &user.DisabledAt); err != nil {
+	if err := row.Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash, &user.Status, &rolesJSON, &user.CreatedAt, &user.UpdatedAt, &user.LastLoginAt, &user.LockedAt, &user.DisabledAt, &user.AuthVersion); err != nil {
 		return User{}, err
 	}
 	if err := json.Unmarshal([]byte(rolesJSON), &user.Roles); err != nil {

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,13 +45,30 @@ func DefaultHTTPClient() *http.Client {
 }
 
 func DefaultHTTPClientWithResolver(lookup IPLookupFunc) *http.Client {
+	return NewSafeHTTPClient(lookup, nil, nil)
+}
+
+// NewSafeHTTPClient builds the upstream client: no cookie jar, no automatic
+// redirects, bounded timeouts, standard certificate verification and
+// connection-time IP validation of every resolved address. dial receives only
+// an already validated "ip:port"; nil uses net.Dialer. A non-nil dial or
+// tlsConfig exists for local fake-vendor tests (for example, test root CAs) and
+// cannot disable the IP checks. tlsConfig must not set InsecureSkipVerify.
+func NewSafeHTTPClient(lookup IPLookupFunc, dial DialContextFunc, tlsConfig *tls.Config) *http.Client {
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	transport := &http.Transport{
+		DialContext:           safeDialContext(lookup, dial),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+	}
+	if tlsConfig != nil && !tlsConfig.InsecureSkipVerify {
+		transport.TLSClientConfig = tlsConfig.Clone()
+	}
 	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			DialContext:           SafeDialContext(lookup),
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 15 * time.Second,
-		},
+		Timeout:   30 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -82,7 +100,12 @@ func FetchHandlerWithOptions(options FetchOptions) http.HandlerFunc {
 		}
 		ctx, diagnostics := WithDiagnostics(r.Context())
 		r = r.WithContext(ctx)
-		session := sessions.GetOrCreate(r, w)
+		session, err := sessions.GetOrCreate(r, w)
+		if err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			httperror.Write(w, r, options.Logger, http.StatusInternalServerError, err)
+			return
+		}
 
 		parsedTarget, parsedMode, _, parseErr := ParseProxyRequest(r)
 		rawURL := ""

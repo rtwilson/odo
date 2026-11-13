@@ -1,0 +1,133 @@
+{
+  "id": "jstor",
+  "name": "JSTOR",
+  "title": "JSTOR",
+  "status": "active",
+  "entry_urls": [
+    "https://www.jstor.org/"
+  ],
+  "http_methods": [
+    "GET",
+    "HEAD",
+    "POST",
+    "PUT",
+    "PATCH",
+    "OPTIONS",
+    "DELETE"
+  ],
+  "cookie_policy": {
+    "enabled": true,
+    "jar_scope": "resource",
+    "allowed_cookie_domains": [
+      "jstor.org"
+    ]
+  },
+  "request_header_rules": [
+    {
+      "name": "X-Requested-With",
+      "action": "remove",
+      "phase": "request"
+    }
+  ],
+  "domains": [
+    {
+      "host": "www.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "jstor.org",
+      "match": "subdomain",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy",
+      "include_subdomains": true
+    },
+    {
+      "host": "dfr.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "labs.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "links.jstor.org",
+      "match": "exact",
+      "role": "redirect",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "mobile.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "about.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "plants.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "uk.jstor.org",
+      "match": "exact",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy"
+    },
+    {
+      "host": "jstore.org",
+      "match": "subdomain",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy",
+      "include_subdomains": true,
+      "notes": "Alias domain from legacy proxy stanza"
+    },
+    {
+      "host": "analytics.example.com",
+      "match": "exact",
+      "role": "unknown",
+      "action": "block",
+      "behavior": "block",
+      "notes": "Example explicit tracking block"
+    },
+    {
+      "host": "amazonaws.com",
+      "match": "subdomain",
+      "role": "content",
+      "action": "proxy",
+      "behavior": "proxy",
+      "include_subdomains": true,
+      "notes": "PDF preview destination observed in a JSTOR upstream redirect; exact bucket host only"
+    }
+  ],
+  "compatibility": {
+    "referer_recovery": true,
+    "js_shim": true,
+    "app_data_recovery": true,
+    "javascript_text_rewriting": false
+  },
+  "sample_urls": [
+    "https://www.jstor.org/"
+  ]
+}

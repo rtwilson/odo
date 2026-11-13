@@ -43,7 +43,15 @@ type IPLookupFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
 var (
 	errMalformedTargetURL = errors.New("target URL is malformed")
 	errUnsafeTargetURL    = errors.New("target URL is not allowed")
+	errTargetUnresolved   = errors.New("target hostname could not be resolved")
+	errTargetNoAddresses  = errors.New("target hostname did not resolve")
 )
+
+// IsTargetResolutionError reports whether ValidateTargetURL failed because DNS
+// gave no usable answer (as opposed to a malformed or unsafe destination).
+func IsTargetResolutionError(err error) bool {
+	return errors.Is(err, errTargetUnresolved) || errors.Is(err, errTargetNoAddresses)
+}
 
 func NormalizeAndValidateTargetURL(raw string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
@@ -128,10 +136,10 @@ func ValidateTargetURL(ctx context.Context, raw string, lookup IPLookupFunc) (*u
 	}
 	addrs, err := lookup(ctx, parsed.Hostname())
 	if err != nil {
-		return nil, errors.New("target hostname could not be resolved")
+		return nil, errTargetUnresolved
 	}
 	if len(addrs) == 0 {
-		return nil, errors.New("target hostname did not resolve")
+		return nil, errTargetNoAddresses
 	}
 	for _, addr := range addrs {
 		if !isSafeResolvedIP(addr.IP) {

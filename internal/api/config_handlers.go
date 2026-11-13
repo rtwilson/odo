@@ -24,6 +24,7 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, errors.Join(failures...))
 		return
 	}
+	s.enrollConfiguredProxyHostnames()
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 

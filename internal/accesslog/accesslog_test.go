@@ -114,3 +114,30 @@ func requestWithMetadata(t *testing.T, method, target string) *http.Request {
 	metadata.RequestID = "req_test"
 	return req.WithContext(ctx)
 }
+
+func TestSensitiveControlsSuppressBrowserHeaders(t *testing.T) {
+	for _, format := range []string{FormatPrivacy, FormatCommon, FormatCombined, FormatJSON} {
+		t.Run(format, func(t *testing.T) {
+			var out bytes.Buffer
+			logger, err := New(format, &out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := requestWithMetadata(t, "GET", "/.well-known/odo/redeem?ticket=private-ticket")
+			req.Header.Set("Referer", "https://odo.example/launch?url=private-search")
+			req.Header.Set("User-Agent", "private-credential")
+			metadata := MetadataFrom(req.Context())
+			metadata.Route = "handoff_vendor"
+			metadata.SuppressBrowserHeaders = true
+			logger.Log(req, 200, 42, time.Millisecond)
+			for _, private := range []string{"private-ticket", "private-search", "private-credential"} {
+				if strings.Contains(out.String(), private) {
+					t.Fatal("sensitive control logged raw browser headers or query")
+				}
+			}
+			if !strings.Contains(out.String(), "handoff_vendor") {
+				t.Fatal("control route missing")
+			}
+		})
+	}
+}
