@@ -26,18 +26,8 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	// Deleting a privileged account must not be easier than demoting it:
 	// changing or restoring non-default roles already requires admin scope.
-	target, exists, err := s.store.GetUser(id)
-	if err != nil {
-		s.internalError(w, r, err)
+	if s.forbidPrivilegedTarget(w, r, id, "delete") {
 		return
-	}
-	if exists && !hasRequiredScope(auth.Scopes, []string{"admin"}) {
-		for _, role := range target.Roles {
-			if role != "user" {
-				writeError(w, http.StatusForbidden, "admin scope is required to delete accounts with non-default roles")
-				return
-			}
-		}
 	}
 	found, err := s.store.DeleteUser(id, actorID)
 	if errors.Is(err, db.ErrDeleteSelf) {
@@ -127,4 +117,37 @@ func (s *Server) restoreUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"restored": true, "id": id, "status": "disabled"})
+}
+
+// forbidPrivilegedTarget enforces that only admin scope may act on an account
+// holding any non-default role. Without it, users:write (for example the
+// security_admin role) could reset an administrator's password and sign in as
+// them, or lock administrators out, escalating beyond its own scopes. Callers
+// acting on their own account are exempt here; handlers keep their own self
+// rules (such as never deleting oneself). It writes the response and returns
+// true when the request must stop. A missing user is left to the handler.
+func (s *Server) forbidPrivilegedTarget(w http.ResponseWriter, r *http.Request, id, action string) bool {
+	auth, ok := r.Context().Value(apiAuthContextKey{}).(AuthContext)
+	if !ok || !auth.IsAuthenticated {
+		writeError(w, http.StatusUnauthorized, "authentication_required")
+		return true
+	}
+	if hasRequiredScope(auth.Scopes, []string{"admin"}) || (auth.SubjectType == "user" && auth.SubjectID == id && action != "delete") {
+		return false
+	}
+	target, found, err := s.store.GetUser(id)
+	if err != nil {
+		s.internalError(w, r, err)
+		return true
+	}
+	if !found {
+		return false
+	}
+	for _, role := range target.Roles {
+		if role != "user" {
+			writeError(w, http.StatusForbidden, "admin scope is required to "+action+" accounts with non-default roles")
+			return true
+		}
+	}
+	return false
 }

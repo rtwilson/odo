@@ -704,7 +704,7 @@ paths:
     patch:
       summary: Update local user metadata, roles, or status
       operationId: patchUser
-      description: Applies only supplied fields to current state under SQLite's writer lock. Disabled/locked status and effective role-set changes (promotion or demotion) commit atomically with session revocation, security-version advancement and accompanying metadata updates. Database failure rolls back the transaction. Active-account metadata edits and equivalent role reordering do not revoke sessions. Omitted roles/status are preserved. The last active administrator cannot be demoted, disabled, or locked (400). Count failures return a generic 500. Audit remains best-effort after commit.
+      description: Applies only supplied fields to current state under SQLite's writer lock. Disabled/locked status and effective role-set changes (promotion or demotion) commit atomically with session revocation, security-version advancement and accompanying metadata updates. Database failure rolls back the transaction. Active-account metadata edits and equivalent role reordering do not revoke sessions. Omitted roles/status are preserved. The last active administrator cannot be demoted, disabled, or locked (400). Count failures return a generic 500. Audit remains best-effort after commit. Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:
@@ -783,7 +783,7 @@ paths:
     post:
       summary: Set a local user's password and revoke existing sessions
       operationId: setUserPassword
-      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Password update and session revocation commit atomically; database failure rolls both back. Includes revocation of the requesting session when resetting one's own password. Missing or deleted accounts return 404. The post-commit audit event remains best-effort.
+      description: Requires users:write or admin and X-Odo-CSRF for browser sessions. Password update and session revocation commit atomically; database failure rolls both back. Includes revocation of the requesting session when resetting one's own password. Missing or deleted accounts return 404. The post-commit audit event remains best-effort. Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:
@@ -805,7 +805,7 @@ paths:
     post:
       summary: Disable a local user and revoke sessions
       operationId: disableUser
-      description: Commits account disablement and session revocation atomically. Database failure rolls back both; later enablement never restores revoked sessions. Post-commit audit remains best-effort.
+      description: Commits account disablement and session revocation atomically. Database failure rolls back both; later enablement never restores revoked sessions. Post-commit audit remains best-effort. Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:
@@ -821,6 +821,7 @@ paths:
     post:
       summary: Enable a local user
       operationId: enableUser
+      description: Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:
@@ -836,7 +837,7 @@ paths:
     post:
       summary: Lock a local user and revoke sessions
       operationId: lockUser
-      description: Commits account locking and session revocation atomically. Database failure rolls back both; later unlocking never restores revoked sessions. Post-commit audit remains best-effort.
+      description: Commits account locking and session revocation atomically. Database failure rolls back both; later unlocking never restores revoked sessions. Post-commit audit remains best-effort. Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:
@@ -852,6 +853,7 @@ paths:
     post:
       summary: Unlock a local user
       operationId: unlockUser
+      description: Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:
@@ -867,6 +869,7 @@ paths:
     post:
       summary: Revoke all browser sessions for a local user
       operationId: revokeUserSessions
+      description: Targets holding any role other than user require admin scope (403) unless the caller acts on its own account; users:write alone (including the security_admin role) manages default-role accounts only.
       security:
         - bearerAuth: []
       parameters:

@@ -106,6 +106,9 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	if req.DisplayName != nil {
 		*req.DisplayName = strings.TrimSpace(*req.DisplayName)
 	}
+	if s.forbidPrivilegedTarget(w, r, id, "update") {
+		return
+	}
 	if len(req.Roles) > 0 {
 		if !s.requestHasAdminScope(r) {
 			writeError(w, http.StatusForbidden, "admin scope is required to change roles")
@@ -162,12 +165,15 @@ func (s *Server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "password must be at most 72 bytes")
 		return
 	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if s.forbidPrivilegedTarget(w, r, id, "set passwords for") {
+		return
+	}
 	hash, err := local.HashPassword(req.Password)
 	if err != nil {
 		s.internalError(w, r, fmt.Errorf("password hashing failed: %w", err))
 		return
 	}
-	id := strings.TrimSpace(r.PathValue("id"))
 	updated, err := s.store.SetUserPassword(id, hash)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -199,6 +205,9 @@ func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
+	if s.forbidPrivilegedTarget(w, r, id, "revoke sessions for") {
+		return
+	}
 	if _, found, err := s.store.GetUser(id); err != nil {
 		s.internalError(w, r, err)
 		return
@@ -216,6 +225,9 @@ func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status string) {
 	id := strings.TrimSpace(r.PathValue("id"))
+	if s.forbidPrivilegedTarget(w, r, id, "change the status of") {
+		return
+	}
 	user, found, err := s.store.SetUserStatus(id, status)
 	if errors.Is(err, db.ErrLastAdministrator) {
 		writeError(w, http.StatusBadRequest, "cannot disable or lock the last admin account")

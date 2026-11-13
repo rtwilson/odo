@@ -100,7 +100,16 @@ The confirmation explains that the account remains disabled. Switch back to
 when access should resume. Old sessions remain revoked throughout.
 
 User mutation controls are hidden without `users:write` or `admin`. Restore is
-disabled for non-default roles unless the caller has `admin`. The API remains the
+disabled for non-default roles unless the caller has `admin`.
+
+Any change to an account holding a role other than `user` requires `admin`
+scope. That covers set-password, disable, enable, lock, unlock,
+revoke-sessions, PATCH (metadata, status or roles), delete and restore.
+`users:write` alone, including the `security_admin` role, manages default-role
+(patron) accounts only. Callers may still act on their own account, except to
+delete it. Before 2026-11-12, `users:write` could reset an administrator's
+password and then sign in as that administrator. Such attempts now return 403
+"admin scope is required to … accounts with non-default roles". The API remains the
 authorization boundary and also rejects deleting the last active administrator.
 The optional API-key override refreshes the displayed permissions when changed.
 Switching account/view clears the password field. Successful deletion/restoration
