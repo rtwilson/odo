@@ -323,6 +323,19 @@ APP_PUBLIC_URL=https://access.example.edu
 APP_TRUST_PROXY_HEADERS=true
 ```
 
+## Optional: Virtual-Host Proxying
+
+The reverse-proxy examples above serve path-mode Odo on one hostname.
+Virtual-host mode (`APP_PROXY_URL_MODE=virtual_host`) gives each vendor host
+its own proxy hostname. It also needs:
+- wildcard DNS for `*.<proxy base>`;
+- a wildcard certificate obtained with ACME DNS-01;
+- a reverse proxy that forwards the original `Host` on port 443;
+- exactly one Odo instance.
+
+Follow the [virtual-host setup guide](virtual-host-proxying.md) before
+enabling it.
+
 ## First Access: Bootstrap Key, Stored API Key, and Admin Login
 
 Odo has two related but different administration mechanisms:
@@ -586,7 +599,7 @@ sudo systemctl start odo
 sudo systemctl status odo
 ```
 
-Database migrations run automatically on startup if implemented by the current Odo build.
+Database migrations run automatically on startup. Odo stops gracefully on `systemctl stop`, letting in-flight requests finish for up to 8 seconds. Upgrading to 0.1.0 requires `APP_LOG_PSEUDONYM_SECRET` in production; see the [changelog](../CHANGELOG.md).
 
 Before upgrading server installations, back up:
 

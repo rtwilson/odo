@@ -1,18 +1,20 @@
 # Virtual-host routing foundation
 
-Virtual-host request routing is disabled. Production startup rejects
-`APP_PROXY_URL_MODE=virtual_host`; development retains its warning and path-mode
-fallback. `APP_EXPERIMENTAL_HANDOFF=true` now enables an isolated authentication
-handoff and a first experimental vendor content path in development/test only.
-It defaults off and is rejected in production. This is not a deployable
-virtual-host proxy mode.
+Since 0.1.0, `APP_PROXY_URL_MODE=virtual_host` enables virtual-host proxying in
+any environment, including production. It requires `APP_HOST_GUARD=true` and
+valid `APP_PUBLIC_URL` / `APP_PROXY_BASE_DOMAIN`. Misconfiguration stops startup
+or returns 503; it never falls back to path mode. `APP_EXPERIMENTAL_HANDOFF=true`
+is a deprecated alias. Operator setup is in the
+[setup guide](../virtual-host-proxying.md). Sections below that say
+"experimental" describe the same runtime as first introduced.
 
 | State | Current behavior |
 | --- | --- |
 | Implemented | Registry, launch/login continuation, bounded hashed tickets/proofs/grants, live parent/version/resource checks, central confirmation and vendor control HTTP handlers, bounded upstream cookie jars and the live grant/snapshot cookie coordinator. |
-| Experimentally available | With the flag, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized vendor content: `GET`/`HEAD`, and same-origin `POST`/`PUT`/`PATCH`/`DELETE` when the resource allows them. Absolute URLs in HTML attributes and redirects are rewritten for the resource's own registered hosts, which receive their own grants in the same handoff ([same-resource hosts, POST and direct launch](#same-resource-hosts-post-and-direct-launch)); see also [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake automatically through a CSRF-protected first-party POST; a valid grant skips handoff. See [automatic handoff](automatic-handoff.md). |
-| Unsupported | JavaScript/CSS rewriting, hosts of other resources or unregistered hosts, cold hosts added after a handoff, anonymous grant-free vendor access, cookie persistence and multi-instance handoff state. |
-| Production-disabled | All vendor-host delivery: startup rejects the flag outside development/test. Central path content, diagnostic body previews and missed-rewrite recovery are blocked while the experimental mode is on; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when off. |
+| Available | With `APP_PROXY_URL_MODE=virtual_host`, registered vendor hosts serve `GET /.well-known/odo/redeem` and grant-authorized vendor content: `GET`/`HEAD`, and same-origin `POST`/`PUT`/`PATCH`/`DELETE` when the resource allows them. Absolute URLs in HTML attributes and redirects are rewritten for the resource's own registered hosts, which receive their own grants in the same handoff ([same-resource hosts, POST and direct launch](#same-resource-hosts-post-and-direct-launch)); see also [experimental vendor content delivery](#experimental-vendor-content-delivery). Central launch and confirmation complete the browser handshake automatically through a CSRF-protected first-party POST; a valid grant skips handoff. See [automatic handoff](automatic-handoff.md). |
+| Persisted | Host grants survive restarts in `handoff_grants` (token hashes only; every use re-validates the live parent session, account, registry, policy and DNS). Pending handoffs, tickets, sibling hops and vendor cookie jars stay in process memory. |
+| Unsupported | JavaScript/CSS rewriting, hosts of other resources or unregistered hosts, anonymous grant-free vendor access, vendor cookie-jar persistence and multiple Odo instances. |
+| Central origin in this mode | Central path content, diagnostic body previews and missed-rewrite recovery are blocked; validated legacy GET bookmarks redirect to central launch. Default path/query deployments are unchanged when the mode is off. |
 
 ## Trusted deployment names
 

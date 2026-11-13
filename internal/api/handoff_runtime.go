@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,29 +18,51 @@ import (
 
 const handoffVendorPath = "/.well-known/odo/redeem"
 
-// A separate test-only mode, not a virtual-host URL strategy. It cannot serve
-// vendor bodies on either origin. Configuration is captured at server creation.
-func experimentalHandoffConfig() (bool, proxy.HostRoutingConfig, error) {
+// virtualHostRoutingConfig decides whether virtual-host proxying runs. It is
+// enabled by APP_PROXY_URL_MODE=virtual_host, in any environment, or by the
+// deprecated alias APP_EXPERIMENTAL_HANDOFF=true. It requires the central host
+// guard and valid HTTPS deployment names; any problem is an error, never a
+// silent fallback to path mode. Configuration is captured at server creation.
+func virtualHostRoutingConfig() (bool, proxy.HostRoutingConfig, error) {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("APP_PROXY_URL_MODE")))
+	legacy := false
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_EXPERIMENTAL_HANDOFF"))) {
 	case "", "false", "0", "no", "off":
-		return false, proxy.HostRoutingConfig{}, nil
 	case "true", "1", "yes", "on":
+		legacy = true
 	default:
 		return false, proxy.HostRoutingConfig{}, errors.New("APP_EXPERIMENTAL_HANDOFF must be true or false")
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
-	case "", "development", "test":
-	default:
-		return true, proxy.HostRoutingConfig{}, errors.New("experimental handoff requires development or test environment")
+	if legacy && mode != "" && mode != proxy.ProxyURLModeVirtualHost {
+		return true, proxy.HostRoutingConfig{}, fmt.Errorf("APP_EXPERIMENTAL_HANDOFF=true conflicts with APP_PROXY_URL_MODE=%s; set APP_PROXY_URL_MODE=virtual_host instead", mode)
+	}
+	if !legacy && mode != proxy.ProxyURLModeVirtualHost {
+		return false, proxy.HostRoutingConfig{}, nil
 	}
 	enabled, config, err := hostGuardConfigFromEnv()
 	if err != nil {
 		return true, config, err
 	}
 	if !enabled {
-		return true, config, errors.New("experimental handoff requires APP_HOST_GUARD=true")
+		return true, config, errors.New("virtual-host proxying requires APP_HOST_GUARD=true, APP_PUBLIC_URL and APP_PROXY_BASE_DOMAIN")
 	}
 	return true, config, nil
+}
+
+// VirtualHostAliasInUse reports the deprecated APP_EXPERIMENTAL_HANDOFF switch,
+// so startup can warn about it.
+func VirtualHostAliasInUse() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_EXPERIMENTAL_HANDOFF"))) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// VirtualHostRoutingEnabled reports whether this process serves virtual hosts.
+func VirtualHostRoutingEnabled() bool {
+	enabled, _, err := virtualHostRoutingConfig()
+	return enabled && err == nil
 }
 
 func handoffHeaders(w http.ResponseWriter, r *http.Request, route string) {

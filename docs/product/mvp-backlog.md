@@ -40,7 +40,7 @@ The original MVP security implementation blockers are fixed; this does not estab
 
 - **Proxy compatibility:** HTML/CSS/form/asset rewriting and a JS shim exist, but README states full JavaScript rewriting, WebSockets, CSP rewriting, and full SPA compatibility are not implemented.
 - **SAML:** Provider config APIs, admin UI, and metadata exist, but login initiation and assertion validation are placeholders.
-- **Virtual-host proxying:** Design doc and config placeholders exist, but routing, host decoding, wildcard TLS/DNS support, and cookie/origin handling are not implemented.
+- **Virtual-host proxying:** Available since 0.1.0 (`APP_PROXY_URL_MODE=virtual_host`), single instance only; vendor cookie jars are not persisted across restarts. See [setup guide](../virtual-host-proxying.md).
 - **Diagnostics:** Access logs, proxy diagnostics, missed rewrites, and runtime metrics exist, but the README describes some diagnostics as still growing.
 - **Admin UI:** Functional and intentionally minimal, but not a polished custom dashboard. Advanced workflows are expected to use JSON APIs.
 - **Load testing:** Local fake-vendor and k6 scripts exist, but they are tooling scaffolds. **Uncertain:** no CI target appears to run k6 or validate performance budgets.
@@ -51,7 +51,6 @@ The original MVP security implementation blockers are fixed; this does not estab
 ## Known Bugs
 
 - **SAML routes are visible but not functional:** They intentionally return not implemented, but users may misread the Auth/SAML UI as production-ready unless docs/UI wording remains clear.
-- **Virtual-host mode accepts configuration only as fallback/warning:** `APP_PROXY_URL_MODE=virtual_host` falls back to path mode. This is documented, but operators may still assume the mode works if they miss the warning.
 - **Runtime cleanup gap:** Expired/revoked login sessions can remain in SQLite. They are ignored/rejected, but accumulation may become operational noise. **Uncertain:** actual growth rate has not been measured.
 - **Proxy compatibility is inherently incomplete:** Complex vendor SPAs may still fail because full JS rewriting, CSP rewriting, WebSockets, and virtual-host origin emulation are not implemented.
 
@@ -81,7 +80,7 @@ The original MVP security implementation blockers are fixed; this does not estab
 
 ## P2 Roadmap
 
-- Implement virtual-host proxy mode after DNS/TLS/admin-host separation design is complete.
+- Virtual-host follow-ups: shared state for multiple instances, vendor cookie-jar persistence, admin log review tools, restart from the admin UI without breaking sessions.
 - Add Postgres support for larger single-node or HA deployments.
 - Add Redis or equivalent shared session/cache store for HA proxy/login sessions.
 - Add complete SAML/Shibboleth SP support, then evaluate OIDC only if product direction requires it.

@@ -625,7 +625,7 @@ func TestVendorDeliveryNeverReachesCentralRoutes(t *testing.T) {
 	}
 }
 
-func TestVendorDeliveryDisabledAndProductionRejected(t *testing.T) {
+func TestVendorDeliveryDisabledByDefaultAndFailsClosed(t *testing.T) {
 	b := newHandoffBrowser(t, false, true)
 	if b.h.server.handoff != nil {
 		t.Fatal("experiment constructed while disabled")
@@ -639,22 +639,32 @@ func TestVendorDeliveryDisabledAndProductionRejected(t *testing.T) {
 		t.Fatal("disabled experiment delivered vendor content")
 	}
 
-	t.Setenv("APP_EXPERIMENTAL_HANDOFF", "true")
+	// Production runs virtual-host mode when fully configured...
+	t.Setenv("APP_EXPERIMENTAL_HANDOFF", "")
+	t.Setenv("APP_PROXY_URL_MODE", "virtual_host")
 	t.Setenv("APP_HOST_GUARD", "true")
 	t.Setenv("APP_PUBLIC_URL", "https://odo.example")
 	t.Setenv("APP_PROXY_BASE_DOMAIN", "proxy.example")
 	t.Setenv("APP_ENV", "production")
+	if err := ValidateHostGuardConfig(); err != nil {
+		t.Fatalf("production rejected a valid virtual-host configuration: %v", err)
+	}
+	if server := NewServer(b.h.server.store, t.TempDir(), "secret", b.h.server.logger); server.handoff == nil || server.handoffErr != nil {
+		t.Fatal("production did not construct the virtual-host runtime")
+	}
+	// ...and fails closed, never falling back to path mode, when it is not.
+	t.Setenv("APP_HOST_GUARD", "false")
 	if err := ValidateHostGuardConfig(); err == nil {
-		t.Fatal("production accepted experimental vendor delivery")
+		t.Fatal("virtual-host mode accepted without the host guard")
 	}
 	server := NewServer(b.h.server.store, t.TempDir(), "secret", b.h.server.logger)
 	if server.handoff != nil || server.handoffErr == nil {
-		t.Fatal("production constructed the experimental runtime")
+		t.Fatal("misconfigured virtual-host mode constructed the runtime")
 	}
 	rec = httptest.NewRecorder()
 	server.Routes().ServeHTTP(rec, httptest.NewRequest("GET", "https://"+b.authority+"/private", nil))
 	if rec.Code != 503 {
-		t.Fatalf("production experiment did not fail closed: %d", rec.Code)
+		t.Fatalf("misconfigured virtual-host mode did not fail closed: %d", rec.Code)
 	}
 	if _, err := newHandoffRuntime(server, proxy.HostRoutingConfig{}); err == nil {
 		t.Fatal("runtime construction accepted an invalid deployment")

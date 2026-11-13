@@ -343,3 +343,31 @@ virtual-host content, live jar integration, rewriting, cold-host bootstrap and
 multi-instance state. The old proposed separate `/prepare` vendor path is not
 admitted by this implementation. See [the routing guide](../architecture/virtual-host-routing.md)
 for the exact fake-host test commands, flag configuration and remaining gates.
+
+## Update 2026-11-13: production availability (0.1.0)
+
+`APP_PROXY_URL_MODE=virtual_host` now enables the runtime in production.
+Release gates as assessed for 0.1.0:
+
+- **Gates 1–5 (registry, launch, handoff, cookie isolation, delivery):**
+  implemented, with regression tests.
+- **Gate 6 (wildcard DNS/TLS examples, including DNS-01):** documented in the
+  [setup guide](../virtual-host-proxying.md).
+- **Gate 7 (security behaviour):** covered by automated tests. These cover
+  browser isolation, DNS-rebinding defence through validated-IP dialing, and
+  replay or expired tickets. They also cover cross-host assets, logout
+  revocation, readable-name migration, and launch from legacy bookmarks.
+- **Gate 7 (vendor compatibility):** remains per resource. JSTOR is the
+  regression fixture.
+
+Two decisions taken:
+
+- **Instances:** a single instance is required. Host grants persist across
+  restarts (`handoff_grants`); pending protocol state and vendor cookie jars do
+  not.
+- **Migration path:** redirect-only migration. The central origin never serves
+  vendor content in this mode.
+
+Shared state for multiple instances, and vendor cookie-jar persistence, remain
+future work.
+

@@ -113,6 +113,69 @@ type pendingHandoffs struct {
 	siblings map[string]siblingTicket
 	// lastSweep throttles full expiry sweeps; lookups check their own key.
 	lastSweep time.Time
+	// persist, when set, keeps host grants across restarts (write-through).
+	// Pending handoffs, tickets and sibling hops stay memory-only: they live
+	// for seconds to minutes and a restart simply restarts the flow.
+	persist          grantStore
+	lastPersistSweep time.Time
+}
+
+// grantStore persists host grants. A stored grant is a cache entry, never an
+// authority: each use re-validates the live parent session, account version,
+// registry mapping, resource policy and DNS safety.
+type grantStore interface {
+	SaveHandoffGrants([]db.HandoffGrantRecord) error
+	DeleteHandoffGrantsForParent(string) error
+	DeleteExpiredHandoffGrants(time.Time) error
+	LiveHandoffGrants(time.Time) ([]db.HandoffGrantRecord, error)
+}
+
+// persistedGrantSweepInterval bounds how often expired grant rows are deleted.
+const persistedGrantSweepInterval = 10 * time.Minute
+
+func grantRecord(key string, g handoffGrant) db.HandoffGrantRecord {
+	b := g.binding
+	return db.HandoffGrantRecord{
+		TokenHash: key, ParentUserID: b.parentUserID, ParentAuthVersion: b.parentAuthVersion,
+		ParentSessionID: b.parentSessionID, ParentSessionHash: b.parentSessionHash, Hostname: b.hostname,
+		Label: b.label, ProxyAuthority: b.proxyAuthority, Family: g.family,
+		Created: g.created, Expires: g.expires, Limit: g.limit,
+	}
+}
+
+// saveGrantsLocked writes grants through to the store, if any.
+func (s *pendingHandoffs) saveGrantsLocked(records ...db.HandoffGrantRecord) error {
+	if s.persist == nil {
+		return nil
+	}
+	return s.persist.SaveHandoffGrants(records)
+}
+
+// loadGrants restores live persisted grants at startup, within the same
+// capacity bounds as newly issued ones.
+func (s *pendingHandoffs) loadGrants(now time.Time) error {
+	if s.persist == nil {
+		return nil
+	}
+	records, err := s.persist.LiveHandoffGrants(now)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	perParent := map[string]int{}
+	for _, r := range records {
+		if len(s.grants) >= maxHandoffGrants || perParent[r.ParentSessionID] >= maxHandoffGrantsPerParent || !now.Before(r.Expires) {
+			continue
+		}
+		perParent[r.ParentSessionID]++
+		s.grants[r.TokenHash] = handoffGrant{
+			binding: handoffBinding{parentUserID: r.ParentUserID, parentAuthVersion: r.ParentAuthVersion, parentSessionID: r.ParentSessionID,
+				parentSessionHash: r.ParentSessionHash, hostname: r.Hostname, label: r.Label, proxyAuthority: r.ProxyAuthority},
+			created: r.Created, expires: r.Expires, limit: r.Limit, family: r.Family,
+		}
+	}
+	return nil
 }
 
 // handoffSweepInterval bounds how often every record is scanned. Lookups never
@@ -346,7 +409,13 @@ func (s *pendingHandoffs) redeem(token string, binding handoffBinding, vendorNon
 	if ticket.parentExpires.Before(expires) {
 		expires = ticket.parentExpires
 	}
-	s.grants[grantKey] = handoffGrant{binding: ticket.binding, created: now, expires: expires, limit: ticket.parentExpires, family: grantKey}
+	grant := handoffGrant{binding: ticket.binding, created: now, expires: expires, limit: ticket.parentExpires, family: grantKey}
+	// Fail closed: a grant that cannot be saved is not issued, and the ticket
+	// stays live for a retry.
+	if err := s.saveGrantsLocked(grantRecord(grantKey, grant)); err != nil {
+		return "", "", errors.New("host grant could not be saved")
+	}
+	s.grants[grantKey] = grant
 	delete(s.tickets, key)
 	return grantToken, ticket.target, nil
 }
@@ -377,6 +446,7 @@ func (s *pendingHandoffs) renewGrant(token string, mapping db.ProxyHostname, aut
 	}
 	grant.expires = next
 	s.grants[key] = grant
+	changed := []db.HandoffGrantRecord{grantRecord(key, grant)}
 	// Assets on sibling hosts are used whenever the main host is, so keep the
 	// whole family alive together, never past each member's own limit.
 	if grant.family != "" {
@@ -391,9 +461,13 @@ func (s *pendingHandoffs) renewGrant(token string, mapping db.ProxyHostname, aut
 			if deadline.After(other.expires) {
 				other.expires = deadline
 				s.grants[otherKey] = other
+				changed = append(changed, grantRecord(otherKey, other))
 			}
 		}
 	}
+	// Renewal is not authorization; if it cannot be saved, the stored grant
+	// simply expires sooner after a restart (failing closed).
+	_ = s.saveGrantsLocked(changed...)
 	return next, true
 }
 
@@ -439,6 +513,10 @@ func (s *pendingHandoffs) removeParent(parentSessionID string, now time.Time) {
 		if sibling.binding.parentSessionID == parentSessionID {
 			delete(s.siblings, key)
 		}
+	}
+	if s.persist != nil {
+		// Live parent validation stays authoritative if this delete fails.
+		_ = s.persist.DeleteHandoffGrantsForParent(parentSessionID)
 	}
 }
 
@@ -487,6 +565,10 @@ func (s *pendingHandoffs) liveGrant(key string, now time.Time) (handoffGrant, bo
 
 func (s *pendingHandoffs) sweepLocked(now time.Time) {
 	s.lastSweep = now
+	if s.persist != nil && (s.lastPersistSweep.IsZero() || now.Sub(s.lastPersistSweep) >= persistedGrantSweepInterval || now.Before(s.lastPersistSweep)) {
+		s.lastPersistSweep = now
+		_ = s.persist.DeleteExpiredHandoffGrants(now)
+	}
 	for key, pending := range s.entries {
 		if !now.Before(pending.expires) {
 			delete(s.entries, key)
@@ -643,6 +725,9 @@ func (s *pendingHandoffs) redeemSibling(token string, binding handoffBinding, no
 		expires = sibling.parentExpires
 	}
 	grant := handoffGrant{binding: binding, created: now, expires: expires, limit: sibling.parentExpires, family: sibling.family}
+	if err := s.saveGrantsLocked(grantRecord(grantKey, grant)); err != nil {
+		return "", handoffGrant{}, errors.New("host grant could not be saved")
+	}
 	s.grants[grantKey] = grant
 	return grantToken, grant, nil
 }

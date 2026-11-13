@@ -165,6 +165,19 @@ When `APP_ENV=production`, Odo refuses to start if important settings are missin
 - `APP_ADMIN_API_KEY=devsecret`.
 - `APP_PROXY_REQUIRE_LOGIN=false`.
 - The database path appears to be temporary.
+- `APP_LOG_PSEUDONYM_SECRET` is missing, shorter than 32 bytes, or a placeholder.
+- `APP_PROXY_URL_MODE=virtual_host` is set without `APP_HOST_GUARD=true`, an
+  HTTPS `APP_PUBLIC_URL` and `APP_PROXY_BASE_DOMAIN`.
+
+## Virtual-host proxying
+
+To give each vendor host its own proxy hostname, see the
+[virtual-host setup guide](virtual-host-proxying.md). It covers wildcard DNS
+and TLS, reverse-proxy requirements, migration and rollback.
+
+Run exactly one Odo container in this mode. The image's health check sends the
+configured `APP_PUBLIC_URL` host, so it passes with the host guard on, and the
+container stops gracefully on `podman stop`.
 
 ## Create the first API key
 

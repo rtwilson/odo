@@ -48,6 +48,8 @@ func NormalizeProxyURLMode(mode string) string {
 	case ProxyURLModeDual:
 		return ProxyURLModeDual
 	case ProxyURLModeVirtualHost:
+		// Path-form URLs remain the legacy bookmark shape; with virtual-host
+		// routing on they are redirected to launch rather than served.
 		return ProxyURLModePath
 	default:
 		return ProxyURLModePath
@@ -56,9 +58,9 @@ func NormalizeProxyURLMode(mode string) string {
 
 func ProxyURLModeWarning(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case ProxyURLModeVirtualHost:
-		return "virtual_host proxy URL mode is planned but not implemented; using path mode"
 	default:
+		// virtual_host is served by the API's virtual-host runtime; legacy
+		// path/query URLs are then redirected to launch, never served.
 		return ""
 	}
 }

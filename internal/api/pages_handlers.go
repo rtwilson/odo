@@ -91,8 +91,12 @@ func (s *Server) userResources(w http.ResponseWriter, r *http.Request) {
 		if entry == "" {
 			continue
 		}
-		parsed, _ := url.Parse(entry)
-		b.WriteString(`<li><a href="` + html.EscapeString(proxy.BuildProxyURL(parsed)) + `">` + html.EscapeString(resource.Title) + `</a></li>`)
+		href := "/launch?" + url.Values{"url": {entry}}.Encode()
+		if s.handoff == nil {
+			parsed, _ := url.Parse(entry)
+			href = proxy.BuildProxyURL(parsed)
+		}
+		b.WriteString(`<li><a href="` + html.EscapeString(href) + `">` + html.EscapeString(resource.Title) + `</a></li>`)
 	}
 	b.WriteString(`</ul><footer><small><a href="/about">Source &amp; license</a></small></footer></main></body></html>`)
 	_, _ = w.Write([]byte(b.String()))

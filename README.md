@@ -13,6 +13,7 @@ The important architectural rule is that management and configuration happen thr
 - Resource registry import from dropped JSON config files.
 - URL/domain rule testing.
 - A minimal safe outbound `GET`/`HEAD` proxy for configured and allowed targets.
+- Optional virtual-host proxying (new in 0.1.0): each vendor host gets its own proxy hostname and browser origin, behind wildcard DNS/TLS. See the [setup guide](docs/virtual-host-proxying.md).
 - Partial HTML/CSS asset URL rewriting for basic proxied page rendering.
 - Privacy-conscious first-pass request logging that avoids logging full query strings.
 - Local users and browser sessions with `/login` and `/logout`; `/admin` for admin/staff roles and `/resources` for regular users.
@@ -159,11 +160,9 @@ Environment variables:
 - `APP_LOG_PSEUDONYM_SECRET`, required in production (at least 32 bytes); HMAC secret for pseudonymous access-log patron keys. Keep it separate from `APP_KEY_HASH_SECRET` and stable after deployment. Without it, development uses a random per-process secret, so keys cannot be re-identified after a restart
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
 - `APP_PROXY_URL_MODE`, default `path`; use `query` for `/odo?url=...` compatibility links or `dual` to build path links while accepting both path and query forms
-- `virtual_host` remains unsupported: production startup rejects it; development warns and falls back to path mode. Registry and launch support do not enable virtual-host routing or credential isolation.
+- `APP_PROXY_URL_MODE=virtual_host` enables [virtual-host proxying](docs/virtual-host-proxying.md). It requires `APP_HOST_GUARD=true`, an HTTPS `APP_PUBLIC_URL` and `APP_PROXY_BASE_DOMAIN`, plus wildcard DNS and TLS. Misconfiguration stops startup; there is no silent fallback to path mode. Single instance only. `APP_EXPERIMENTAL_HANDOFF=true` is a deprecated alias.
 - `APP_HOST_GUARD`, default `false`; opt-in central-host-only admission using `APP_PUBLIC_URL` and `APP_PROXY_BASE_DOMAIN`. See [host routing](docs/architecture/virtual-host-routing.md) before enabling; health checks must use the central Host.
 - `APP_PROXY_ALLOW_LOCAL_HTTP`, default `false`; development-only loopback HTTP allowance for `loadtest/` fake vendor runs, never for production
-- `APP_VIRTUAL_HOST_BASE_DOMAIN`, reserved for future virtual-host proxy mode and not active yet
-- `APP_VIRTUAL_HOST_ENCODING`, reserved for future virtual-host proxy mode and not active yet
 - `APP_PROXY_MAX_BODY_BYTES`, default `10485760`; maximum proxied POST request body size
 - `APP_PROXY_INJECT_JS_SHIM`, default `true`; injects a small same-origin `fetch()`/XHR rewrite shim into proxied HTML
 - `APP_PROXY_REFERER_RECOVERY`, default `true`; recovers missed local asset/script paths when a proxied Referer identifies the upstream host
@@ -473,11 +472,11 @@ APP_PROXY_URL_MODE=dual
 
 ### Proxy URL modes
 
-Path mode is the default and recommended MVP mode. Query mode is available for compatibility and development. Virtual-host mode is planned for better compatibility with difficult sites that need vendor-like browser origins, but it is not implemented yet. Do not deploy virtual-host mode until wildcard DNS and wildcard TLS are configured and Odo has host-based proxy routing support.
+Path mode is the default. Query mode is available for compatibility and development.
 
-See [Future Virtual-Host Proxying](docs/virtual-host-proxying.md) for the design notes and migration plan.
+Virtual-host mode (`APP_PROXY_URL_MODE=virtual_host`) gives each vendor host its own proxy hostname, such as `www-jstor-org.proxy.library.example.edu`. Vendor pages, scripts and cookies then get their own browser origin, separate from Odo's login and from other vendors. It needs wildcard DNS and a wildcard TLS certificate (DNS-01). It supports a single Odo instance. See the [virtual-host setup guide](docs/virtual-host-proxying.md) for DNS, TLS, reverse-proxy, migration and rollback steps.
 
-Unknown local paths now return `404` instead of redirecting to `/admin` unless referer-based recovery applies, which makes missed rewrites easier to spot during testing. Missed document navigations redirect to canonical `/odo/https/{host}/{path}` URLs, while missed assets can be silently proxied. Virtual-host mode may be added later for institution-specific host-based access URLs such as `www-economist-com.access.library.edu`.
+Unknown local paths now return `404` instead of redirecting to `/admin` unless referer-based recovery applies, which makes missed rewrites easier to spot during testing. Missed document navigations redirect to canonical `/odo/https/{host}/{path}` URLs, while missed assets can be silently proxied.
 
 `/odo` performs a minimal safe outbound `GET`/`HEAD`/`POST` proxy. HTML `href`, `src`, `action`, and common asset attributes are rewritten when they point to safe, allowlisted proxy targets. `srcset` is partially supported. CSS `url(...)` references are partially rewritten for `text/css` responses and inline style attributes.
 

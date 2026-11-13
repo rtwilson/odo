@@ -68,6 +68,12 @@ func main() {
 	if warning := proxy.ProxyURLModeWarning(os.Getenv("APP_PROXY_URL_MODE")); warning != "" {
 		logger.Warn(warning)
 	}
+	if api.VirtualHostAliasInUse() {
+		logger.Warn("APP_EXPERIMENTAL_HANDOFF is deprecated; set APP_PROXY_URL_MODE=virtual_host instead")
+	}
+	if api.VirtualHostRoutingEnabled() {
+		proxyURLMode = proxy.ProxyURLModeVirtualHost
+	}
 	for _, warning := range productionWarnings(appEnv, dataDir, dbPath, adminAPIKey) {
 		logger.Warn(warning)
 	}
@@ -218,9 +224,6 @@ func validateProductionConfig(appEnv, dbPath, adminAPIKey string, storedAdminKey
 		return nil
 	}
 	var problems []string
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_PROXY_URL_MODE")), proxy.ProxyURLModeVirtualHost) {
-		problems = append(problems, "APP_PROXY_URL_MODE=virtual_host is not supported in production; virtual-host routing and credential isolation are not implemented")
-	}
 	publicURL := strings.TrimSpace(os.Getenv("APP_PUBLIC_URL"))
 	parsedPublicURL, publicURLErr := url.Parse(publicURL)
 	if publicURL == "" {

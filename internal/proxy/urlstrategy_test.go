@@ -192,21 +192,24 @@ func TestParseProxyRequestDualModeAcceptsPathAndQueryForms(t *testing.T) {
 	}
 }
 
-func TestVirtualHostModeIsPlannedButNotImplemented(t *testing.T) {
+// virtual_host is served by the API's virtual-host runtime. The URL strategy
+// keeps producing path-form URLs, which that runtime redirects to launch.
+func TestVirtualHostModeKeepsPathURLShape(t *testing.T) {
 	if got := NormalizeProxyURLMode("virtual_host"); got != ProxyURLModePath {
-		t.Fatalf("expected virtual_host to fall back to path, got %q", got)
+		t.Fatalf("expected virtual_host URL output to use the path shape, got %q", got)
 	}
-	if warning := ProxyURLModeWarning("virtual_host"); !strings.Contains(warning, "planned but not implemented") {
-		t.Fatalf("expected virtual_host warning, got %q", warning)
+	if warning := ProxyURLModeWarning("virtual_host"); warning != "" {
+		t.Fatalf("virtual_host is implemented; unexpected warning %q", warning)
 	}
 }
 
+// The setup guide must cover what an operator needs before enabling the mode.
 func TestVirtualHostProxyingDocExists(t *testing.T) {
 	body, err := os.ReadFile("../../docs/virtual-host-proxying.md")
 	if err != nil {
 		t.Fatalf("expected docs/virtual-host-proxying.md to exist: %v", err)
 	}
-	for _, want := range []string{"Future Virtual-Host Proxying", "*.access.example.edu", "wildcard TLS", "APP_VIRTUAL_HOST_BASE_DOMAIN", "Migration plan"} {
+	for _, want := range []string{"APP_PROXY_URL_MODE=virtual_host", "APP_PROXY_BASE_DOMAIN", "Wildcard DNS", "Wildcard TLS", "DNS-01", "Single instance", "Rollback"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("expected virtual-host doc to contain %q", want)
 		}

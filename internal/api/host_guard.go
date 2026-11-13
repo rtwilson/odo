@@ -29,13 +29,13 @@ func ValidateHostGuardConfig() error {
 	if err != nil {
 		return err
 	}
-	enabled, config, err := experimentalHandoffConfig()
+	enabled, config, err := virtualHostRoutingConfig()
 	if err != nil || !enabled {
 		return err
 	}
 	// Fail startup if the runtime's cookie manager could not be constructed.
 	if _, err := proxy.NewUpstreamCookieJars(config); err != nil {
-		return errors.New("experimental handoff cookie coordinator configuration is invalid")
+		return errors.New("virtual-host cookie coordinator configuration is invalid")
 	}
 	return nil
 }

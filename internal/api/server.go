@@ -90,7 +90,7 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 		launchContinuations: newLaunchContinuations(),
 	}
 	server.hostGuardEnabled, server.hostGuardConfig, server.hostGuardErr = hostGuardConfigFromEnv()
-	enabled, config, err := experimentalHandoffConfig()
+	enabled, config, err := virtualHostRoutingConfig()
 	server.handoffErr = err
 	if enabled && err == nil {
 		server.handoff, server.handoffErr = newHandoffRuntime(server, config)
@@ -105,6 +105,12 @@ func NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store *db.Store, c
 // requests rather than falling back to another mode.
 func newHandoffRuntime(server *Server, config proxy.HostRoutingConfig) (*handoffSecurity, error) {
 	h := &handoffSecurity{server: server, config: config, state: newPendingHandoffs()}
+	// Host grants survive restarts; a load failure disables vhost routing
+	// (fail closed) rather than starting with an inconsistent state.
+	h.state.persist = server.store
+	if err := h.state.loadGrants(time.Now().UTC()); err != nil {
+		return nil, errors.New("persisted host grants could not be loaded")
+	}
 	cookies, err := newGrantCookieCoordinator(h)
 	if err != nil {
 		return nil, errors.New("experimental handoff cookie coordinator could not be constructed")

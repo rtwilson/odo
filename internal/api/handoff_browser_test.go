@@ -594,7 +594,8 @@ func TestExperimentalHandoffConfigFailsClosed(t *testing.T) {
 		{"off", "false", "production", "false", "", true},
 		{"test", "true", "test", "true", "https://odo.example", true},
 		{"invalid flag", "maybe", "test", "true", "https://odo.example", false},
-		{"production", "true", "production", "true", "https://odo.example", false},
+		// Production may run virtual-host mode when it is fully configured.
+		{"production", "true", "production", "true", "https://odo.example", true},
 		{"unguarded", "true", "test", "false", "https://odo.example", false},
 		{"HTTP central", "true", "test", "true", "http://odo.example", false},
 	} {

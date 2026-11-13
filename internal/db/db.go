@@ -144,6 +144,27 @@ CREATE TRIGGER IF NOT EXISTS log_pseudonym_policies_append_only_delete
 BEFORE DELETE ON log_pseudonym_policies
 BEGIN SELECT RAISE(ABORT, 'pseudonym policy history is append-only'); END;
 
+-- Host grants survive restarts. Only the SHA-256 hash of each grant token is
+-- stored; every use still re-validates the live parent session, account,
+-- registry mapping, resource policy and DNS safety, so a row never authorizes
+-- anything by itself.
+CREATE TABLE IF NOT EXISTS handoff_grants (
+	token_hash TEXT PRIMARY KEY NOT NULL,
+	parent_user_id TEXT NOT NULL,
+	parent_auth_version INTEGER NOT NULL,
+	parent_session_id TEXT NOT NULL,
+	parent_session_hash TEXT NOT NULL,
+	hostname TEXT NOT NULL,
+	label TEXT NOT NULL,
+	proxy_authority TEXT NOT NULL,
+	family TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	limit_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS handoff_grants_parent ON handoff_grants (parent_session_id);
+CREATE INDEX IF NOT EXISTS handoff_grants_expires ON handoff_grants (expires_at);
+
 CREATE TABLE IF NOT EXISTS proxy_hostnames (
 	hostname TEXT PRIMARY KEY NOT NULL,
 	label TEXT UNIQUE NOT NULL
