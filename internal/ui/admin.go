@@ -68,6 +68,7 @@ func AdminHTML() string {
     .resource-mode-button[aria-pressed="false"] { background: #1d242a; border-color: #303943; }
     #section-resources[data-resource-mode="basic"] .resource-advanced-only { display: none; }
     @media (max-width: 860px) { .layout, .workspace { grid-template-columns: 1fr; } nav { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -301,6 +302,32 @@ func AdminHTML() string {
           </div>
           <p class="muted">Runtime configuration is controlled by environment variables. Secrets are not displayed here.</p>
           <div id="system-info" class="table-wrap">System information not loaded.</div>
+
+          <h3>Access-log patron keys</h3>
+          <p class="muted">Access logs never record patron user or session IDs. Each patron appears as a pseudonymous key; this setting decides how long a key stays the same. Longer periods make repeated or automated use easier to spot; shorter ones link less activity together. Changes apply to new log lines only. Re-identifying a key requires the separate <code>logs:reidentify</code> scope and is audited.</p>
+          <div class="toolbar">
+            <button id="load-pseudonym-policy">Load key rotation</button>
+          </div>
+          <form id="pseudonym-policy-form">
+            <label for="pseudonym-mode">Rotate keys</label>
+            <select id="pseudonym-mode">
+              <option value="time">On a schedule</option>
+              <option value="session">Every login session</option>
+              <option value="never">Never</option>
+            </select>
+            <label for="pseudonym-count">Every</label>
+            <input id="pseudonym-count" type="number" min="1" max="366" value="1">
+            <label for="pseudonym-unit" class="visually-hidden">Unit</label>
+            <select id="pseudonym-unit">
+              <option value="day">day(s)</option>
+              <option value="week">week(s)</option>
+              <option value="month" selected>month(s)</option>
+            </select>
+            <label for="pseudonym-reason">Reason for change</label>
+            <input id="pseudonym-reason" type="text" minlength="10" maxlength="500" placeholder="Required, recorded in the audit log">
+            <button id="save-pseudonym-policy" type="submit">Save key rotation</button>
+          </form>
+          <div id="pseudonym-policy-history" class="table-wrap">Key rotation not loaded.</div>
         </section>
 
         <h3 class="output-title">Output</h3>
@@ -1643,6 +1670,66 @@ func AdminHTML() string {
       } catch (err) { show(err); }
     });
     document.querySelector('#settings-openapi').addEventListener('click', () => window.open('/openapi.yaml', '_blank', 'noopener'));
+
+    function describePseudonymPolicy(policy) {
+      if (policy.mode === 'never') return 'Never rotates';
+      if (policy.mode === 'session') return 'New key every login session';
+      return 'Every ' + policy.count + ' ' + policy.unit + (policy.count === 1 ? '' : 's');
+    }
+    function syncPseudonymFields() {
+      const timed = document.querySelector('#pseudonym-mode').value === 'time';
+      document.querySelector('#pseudonym-count').disabled = !timed || !hasScope('admin');
+      document.querySelector('#pseudonym-unit').disabled = !timed || !hasScope('admin');
+    }
+    async function loadPseudonymPolicy() {
+      const result = await api('/api/v1/settings/log-pseudonymization');
+      const body = unwrap(result);
+      const current = body.current;
+      document.querySelector('#pseudonym-mode').value = current.mode;
+      if (current.mode === 'time') {
+        document.querySelector('#pseudonym-unit').value = current.unit;
+        document.querySelector('#pseudonym-count').value = current.count;
+      }
+      const table = document.createElement('table');
+      const head = table.createTHead().insertRow();
+      for (const label of ['Effective from (UTC)', 'Rotation']) {
+        const th = document.createElement('th');
+        th.scope = 'col';
+        th.textContent = label;
+        head.appendChild(th);
+      }
+      const rows = table.createTBody();
+      for (const policy of body.history.slice().reverse()) {
+        const row = rows.insertRow();
+        row.insertCell().textContent = policy.effective_from.startsWith('1970-') ? 'Default' : policy.effective_from;
+        row.insertCell().textContent = describePseudonymPolicy(policy);
+      }
+      const holder = document.querySelector('#pseudonym-policy-history');
+      holder.replaceChildren(table);
+      const canEdit = hasScope('admin');
+      for (const id of ['pseudonym-mode', 'pseudonym-reason', 'save-pseudonym-policy']) {
+        document.querySelector('#' + id).disabled = !canEdit;
+      }
+      syncPseudonymFields();
+      return result;
+    }
+    document.querySelector('#pseudonym-mode').addEventListener('change', syncPseudonymFields);
+    document.querySelector('#load-pseudonym-policy').addEventListener('click', async () => { try { show(await loadPseudonymPolicy()); } catch (err) { show(err); } });
+    document.querySelector('#pseudonym-policy-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const mode = document.querySelector('#pseudonym-mode').value;
+      const payload = { mode: mode, reason: document.querySelector('#pseudonym-reason').value.trim() };
+      if (mode === 'time') {
+        payload.unit = document.querySelector('#pseudonym-unit').value;
+        payload.count = Number(document.querySelector('#pseudonym-count').value);
+      }
+      if (!confirm('Change access-log key rotation to: ' + describePseudonymPolicy(payload) + '?')) return;
+      try {
+        show(await api('/api/v1/settings/log-pseudonymization', { method: 'PUT', body: JSON.stringify(payload) }));
+        document.querySelector('#pseudonym-reason').value = '';
+        await loadPseudonymPolicy();
+      } catch (err) { show(err); }
+    });
 
     document.querySelector('#load-saml-providers').addEventListener('click', async () => { try { await loadSAMLProviders(); } catch (err) { show(err); } });
     document.querySelector('#new-saml-provider').addEventListener('click', () => {

@@ -171,7 +171,16 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 
 	// Live grant, parent session, current resource policy for this exact target
 	// and method, DNS safety, and the resource's jar are all decided here.
+	if metadata != nil {
+		metadata.RequestClass = vendorRequestClass(r)
+	}
 	prepared, exchange, err := h.cookies.prepareRequest(upstream, grant, authority)
+	if err == nil && metadata != nil {
+		// Host-level activity only: the registered upstream host and resource,
+		// with the patron as a monthly pseudonymous key. Never path or query.
+		metadata.UserID, metadata.SessionID = exchange.userID, exchange.sessionID
+		metadata.ResourceID, metadata.TargetHost = exchange.resourceID, mapping.Hostname
+	}
 	if err != nil {
 		// An expired/unknown grant or invalid parent session restarts the
 		// handoff for top-level navigations; policy denials never do.
@@ -273,6 +282,22 @@ func (h *handoffSecurity) serveVendorContent(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(response.StatusCode)
 	if r.Method != http.MethodHead {
 		_, _ = io.Copy(w, body)
+	}
+}
+
+// vendorRequestClass coarsely classifies a request from its Fetch metadata:
+// document (top-level or frame navigation), asset (image, script, style, font,
+// media), api (fetch/XHR) or other.
+func vendorRequestClass(r *http.Request) string {
+	switch strings.ToLower(r.Header.Get("Sec-Fetch-Dest")) {
+	case "document", "iframe", "frame":
+		return "document"
+	case "image", "script", "style", "font", "audio", "video", "track", "worker", "sharedworker", "manifest":
+		return "asset"
+	case "empty":
+		return "api"
+	default:
+		return "other"
 	}
 }
 

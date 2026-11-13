@@ -1432,7 +1432,7 @@ func TestDisabledUserCannotReuseSession(t *testing.T) {
 	}
 }
 
-func TestAccessLogIncludesSafeUserSessionMetadata(t *testing.T) {
+func TestAccessLogPseudonymizesPatronWithResourceMetadata(t *testing.T) {
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "")
 	var buf bytes.Buffer
 	accessLogger, err := accesslog.New(accesslog.FormatPrivacy, &buf)
@@ -1455,8 +1455,14 @@ func TestAccessLogIncludesSafeUserSessionMetadata(t *testing.T) {
 		t.Fatalf("expected proxy fetch 200, got %d body %s", rec.Code, rec.Body.String())
 	}
 	logs := buf.String()
-	if !strings.Contains(logs, "user_id="+user.ID) || !strings.Contains(logs, "session_id=sess_") || !strings.Contains(logs, "resource_id=jstor") || !strings.Contains(logs, "target_host=www.jstor.org") {
-		t.Fatalf("expected safe user/session/resource metadata in access log, got:\n%s", logs)
+	// The patron appears only as this month's pseudonymous key, never as a raw
+	// user or session identifier.
+	key := accessLogger.Pseudonymizer().Key(user.ID, "", time.Now())
+	if !strings.Contains(logs, "patron="+key) || !strings.Contains(logs, "resource_id=jstor") || !strings.Contains(logs, "target_host=www.jstor.org") {
+		t.Fatalf("expected patron key and resource metadata in access log, got:\n%s", logs)
+	}
+	if strings.Contains(logs, user.ID) || strings.Contains(logs, "sess_") || strings.Contains(logs, "user_id=") || strings.Contains(logs, "session_id=") {
+		t.Fatalf("access log contains a raw patron identifier:\n%s", logs)
 	}
 	if strings.Contains(logs, "token=secret") || strings.Contains(logs, "stable/example?") {
 		t.Fatalf("privacy access log should not include target query/full URL, got:\n%s", logs)

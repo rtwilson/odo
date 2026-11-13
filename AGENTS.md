@@ -33,7 +33,12 @@ vendor compatibility.
 - Do not log full proxied URLs, query strings, search terms,
   cookies, credentials, authorization headers, or request bodies.
 - Prefer privacy-safe diagnostics over detailed activity logs.
-- Avoid creating durable patron browsing histories.
+- Never write raw user or session IDs to access logs. Activity is recorded
+  only at host/resource level, under the pseudonymous patron key.
+- Re-identification is forward-only, needs the explicit `logs:reidentify`
+  scope, a stated reason and an audit record.
+- Do not add durable patron browsing records outside that design.
+  See docs/security/patron-log-pseudonymization.md.
 
 ## Resource model
 - Inspect the actual resource structs, validator, and tests before

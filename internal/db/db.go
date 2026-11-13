@@ -127,6 +127,23 @@ CREATE TABLE IF NOT EXISTS resource_state (
 );
 INSERT OR IGNORE INTO resource_state (id, revision) VALUES (1, 0);
 
+-- Append-only history of patron-key rotation policies. The latest row applies
+-- to new access-log lines; earlier rows let re-identification derive keys for
+-- lines written under them.
+CREATE TABLE IF NOT EXISTS log_pseudonym_policies (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	mode TEXT NOT NULL CHECK (mode IN ('never', 'session', 'time')),
+	unit TEXT NOT NULL DEFAULT '',
+	count INTEGER NOT NULL DEFAULT 0,
+	effective_from TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS log_pseudonym_policies_append_only_update
+BEFORE UPDATE ON log_pseudonym_policies
+BEGIN SELECT RAISE(ABORT, 'pseudonym policy history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS log_pseudonym_policies_append_only_delete
+BEFORE DELETE ON log_pseudonym_policies
+BEGIN SELECT RAISE(ABORT, 'pseudonym policy history is append-only'); END;
+
 CREATE TABLE IF NOT EXISTS proxy_hostnames (
 	hostname TEXT PRIMARY KEY NOT NULL,
 	label TEXT UNIQUE NOT NULL

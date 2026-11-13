@@ -58,6 +58,11 @@ type grantCookieExchange struct {
 	coordinator *grantCookieCoordinator
 	exchange    *proxy.UpstreamCookieExchange
 	target      url.URL
+	// userID and resourceID describe the prepare-time authorization, for
+	// pseudonymous access logging only. They authorize nothing.
+	userID     string
+	sessionID  string
+	resourceID string
 }
 
 func (c *grantCookieCoordinator) prepareRequest(request *http.Request, token, authority string) (*http.Request, *grantCookieExchange, error) {
@@ -78,6 +83,7 @@ func (c *grantCookieCoordinator) prepareRequest(request *http.Request, token, au
 	// Capture only the prepare-time parent. The manager retains this authorizer
 	// for response checks, so later calls must not write shared state.
 	var active atomic.Pointer[db.Session]
+	var resourceID atomic.Pointer[string]
 	err := c.handoff.server.store.WithResourceAccess(func() error {
 		var err error
 		prepared, exchange, err = c.jars.PrepareRequest(upstream, func(ctx context.Context, actual *url.URL, method string) (proxy.CookieAuthorization, error) {
@@ -87,6 +93,7 @@ func (c *grantCookieCoordinator) prepareRequest(request *http.Request, token, au
 			auth, parent, err := c.authorizeParent(ctx, token, authority, actual, method)
 			if err == nil {
 				active.CompareAndSwap(nil, &parent)
+				resourceID.CompareAndSwap(nil, &auth.ResourceID)
 			}
 			return auth, err
 		})
@@ -98,7 +105,14 @@ func (c *grantCookieCoordinator) prepareRequest(request *http.Request, token, au
 	if err := c.recordActivity(active.Load()); err != nil {
 		return nil, nil, err
 	}
-	return prepared, &grantCookieExchange{coordinator: c, exchange: exchange, target: target}, nil
+	result := &grantCookieExchange{coordinator: c, exchange: exchange, target: target}
+	if parent := active.Load(); parent != nil {
+		result.userID, result.sessionID = parent.UserID, parent.ID
+	}
+	if id := resourceID.Load(); id != nil {
+		result.resourceID = *id
+	}
+	return prepared, result, nil
 }
 
 // recordActivity keeps an actively proxied patron's central session from idling

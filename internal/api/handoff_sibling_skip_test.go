@@ -122,3 +122,34 @@ func TestSiblingHopSkipsHostThatBecameUnavailable(t *testing.T) {
 		t.Fatalf("skipped hop replay: %d", replay.StatusCode)
 	}
 }
+
+// Sibling hops take one redirect each and are not verified separately. If a
+// browser refuses a sibling's grant cookie, that host's assets fail closed
+// with 401 and navigations there stop at the attempt-loop guard.
+func TestSiblingCookieRefusalFailsClosedWithoutLoop(t *testing.T) {
+	d, _, authorities := siblingSkipHarness(t, "alive.example")
+	next := redeemToFirstHop(t, d)
+	hop, _ := d.request(t, "GET", next, nil)
+	final := "https://" + d.authority + "/"
+	if hop.StatusCode != http.StatusSeeOther || hop.Header.Get("Location") != final || findCookie(hop.Cookies(), vendorGrantCookie) == nil {
+		t.Fatalf("sibling hop is not a single grant-setting redirect: %d %q", hop.StatusCode, hop.Header.Get("Location"))
+	}
+	alive := "https://" + authorities["alive.example"]
+	aliveURL, _ := url.Parse(alive + "/")
+	d.client.Jar.SetCookies(aliveURL, []*http.Cookie{{Name: vendorGrantCookie, Path: "/", MaxAge: -1}})
+	hits := d.vendor.hits.Load()
+	if asset, _ := d.browse(t, "GET", alive+"/logo.png", "image", nil); asset.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("asset without sibling grant: %d", asset.StatusCode)
+	}
+	statuses := []int{}
+	for i := 0; i < 3; i++ {
+		response, _ := d.browse(t, "GET", alive+"/page", "document", nil)
+		statuses = append(statuses, response.StatusCode)
+	}
+	if statuses[0] != http.StatusSeeOther || statuses[2] != http.StatusLoopDetected {
+		t.Fatalf("navigation restarts not bounded: %v", statuses)
+	}
+	if d.vendor.hits.Load() != hits {
+		t.Fatal("request without a grant reached upstream")
+	}
+}

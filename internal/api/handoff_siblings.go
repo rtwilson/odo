@@ -204,5 +204,11 @@ func (h *handoffSecurity) redeemSiblingBrowser(w http.ResponseWriter, r *http.Re
 	// The browser keeps this cookie until the parent's absolute expiry; Odo
 	// enforces inactivity server-side and renews the whole family together.
 	http.SetCookie(w, handoffCookie(vendorGrantCookie, grantToken, grant.limit))
-	h.verifyGrantRedirect(w, r, authority, grantToken, sibling.next)
+	// Continue straight to the next hop. Unlike the redeeming host, a sibling
+	// needs no ?finish= verification: sibling.next is server-held (the next
+	// verified hop or the already-verified target), and this host's live check
+	// ran above. If the browser refused the cookie, only this host's assets
+	// fail (401); navigations there are loop-guarded by the attempt cookie.
+	w.Header().Set("Location", sibling.next)
+	w.WriteHeader(http.StatusSeeOther)
 }

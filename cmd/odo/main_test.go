@@ -74,6 +74,7 @@ func TestProductionConfigurationFailsClosed(t *testing.T) {
 		t.Setenv("APP_BUILD_REVISION", "test-revision")
 		t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 		t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
+		t.Setenv("APP_LOG_PSEUDONYM_SECRET", "a-real-log-pseudonym-secret-0123456789")
 		t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
 		t.Setenv("APP_TRUST_PROXY_HEADERS", "false")
 		t.Setenv("APP_PROXY_URL_MODE", "path")
@@ -90,6 +91,8 @@ func TestProductionConfigurationFailsClosed(t *testing.T) {
 		{name: "missing public URL", mutate: func(t *testing.T) { t.Setenv("APP_PUBLIC_URL", "") }, adminKey: "real-admin-key", want: "APP_PUBLIC_URL"},
 		{name: "HTTP public URL", mutate: func(t *testing.T) { t.Setenv("APP_PUBLIC_URL", "http://access.example.edu") }, adminKey: "real-admin-key", want: "APP_PUBLIC_URL"},
 		{name: "missing hash secret", mutate: func(t *testing.T) { t.Setenv("APP_KEY_HASH_SECRET", "") }, adminKey: "real-admin-key", want: "APP_KEY_HASH_SECRET"},
+		{name: "missing pseudonym secret", mutate: func(t *testing.T) { t.Setenv("APP_LOG_PSEUDONYM_SECRET", "") }, adminKey: "real-admin-key", want: "APP_LOG_PSEUDONYM_SECRET"},
+		{name: "short pseudonym secret", mutate: func(t *testing.T) { t.Setenv("APP_LOG_PSEUDONYM_SECRET", "too-short") }, adminKey: "real-admin-key", want: "APP_LOG_PSEUDONYM_SECRET"},
 		{name: "placeholder hash secret", mutate: func(t *testing.T) { t.Setenv("APP_KEY_HASH_SECRET", "change-me") }, adminKey: "real-admin-key", want: "APP_KEY_HASH_SECRET"},
 		{name: "missing admin key", mutate: func(t *testing.T) {}, want: "APP_ADMIN_API_KEY"},
 		{name: "placeholder admin key", mutate: func(t *testing.T) {}, adminKey: "change-me", want: "APP_ADMIN_API_KEY"},
@@ -120,6 +123,7 @@ func TestProductionConfigurationAcceptsStoredAdminKey(t *testing.T) {
 	t.Setenv("APP_BUILD_REVISION", "test-revision")
 	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 	t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
+	t.Setenv("APP_LOG_PSEUDONYM_SECRET", "a-real-log-pseudonym-secret-0123456789")
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
 	t.Setenv("APP_TRUST_PROXY_HEADERS", "true")
 	for _, mode := range []string{"", "path", "query", "dual"} {
@@ -137,6 +141,7 @@ func TestProductionConfigurationAcceptsExplicitLocalAdminBootstrap(t *testing.T)
 	t.Setenv("APP_BUILD_REVISION", "test-revision")
 	t.Setenv("APP_PUBLIC_URL", "https://access.example.edu")
 	t.Setenv("APP_KEY_HASH_SECRET", "a-real-key-hash-secret")
+	t.Setenv("APP_LOG_PSEUDONYM_SECRET", "a-real-log-pseudonym-secret-0123456789")
 	t.Setenv("APP_PROXY_REQUIRE_LOGIN", "true")
 	t.Setenv("APP_BOOTSTRAP_ADMIN_USERNAME", "initial-admin")
 	t.Setenv("APP_BOOTSTRAP_ADMIN_PASSWORD", "a-strong-bootstrap-password")

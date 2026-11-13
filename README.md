@@ -156,6 +156,7 @@ Environment variables:
 - `APP_KEY_HASH_SECRET`, required in production mode; secret used to HMAC stored API key tokens; if unset, local dev uses SHA-256 with a startup warning
 - `APP_ACCESS_LOG_FORMAT`, default `privacy`
 - `APP_ACCESS_LOG_PATH`, optional path to append access logs
+- `APP_LOG_PSEUDONYM_SECRET`, required in production (at least 32 bytes); HMAC secret for pseudonymous access-log patron keys. Keep it separate from `APP_KEY_HASH_SECRET` and stable after deployment. Without it, development uses a random per-process secret, so keys cannot be re-identified after a restart
 - `APP_PROXY_DEBUG`, default `false`; when `true`, `/odo` adds safe cookie/session diagnostic count headers without exposing cookie values
 - `APP_PROXY_URL_MODE`, default `path`; use `query` for `/odo?url=...` compatibility links or `dual` to build path links while accepting both path and query forms
 - `virtual_host` remains unsupported: production startup rejects it; development warns and falls back to path mode. Registry and launch support do not enable virtual-host routing or credential isolation.
@@ -300,7 +301,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/api-keys/key_abc123/revoke \
   -H 'Authorization: Bearer odo_live_...' | jq
 ```
 
-Initial API key scopes are `admin`, `api_keys:read`, `api_keys:write`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `auth:read`, `auth:write`, `system:read`, `users:read`, and `users:write`. The `admin` scope can access all management endpoints. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
+Initial API key scopes are `admin`, `api_keys:read`, `api_keys:write`, `resources:read`, `resources:write`, `config:read`, `config:write`, `diagnostics:read`, `logs:read`, `logs:reidentify`, `auth:read`, `auth:write`, `system:read`, `users:read`, and `users:write`. The `admin` scope can access all management endpoints except patron re-identification, which needs `logs:reidentify` granted explicitly. Set `APP_KEY_HASH_SECRET` in persistent deployments so stored token hashes use HMAC-SHA256 instead of local-dev SHA-256.
 
 ## Local Users and Browser Sessions
 
@@ -422,6 +423,8 @@ Odo classifies and recovers common app/data paths from a proxied `Referer`, incl
 ## Access Logging
 
 Access logs default to privacy-filtered output on stdout. Privacy mode logs request metadata and safe proxy decisions without full query strings, target URLs, article URLs, search terms, or reading-history-like paths.
+
+No access-log format records raw patron user or session IDs. Patron lines carry a pseudonymous `patron` key whose rotation (by days, weeks or months; per session; or never) is set on the Settings page or through the API. Re-identifying a key needs the explicit `logs:reidentify` scope and is audited. See [patron log pseudonymization](docs/security/patron-log-pseudonymization.md).
 
 Available formats:
 

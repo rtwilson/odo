@@ -687,8 +687,9 @@ redeeming host. After a ticket is redeemed, the browser is sent through one
 single-use sibling hop per family host
 (`/.well-known/odo/redeem?sibling=<opaque>`, 30-second lifetime, stored only
 as a hash). Each hop rechecks the live parent session and that its host still
-belongs to the resource, sets that host's own `__Host-` grant, and continues to
-the next hop held server-side, ending at the original target. Grants are never
+belongs to the resource, sets that host's own `__Host-` grant, and continues
+directly (one redirect, no `?finish=` hop) to the next hop held server-side,
+ending at the original target. Grants are never
 shared between hosts; a family only links their inactivity deadlines, so using
 any member renews all of them (capped at each grant's parent limit). Sibling
 grant cookies last until the parent's absolute expiry because the browser may

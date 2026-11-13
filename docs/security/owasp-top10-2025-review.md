@@ -218,8 +218,16 @@ Tests to add: partial-import failure/rollback, duplicate and conflicting domain 
 #### ODO-2025-010 — HTTP server lacks explicit timeouts and graceful shutdown
 
 - **Severity:** Low
-- **Status:** Confirmed
-- **Evidence:** startup calls `http.ListenAndServe` directly (`cmd/odo/main.go:77-81`), leaving read-header, read, write, idle, maximum-header, and graceful-shutdown behavior at defaults.
+- **Status:** Partially resolved (2026-11-13). `cmd/odo/main.go` now builds an
+  `http.Server` with `ReadHeaderTimeout` (10 s), `IdleTimeout` (2 min) and
+  `MaxHeaderBytes` (64 KiB). It handles SIGTERM/SIGINT with a bounded
+  `Shutdown` (8 s, within container runtimes' default 10-second stop timeout)
+  and runs the deferred database and access-log closes. Tests cover draining an
+  in-flight request, shutdown timeout and oversized headers. Overall
+  `ReadTimeout`/`WriteTimeout` remain unset on purpose: handlers bound request
+  bodies, and vendor downloads may stream for longer than any fixed limit.
+  Revisit with per-route deadlines.
+- **Original evidence:** startup called `http.ListenAndServe` directly (`cmd/odo/main.go:77-81`), leaving read-header, read, write, idle, maximum-header, and graceful-shutdown behavior at defaults.
 - **Affected files:** `cmd/odo/main.go`.
 - **Risk:** slow clients can consume resources; abrupt termination can interrupt in-flight requests and log/database work.
 - **Recommended fix:** construct `http.Server` with conservative `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, and `MaxHeaderBytes`; handle SIGTERM with a bounded `Shutdown` context. Coordinate long proxy responses with the chosen write timeout.

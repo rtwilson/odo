@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"example.org/odo/internal/accesslog"
@@ -83,13 +88,98 @@ func main() {
 		os.Exit(1)
 	}
 	defer accessLogCloser.Close()
-
-	server := api.NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminAPIKey, logger, accessLogger, nil, proxy.DefaultHTTPClient(), proxyDebug)
-	logger.Info("odo listening", "addr", addr, "app_env", appEnv, "data_dir", dataDir, "db", dbPath, "config_dir", configDir, "proxy_url_mode", proxyURLMode)
-	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
-		logger.Error("server stopped", "err", err)
+	if err := configurePatronPseudonyms(accessLogger, store, logger); err != nil {
+		logger.Error("configure access log pseudonyms", "err", err)
 		os.Exit(1)
 	}
+
+	server := api.NewServerWithAccessLoggerResolverHTTPClientAndProxyDebug(store, configDir, adminAPIKey, logger, accessLogger, nil, proxy.DefaultHTTPClient(), proxyDebug)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("listen", "err", err, "addr", addr)
+		os.Exit(1)
+	}
+	httpServer := newHTTPServer(server.Routes())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	logger.Info("odo listening", "addr", addr, "app_env", appEnv, "data_dir", dataDir, "db", dbPath, "config_dir", configDir, "proxy_url_mode", proxyURLMode)
+	err = serve(ctx, httpServer, listener, shutdownGrace)
+	stop()
+	if err != nil {
+		logger.Error("server stopped", "err", err)
+		// Close explicitly: os.Exit skips the deferred closes.
+		_ = accessLogCloser.Close()
+		_ = store.Close()
+		os.Exit(1)
+	}
+	logger.Info("odo stopped")
+}
+
+const (
+	// readHeaderTimeout bounds slow request headers. No overall read or write
+	// timeout is set: vendor downloads and uploads may legitimately be long.
+	readHeaderTimeout = 10 * time.Second
+	// idleTimeout closes idle keep-alive connections.
+	idleTimeout = 2 * time.Minute
+	// maxHeaderBytes allows the 16 KiB launch query with ample room; browsers
+	// carry only Odo's own small cookies (vendor cookies stay server-side).
+	maxHeaderBytes = 64 << 10
+	// shutdownGrace lets in-flight requests finish after SIGTERM/SIGINT, within
+	// the 10-second stop timeout that container runtimes use by default.
+	shutdownGrace = 8 * time.Second
+)
+
+// newHTTPServer bounds slow and oversized headers and idle connections. It sets
+// no overall read or write timeout: request bodies are size-limited by their
+// handlers, and vendor downloads may legitimately stream for a long time.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: idleTimeout, MaxHeaderBytes: maxHeaderBytes}
+}
+
+// serve runs server on listener until it fails or ctx ends. On ctx end it stops
+// accepting connections and waits up to grace for in-flight requests, returning
+// nil on a clean drain. Deferred database and access-log closes then run.
+func serve(ctx context.Context, server *http.Server, listener net.Listener, grace time.Duration) error {
+	errs := make(chan error, 1)
+	go func() { errs <- server.Serve(listener) }()
+	select {
+	case err := <-errs:
+		return err
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		_ = server.Close()
+		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	if err := <-errs; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// configurePatronPseudonyms installs the access-log patron-key secret and the
+// stored rotation policy. Without a configured secret (development only; the
+// production check requires one) keys use a random per-process secret: still
+// unlinkable, but not re-identifiable after a restart.
+func configurePatronPseudonyms(accessLogger *accesslog.Logger, store *db.Store, logger *slog.Logger) error {
+	pseudonymizer := accessLogger.Pseudonymizer()
+	if secret := os.Getenv("APP_LOG_PSEUDONYM_SECRET"); secret != "" {
+		configured, err := accesslog.NewPseudonymizer(secret)
+		if err != nil {
+			return err
+		}
+		pseudonymizer = configured
+	} else {
+		logger.Warn("APP_LOG_PSEUDONYM_SECRET is not set; access-log patron keys cannot be re-identified after a restart")
+	}
+	policy, err := store.CurrentLogPseudonymPolicy()
+	if err != nil {
+		return err
+	}
+	pseudonymizer.SetPolicy(policy)
+	accessLogger.SetPseudonymizer(pseudonymizer)
+	return nil
 }
 
 func hasStoredAdminAPIKey(store *db.Store) (bool, error) {
@@ -137,6 +227,12 @@ func validateProductionConfig(appEnv, dbPath, adminAPIKey string, storedAdminKey
 		problems = append(problems, "APP_PUBLIC_URL is required")
 	} else if publicURLErr != nil || parsedPublicURL.Scheme != "https" || parsedPublicURL.Host == "" {
 		problems = append(problems, "APP_PUBLIC_URL must be an absolute HTTPS URL")
+	}
+	pseudonymSecret := os.Getenv("APP_LOG_PSEUDONYM_SECRET")
+	if len(pseudonymSecret) < accesslog.MinPseudonymSecretBytes {
+		problems = append(problems, "APP_LOG_PSEUDONYM_SECRET must be at least 32 bytes")
+	} else if knownPlaceholderSecret(pseudonymSecret) {
+		problems = append(problems, "APP_LOG_PSEUDONYM_SECRET must not use a placeholder value")
 	}
 	keyHashSecret := strings.TrimSpace(os.Getenv("APP_KEY_HASH_SECRET"))
 	if keyHashSecret == "" {

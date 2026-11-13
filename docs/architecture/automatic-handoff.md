@@ -33,8 +33,12 @@ same-origin-only GET confirmation in earlier design checkpoints.
    `?finish=<opaque>` control hop verifies the browser accepted that cookie.
    Its single-use continuation is bound to the exact grant token and stored as
    hashes in the existing bounded continuation store. Missing cookies stop here.
-7. The existing same-resource sibling chain remains capped at six extra hosts;
-   each sibling now verifies its own grant cookie too. The final redirect
+7. The existing same-resource sibling chain remains capped at six extra hosts.
+   Since 2026-11-13 each sibling hop is a single redirect: it sets that host's
+   grant and continues directly, without its own `?finish=` hop. Its next stop
+   is server-held, and the redeeming host's grant was already verified in step
+   6. A browser that refuses only a sibling's cookie gets 401 for that host's
+   assets, and navigations there stop at the attempt guard. The final redirect
    preserves the stored destination path and opaque query. Delivery rechecks
    live policy and session state and strips all browser credentials upstream.
 

@@ -1,6 +1,7 @@
 # On-demand same-resource host grants (proposal)
 
-Status: **Proposed, not implemented.** Experimental virtual-host mode only.
+Status: **Step 1 implemented (2026-11-13); step 2 proposed, not
+implemented.** Experimental virtual-host mode only.
 
 ## Problem
 
@@ -34,7 +35,7 @@ also has these limits:
 
 ## Proposal
 
-### Step 1: one redirect per sibling (small, independent)
+### Step 1: one redirect per sibling (implemented)
 
 Drop the `?finish=` verification on sibling hops. Verification exists so the
 redeeming host can tell "the browser refused the cookie" apart from "the

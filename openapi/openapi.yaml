@@ -1065,6 +1065,149 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /api/v1/settings/log-pseudonymization:
+    get:
+      summary: Read the access-log patron-key rotation policy and its history
+      operationId: getLogPseudonymPolicy
+      description: Requires system:read or logs:read. History is oldest first; the first entry is the built-in default (monthly) effective from the epoch. Never returns the secret or any key.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current policy and history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current, history]
+                properties:
+                  current:
+                    $ref: "#/components/schemas/PatronKeyRotationPolicy"
+                  history:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PatronKeyRotationPolicy"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    put:
+      summary: Change how long access-log patron keys stay the same
+      operationId: setLogPseudonymPolicy
+      description: Requires admin scope (and X-Odo-CSRF for browser sessions). Applies to new log lines immediately; earlier lines keep their keys. The change is appended to an append-only history together with a log_pseudonym_policy_changed audit event in one transaction.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode, reason]
+              properties:
+                mode:
+                  type: string
+                  enum: [never, session, time]
+                unit:
+                  type: string
+                  enum: [day, week, month]
+                  description: Required for mode time.
+                count:
+                  type: integer
+                  minimum: 1
+                  description: Required for mode time; at most 366 days, 104 weeks or 24 months.
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+      responses:
+        "200":
+          description: Policy saved and applied.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /api/v1/logs/access/reidentify:
+    post:
+      summary: Compute a named user's pseudonymous access-log keys
+      operationId: reidentifyPatron
+      description: >-
+        Forward-only re-identification for security and abuse investigations. Requires the
+        logs:reidentify scope granted explicitly (admin alone is refused with 403; no role grants it).
+        Returns every patron key the user had between from and to (inclusive YYYY-MM-DD dates, at
+        most 731 days apart), derived under each rotation policy in force at the time (one key per
+        session overlapping the range in session mode; at most 2000 keys), plus matching entries
+        still in the in-memory recent buffer. A reason of 10-500
+        characters is required; every lookup is audited (patron_log_reidentified) before any key is
+        returned, and an audit failure refuses the request.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, from, to, reason]
+              properties:
+                username:
+                  type: string
+                from:
+                  type: string
+                  format: date
+                  example: "2026-11-01"
+                to:
+                  type: string
+                  format: date
+                  example: "2026-11-13"
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+      responses:
+        "200":
+          description: Patron keys per month and matching recent entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, keys, recent_entries]
+                properties:
+                  user_id:
+                    type: string
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      required: [patron_key, mode, from, to]
+                      properties:
+                        patron_key:
+                          type: string
+                        mode:
+                          type: string
+                          enum: [never, session, time]
+                        from:
+                          type: string
+                          format: date-time
+                        to:
+                          type: string
+                          format: date-time
+                  recent_entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AccessLogEntry"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/diagnostics/proxy/recent:
     get:
       summary: List recent proxy diagnostics
@@ -1661,7 +1804,7 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, api_keys:read, api_keys:write, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, auth:read, auth:write, system:read, users:read, users:write]
+            enum: [admin, api_keys:read, api_keys:write, resources:read, resources:write, config:read, config:write, diagnostics:read, logs:read, logs:reidentify, auth:read, auth:write, system:read, users:read, users:write]
           examples:
             - [config:write, config:read]
         expires_at:
@@ -2012,6 +2155,21 @@ components:
           type: integer
         reason:
           type: string
+    PatronKeyRotationPolicy:
+      type: object
+      required: [mode, effective_from]
+      properties:
+        mode:
+          type: string
+          enum: [never, session, time]
+        unit:
+          type: string
+          enum: [day, week, month]
+        count:
+          type: integer
+        effective_from:
+          type: string
+          format: date-time
     AccessLogEntry:
       type: object
       required: [ts, request_id, remote_ip, method, route, status, bytes, duration_ms]
@@ -2033,6 +2191,12 @@ components:
           type: integer
         duration_ms:
           type: integer
+        patron:
+          type: string
+          description: Pseudonymous patron key (pk_...), an HMAC under APP_LOG_PSEUDONYM_SECRET of the user ID scoped by the rotation policy in force (time window, session, or never). Raw user and session IDs are never logged.
+        request_class:
+          type: string
+          enum: [document, asset, api, other]
         target_host:
           type: string
         resource_id:

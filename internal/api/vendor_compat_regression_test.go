@@ -14,8 +14,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"example.org/odo/internal/accesslog"
+	"example.org/odo/internal/auth/local"
 	"example.org/odo/internal/proxy"
 	"example.org/odo/internal/resources"
 )
@@ -492,6 +494,30 @@ func TestLaunchDuringConcurrentResourceUpdates(t *testing.T) {
 	for status := range statuses {
 		if status != http.StatusSeeOther {
 			t.Fatalf("launch during resource updates: %d", status)
+		}
+	}
+}
+
+// Vendor content lines record host-level activity under a monthly pseudonymous
+// patron key: upstream host, resource and request class, never the path,
+// query, user ID or session ID.
+func TestVendorContentAccessLogIsHostLevelAndPseudonymous(t *testing.T) {
+	d := newDeliveryHarness(t)
+	userID := d.parentUserID(t)
+	for dest, class := range map[string]string{"image": "asset", "document": "document", "empty": "api"} {
+		rec := d.serve("GET", "/private?search=private-search", d.grant, func(r *http.Request) { r.Header.Set("Sec-Fetch-Dest", dest) })
+		if rec.Code != http.StatusOK {
+			t.Fatalf("delivery: %d", rec.Code)
+		}
+		entry := lastAccessEntry(t, d)
+		if entry.PatronKey != d.h.server.accessLog.Pseudonymizer().Key(userID, local.SessionIDFromToken(d.central), time.Now()) || entry.TargetHost != "vendor.example" ||
+			entry.ResourceID != "vendor" || entry.RequestClass != class || entry.Route != vendorContentRoute {
+			t.Fatalf("%s: unexpected log entry %+v", dest, entry)
+		}
+	}
+	for _, private := range []string{"/private", "private-search", userID, local.SessionIDFromToken(d.central), d.grant} {
+		if strings.Contains(d.logs.String(), private) {
+			t.Fatalf("logs disclosed %q", private)
 		}
 	}
 }

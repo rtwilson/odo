@@ -79,9 +79,9 @@ func TestSameResourceHostsShareOneHandoff(t *testing.T) {
 			t.Fatal("sibling hop URL disclosed private data")
 		}
 	}
+	// One redirect per sibling: the hop sets the grant and continues directly.
 	sibling, _ := d.request(t, "GET", hop, nil)
 	cdnGrant := findCookie(sibling.Cookies(), vendorGrantCookie)
-	sibling, _ = d.request(t, "GET", sibling.Header.Get("Location"), nil)
 	if sibling.StatusCode != http.StatusSeeOther || sibling.Header.Get("Location") != "https://"+d.authority+"/" {
 		t.Fatalf("sibling hop did not return to the target: %d %q", sibling.StatusCode, sibling.Header.Get("Location"))
 	}
